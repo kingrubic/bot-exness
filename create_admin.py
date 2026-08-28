@@ -31,6 +31,12 @@ def create_admin(username, password):
     try:
         # Ensure migrations are applied
         execute_from_command_line(['manage.py', 'migrate', '--verbosity', '0'])
+        
+        from apps.accounts.models import ExnessServerMaster
+        if ExnessServerMaster.objects.count() == 0:
+            from apps.core.seed_data import run_seed
+            run_seed()
+
         User = get_user_model()
         email = f"{username}@admin.local"
         

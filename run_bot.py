@@ -20,30 +20,55 @@ from apps.trading.execution_engine import ExecutionEngine
 def run_trading_bot_worker():
     """Vòng lặp ngầm của Trading Bot tự động quét nến, phân tích và khớp lệnh."""
     print("🚀 [BOT WORKER] Khởi động luồng quét tự động Exness...")
-    time.sleep(3) # Wait for server to start
+    time.sleep(2) # Wait for server to start
     
+    from django.db import connection
+    cycle_counter = 0
     while True:
         try:
-            ExecutionEngine.run_full_trading_cycle()
+            # 1. Update live price from MT5 and position floating PnLs every 1s
+            ExecutionEngine.sync_symbol_prices_from_mt5()
+            ExecutionEngine.update_positions_and_pnl()
+
+            # 2. Run full strategy & plan check every 3 ticks (~3s)
+            cycle_counter += 1
+            if cycle_counter >= 3:
+                cycle_counter = 0
+                ExecutionEngine.run_full_trading_cycle()
         except Exception as e:
             print(f"⚠️ [BOT WORKER ERROR] Lỗi trong chu kỳ giao dịch: {e}")
-        time.sleep(4) # Run every 4 seconds
+        finally:
+            connection.close()
+        time.sleep(1) # Fast 1 second background loop
 
 def main():
     print("=" * 70)
     print("⚡ KHỞI ĐỘNG HỆ THỐNG EXNESS AUTO-TRADE DJANGO PLATFORM ⚡")
     print("=" * 70)
 
-    # 1. Run migrations
+    # 1. Run migrations & ensure Master Data exists
     print("📦 Đang kiểm tra & áp dụng Database Migrations...")
     execute_from_command_line(['manage.py', 'makemigrations', 'accounts', 'symbols', 'analysis', 'plans', 'trading'])
     execute_from_command_line(['manage.py', 'migrate'])
+
+    from apps.accounts.models import ExnessServerMaster
+    if ExnessServerMaster.objects.count() == 0:
+        from apps.core.seed_data import run_seed
+        print("🌱 Đang khởi tạo Master Data cho sàn Exness...")
+        run_seed()
 
     # 2. Start background trading bot thread
     bot_thread = threading.Thread(target=run_trading_bot_worker, daemon=True)
     bot_thread.start()
 
-    # 3. Start Django Server with CLI port or default 0.0.0.0:8000
+    # 4. Start Realtime WebSocket Broadcast Server
+    try:
+        from apps.trading.websocket_server import start_websocket_server_thread
+        start_websocket_server_thread(host='0.0.0.0', port=8889)
+    except Exception as e:
+        print(f"ℹ️ WebSocket Server start note: {e}")
+
+    # 5. Start Django Server with CLI port or default 0.0.0.0:8000
     addrport = sys.argv[1] if len(sys.argv) > 1 else '0.0.0.0:8000'
     if ':' not in addrport and addrport.isdigit():
         addrport = f'0.0.0.0:{addrport}'

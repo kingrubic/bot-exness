@@ -1,0 +1,158 @@
+{% extends 'admin/layout/master.html' %}
+
+{% block title %}Danh Mục Cặp Giao Dịch Exness{% endblock %}
+
+{% block content %}
+<!-- PAGE HEADER & ACTIONS -->
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="font-weight-bold text-dark mb-1">Cấu Hình Cặp Giao Dịch Exness</h2>
+        <p class="text-muted small mb-0">Thiết lập danh mục Kim Loại Quý (Gold/Silver), Forex, Crypto, Chỉ Số & Hàng Hóa</p>
+    </div>
+    <div>
+        <button class="btn btn-primary btn-sm rounded-pill px-3 shadow-sm" data-bs-toggle="modal" data-bs-target="#modal-symbol" onclick="openAddSymbolModal()">
+            <i class="fa-solid fa-plus me-1"></i> Thêm Cặp Mới
+        </button>
+    </div>
+</div>
+
+<!-- SYMBOLS TABLE -->
+<div class="au-card-clean mb-4">
+    <div class="card-title-wrap">
+        <div class="card-title-left">
+            <i class="fa-solid fa-coins text-primary fs-5"></i>
+            <h5 class="font-weight-bold text-dark mb-0">Danh Sách Cặp Giao Dịch</h5>
+        </div>
+        <div class="card-title-right">
+            <!-- Modern Category Filter Pills -->
+            <div class="filter-pills-group" id="symbol-filter-pills">
+                <button type="button" class="filter-pill-btn active" data-cat="ALL" onclick="selectSymbolCatFilter('ALL', this)">
+                    <i class="fa-solid fa-layer-group"></i> Tất Cả
+                </button>
+                <button type="button" class="filter-pill-btn" data-cat="METALS" onclick="selectSymbolCatFilter('METALS', this)">
+                    <i class="fa-solid fa-coins text-warning"></i> Kim Loại (Vàng)
+                </button>
+                <button type="button" class="filter-pill-btn" data-cat="FOREX" onclick="selectSymbolCatFilter('FOREX', this)">
+                    <i class="fa-solid fa-money-bill-transfer text-primary"></i> Forex
+                </button>
+                <button type="button" class="filter-pill-btn" data-cat="CRYPTO" onclick="selectSymbolCatFilter('CRYPTO', this)">
+                    <i class="fa-brands fa-bitcoin text-warning"></i> Crypto
+                </button>
+            </div>
+            <!-- Search input -->
+            <div class="custom-search-box search-sm">
+                <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                <input type="text" class="search-input" id="search-master-symbols" placeholder="Tìm theo mã hoặc tên..." oninput="filterMasterSymbolsTable()">
+            </div>
+        </div>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table-clean" id="table-symbols">
+            <thead>
+                <tr>
+                    <th>Cặp Giao Dịch</th>
+                    <th>Nhóm Tài Sản</th>
+                    <th>Khung Nến</th>
+                    <th>Chiến Thuật Bot</th>
+                    <th>Giá Thị Trường Realtime</th>
+                    <th>Spread Hiện Tại</th>
+                    <th>Trạng Thái Bot</th>
+                    <th class="text-end">Thao Tác</th>
+                </tr>
+            </thead>
+            <tbody id="tbody-symbols">
+                <tr>
+                    <td colspan="8" class="text-center py-4 text-muted">
+                        <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải danh sách cặp giao dịch...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- PAGINATION 20/PAGE -->
+    <div id="pagination-symbols"></div>
+</div>
+{% endblock %}
+
+{% block modals %}
+<!-- ADD / EDIT SYMBOL MODAL -->
+<div class="modal fade" id="modal-symbol" tabindex="-1" aria-labelledby="modalSymbolLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content rounded-4 border-0 shadow-lg">
+            <div class="modal-header border-bottom px-4 py-3 bg-light rounded-top-4">
+                <h5 class="modal-title font-weight-bold text-dark" id="modalSymbolLabel">
+                    <i class="fa-solid fa-coins text-primary me-2"></i> Cấu Hình Cặp Giao Dịch
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form id="form-symbol" onsubmit="saveSymbol(event)">
+                <input type="hidden" id="symbol-id" name="symbol_id" value="">
+                <div class="modal-body p-4">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label font-weight-bold small text-secondary">Mã Cặp (Symbol) <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control text-uppercase" id="symbol-code" name="symbol" placeholder="XAUUSD" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label font-weight-bold small text-secondary">Tên Hiển Thị</label>
+                            <input type="text" class="form-control" id="symbol-display-name" name="display_name" placeholder="Gold vs US Dollar">
+                        </div>
+
+                        <div class="col-md-6">
+                            <label class="form-label font-weight-bold small text-secondary">Phân Loại Nhóm</label>
+                            <select class="form-select" id="symbol-category" name="category">
+                                <option value="METALS">Kim Loại Quý (Metals)</option>
+                                <option value="FOREX">Ngoại Hối (Forex)</option>
+                                <option value="CRYPTO">Tiền Mã Hóa (Crypto)</option>
+                                <option value="INDICES">Chỉ Số Chứng Khoán (Indices)</option>
+                                <option value="COMMODITIES">Hàng Hóa & Dầu (Commodities)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label font-weight-bold small text-secondary">Khung Thời Gian (Timeframe)</label>
+                            <select class="form-select" id="symbol-timeframe" name="timeframe">
+                                <option value="M1">1 Phút (M1)</option>
+                                <option value="M5">5 Phút (M5)</option>
+                                <option value="M15" selected>15 Phút (M15)</option>
+                                <option value="M30">30 Phút (M30)</option>
+                                <option value="H1">1 Giờ (H1)</option>
+                                <option value="H4">4 Giờ (H4)</option>
+                                <option value="D1">1 Ngày (D1)</option>
+                            </select>
+                        </div>
+
+                        <div class="col-12">
+                            <label class="form-label font-weight-bold small text-secondary">Chiến Thuật Áp Dụng</label>
+                            <select class="form-select" id="symbol-strategy" name="strategy">
+                                <option value="SMC_TREND">SMC & Trend Following (Order Block + EMA + RSI)</option>
+                                <option value="SCALPING_BB">Bollinger Bands & Dynamic Momentum Scalper</option>
+                                <option value="BREAKOUT_SESSION">Breakout Đỉnh Đáy Phiên Á/Âu & S/R Zones</option>
+                            </select>
+                        </div>
+
+                        <div class="col-md-6">
+                            <label class="form-label font-weight-bold small text-secondary">Spread Tối Đa Cho Phép (Pips)</label>
+                            <input type="number" step="0.1" min="0.5" max="30.0" class="form-control" id="symbol-max-spread" name="max_allowed_spread" value="3.5" required>
+                        </div>
+                        <div class="col-md-6 d-flex align-items-center mt-4">
+                            <label class="modern-switch mt-2">
+                                <input type="checkbox" id="symbol-is-active" name="is_active" checked>
+                                <span class="modern-switch-slider"></span>
+                                <span class="modern-switch-label ms-2">Bật Giao Dịch Cặp Này</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-top px-4 py-3 bg-light rounded-bottom-4">
+                    <button type="button" class="btn btn-secondary btn-sm rounded-pill px-3" data-bs-dismiss="modal">Hủy</button>
+                    <button type="submit" class="btn btn-primary btn-sm rounded-pill px-4 shadow-sm" id="btn-save-symbol">
+                        <i class="fa-solid fa-floppy-disk me-1"></i> Lưu Cặp Tiền
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

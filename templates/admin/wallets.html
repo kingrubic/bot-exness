@@ -1,0 +1,245 @@
+{% extends 'admin/layout/master.html' %}
+
+{% block title %}Quản Lý Đa Ví Exness{% endblock %}
+
+{% block content %}
+<!-- PAGE HEADER & ACTIONS -->
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="font-weight-bold text-dark mb-1">Quản Lý Danh Sách Ví Exness</h2>
+        <p class="text-muted small mb-0">Quản lý các tài khoản Real, Demo & Sandbox, thiết lập rủi ro và các cặp tiền cho phép chạy</p>
+    </div>
+    <div>
+        <button class="btn btn-primary btn-sm rounded-pill px-3 shadow-sm" data-bs-toggle="modal" data-bs-target="#modal-wallet" onclick="openAddWalletModal()">
+            <i class="fa-solid fa-plus me-1"></i> Kết Nối Ví Mới
+        </button>
+    </div>
+</div>
+
+<!-- WALLET CARDS / TABLE -->
+<div class="au-card-clean mb-4">
+    <div class="card-title-wrap">
+        <div class="card-title-left">
+            <i class="fa-solid fa-wallet text-primary fs-5"></i>
+            <h5 class="font-weight-bold text-dark mb-0">Danh Sách Ví Giao Dịch</h5>
+        </div>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table-clean" id="table-wallets">
+            <thead>
+                <tr>
+                    <th>Tên Ví / Ghi Chú</th>
+                    <th>Loại</th>
+                    <th>Số Login MT5</th>
+                    <th>Server Exness</th>
+                    <th>Vốn Kết Nối (Capital)</th>
+                    <th>Số Dư (Balance Live)</th>
+                    <th>Vốn Khả Dụng (Equity Live)</th>
+                    <th>Floating PnL</th>
+                    <th>Lãi Hôm Nay</th>
+                    <th>Win Rate</th>
+                    <th>Trạng Thái</th>
+                    <th class="text-end">Thao Tác</th>
+                </tr>
+            </thead>
+            <tbody id="tbody-wallets">
+                <tr>
+                    <td colspan="12" class="text-center py-4 text-muted">
+                        <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải danh sách ví...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- PAGINATION 20/PAGE -->
+    <div id="pagination-wallets"></div>
+</div>
+{% endblock %}
+
+{% block modals %}
+<!-- ADD / EDIT WALLET MODAL -->
+<div class="modal fade" id="modal-wallet" tabindex="-1" aria-labelledby="modalWalletLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" style="max-width: 680px;">
+        <div class="modal-content rounded-4 border-0 shadow-lg">
+            <div class="modal-header border-bottom px-4 py-3 bg-light rounded-top-4">
+                <h5 class="modal-title font-weight-bold text-dark" id="modalWalletLabel">
+                    <i class="fa-solid fa-wallet text-primary me-2"></i> Kết Nối Ví Exness
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form id="form-wallet" onsubmit="saveWallet(event)">
+                <input type="hidden" id="wallet-id" name="wallet_id" value="">
+                <div class="modal-body p-4">
+                    <!-- Alert notification inside modal -->
+                    <div id="wallet-modal-alert" class="alert alert-danger d-none align-items-center mb-3 rounded-3 py-2 px-3 shadow-sm" role="alert">
+                        <i class="fa-solid fa-triangle-exclamation me-2 text-danger fs-5"></i>
+                        <div id="wallet-modal-alert-msg" class="small font-weight-bold"></div>
+                    </div>
+
+                    <div class="row g-3">
+                        <!-- 0. Phân loại / Chế độ kết nối -->
+                        <div class="col-12">
+                            <label class="form-label font-weight-bold small text-secondary">Chế Độ Kết Nối / Loại Tài Khoản <span class="text-danger">*</span></label>
+                            <div class="row g-2">
+                                <div class="col-6">
+                                    <input type="radio" class="btn-check" name="account_type_radio" id="wallet-type-demo" value="DEMO" checked onchange="onAccountTypeChanged()">
+                                    <label class="btn btn-outline-warning w-100 py-2 d-flex align-items-center justify-content-center gap-2 rounded-3 font-weight-bold shadow-sm" for="wallet-type-demo">
+                                        <i class="fa-solid fa-flask"></i> 1. Demo (Thử Nghiệm)
+                                    </label>
+                                </div>
+                                <div class="col-6">
+                                    <input type="radio" class="btn-check" name="account_type_radio" id="wallet-type-real" value="REAL" onchange="onAccountTypeChanged()">
+                                    <label class="btn btn-outline-success w-100 py-2 d-flex align-items-center justify-content-center gap-2 rounded-3 font-weight-bold shadow-sm" for="wallet-type-real">
+                                        <i class="fa-solid fa-circle-dollar-to-slot"></i> 2. Real (Live MT5 Sàn)
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 1. Tên ví & Vốn kết nối -->
+                        <div class="col-md-7" id="wallet-name-col">
+                            <label class="form-label font-weight-bold small text-secondary">Tên Ví / Ghi Chú <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="wallet-name" name="name" placeholder="Ví Exness Master #1" required>
+                        </div>
+                        <div class="col-md-5" id="wallet-capital-container">
+                            <label class="form-label font-weight-bold small text-secondary">Vốn Khi Kết Nối ($ USD) <span class="text-danger">*</span></label>
+                            <div class="input-group">
+                                <input type="number" step="0.01" min="1" class="form-control font-weight-bold" id="wallet-capital" name="capital" placeholder="Vốn ban đầu" value="1000">
+                                <span class="input-group-text">$</span>
+                            </div>
+                        </div>
+
+                        <!-- 2. Máy chủ Server (full-width) -->
+                        <div class="col-12">
+                            <label class="form-label font-weight-bold small text-secondary">Máy Chủ Exness (Server) <span class="text-danger">*</span></label>
+                            <select class="form-select" id="wallet-mt5-server" name="mt5_server" required>
+                                <option value="Exness-MT5Trial">Exness-MT5Trial (Demo)</option>
+                            </select>
+                        </div>
+
+                        <!-- 3. Số MT5 Login & Mật khẩu MT5 (chia đôi 50/50, cả 2 required) -->
+                        <div class="col-md-6">
+                            <label class="form-label font-weight-bold small text-secondary">Số Tài Khoản MT5 <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control font-monospace" id="wallet-mt5-login" name="mt5_login" placeholder="12345678" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label font-weight-bold small text-secondary">Mật Khẩu MT5 <span class="text-danger">*</span></label>
+                            <input type="password" class="form-control" id="wallet-mt5-password" name="mt5_password" placeholder="••••••••" required>
+                            <div class="form-text small text-muted" id="wallet-password-help">Mật khẩu giao dịch MT5</div>
+                        </div>
+
+                        <!-- 4. Section Quản Trị Rủi Ro -->
+                        <div class="col-12 border-top my-2 pt-3">
+                            <div class="d-flex align-items-center gap-2 mb-1">
+                                <i class="fa-solid fa-shield-halved text-warning"></i>
+                                <h6 class="font-weight-bold text-dark mb-0">Cài Đặt Quản Trị Rủi Ro Cho Ví</h6>
+                            </div>
+                        </div>
+
+                        <div class="col-md-6">
+                            <label class="form-label font-weight-bold small text-secondary">% Rủi Ro Mỗi Lệnh (Risk %)</label>
+                            <div class="input-group">
+                                <input type="number" step="0.1" min="0.1" max="10.0" class="form-control" id="wallet-risk-percent" name="risk_percent" value="1.5" required>
+                                <span class="input-group-text">%</span>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label font-weight-bold small text-secondary">Max Giới Hạn Lỗ Ngày</label>
+                            <div class="input-group">
+                                <input type="number" step="0.5" min="1.0" max="20.0" class="form-control" id="wallet-max-daily-loss" name="max_daily_loss_percent" value="4.0" required>
+                                <span class="input-group-text">%</span>
+                            </div>
+                        </div>
+
+                        <div class="col-md-6">
+                            <label class="form-label font-weight-bold small text-secondary">Số Lệnh Mở Tối Đa</label>
+                            <div class="input-group">
+                                <input type="number" min="1" max="20" class="form-control" id="wallet-max-open-trades" name="max_open_trades" value="5" required>
+                                <span class="input-group-text">Lệnh</span>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label font-weight-bold small text-secondary">Trạng Thái Chạy Bot</label>
+                            <select class="form-select" id="wallet-bot-status" name="bot_status">
+                                <option value="RUNNING">🟢 Đang Hoạt Động (Auto Trade)</option>
+                                <option value="PAUSED">🟡 Tạm Dừng (Pause)</option>
+                                <option value="STOPPED">🔴 Đã Dừng Hẳn</option>
+                            </select>
+                        </div>
+
+                        <div class="col-12 py-1">
+                            <label class="modern-switch d-inline-flex align-items-center">
+                                <input type="checkbox" id="wallet-is-active" name="is_active" checked>
+                                <span class="modern-switch-slider"></span>
+                                <span class="modern-switch-label ms-2 font-weight-bold">Kích Hoạt Tài Khoản Này</span>
+                            </label>
+                        </div>
+
+                        <!-- 5. Cặp giao dịch cho phép (Được tái cấu trúc khoa học theo nhóm) -->
+                        <div class="col-12 border-top my-2 pt-3">
+                            <div class="d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center gap-2 mb-2">
+                                <div>
+                                    <label class="form-label font-weight-bold small text-secondary mb-0">
+                                        Danh Sách Cặp Cho Phép Giao Dịch <span class="text-danger">*</span>
+                                    </label>
+                                    <div class="small text-muted" id="selected-symbols-count">Đã chọn: 1 cặp</div>
+                                </div>
+                                <div class="d-flex flex-wrap gap-1">
+                                    <button type="button" class="btn btn-xs btn-outline-primary rounded-pill px-3" onclick="selectAllSymbols(true)" id="btn-select-all-symbols">
+                                        <i class="fa-solid fa-check-double me-1"></i> Select All
+                                    </button>
+                                    <button type="button" class="btn btn-xs btn-outline-secondary rounded-pill px-3" onclick="selectAllSymbols(false)" id="btn-unselect-symbols">
+                                        <i class="fa-solid fa-xmark me-1"></i> Unselect
+                                    </button>
+                                    <button type="button" class="btn btn-xs btn-outline-warning rounded-pill px-3" onclick="selectGoldOnly()">
+                                        <i class="fa-solid fa-coins me-1"></i> Chỉ Vàng (XAU)
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="custom-search-box search-sm w-100 mb-2">
+                                <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                                <input type="text" class="search-input" id="search-modal-symbols" placeholder="Tìm nhanh mã cặp (vd: XAUUSD, BTC, EUR)..." oninput="filterModalSymbols(this.value)">
+                            </div>
+
+                            <div class="p-3 bg-light rounded-4 border" style="max-height: 280px; overflow-y: auto;" id="wallet-symbols-checkboxes">
+                                {% for s in symbols %}
+                                <div class="symbol-chip-item d-inline-block m-1" data-symbol="{{ s.symbol }}" data-name="{{ s.display_name }}">
+                                    <label class="symbol-card-label" for="chk-sym-{{ s.symbol }}">
+                                        <input type="checkbox" class="symbol-checkbox" value="{{ s.symbol }}" id="chk-sym-{{ s.symbol }}" onchange="updateSelectedSymbolsCount()">
+                                        <div class="symbol-card-box">
+                                            <div class="d-flex justify-content-between align-items-center gap-2">
+                                                <span class="symbol-card-code font-monospace fw-bold">{{ s.symbol }}</span>
+                                                <i class="fa-solid fa-check symbol-check-icon"></i>
+                                            </div>
+                                            <div class="symbol-card-name text-truncate text-muted small">{{ s.display_name }}</div>
+                                        </div>
+                                    </label>
+                                </div>
+                                {% empty %}
+                                <div class="small text-muted text-center py-2">Chưa có danh mục cặp</div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-top px-4 py-3 bg-light rounded-bottom-4 d-flex justify-content-between">
+                    <div>
+                        <button type="button" class="btn btn-outline-info btn-sm rounded-pill px-3" onclick="testWalletConnection(event)" id="btn-test-connection" title="Kiểm tra kết nối thực tế tới sàn Exness MT5">
+                            <i class="fa-solid fa-network-wired me-1"></i> Kiểm Tra Kết Nối Sàn
+                        </button>
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        <button type="button" class="btn btn-secondary btn-sm rounded-pill px-3" data-bs-dismiss="modal">Hủy</button>
+                        <button type="submit" class="btn btn-primary btn-sm rounded-pill px-4 shadow-sm" id="btn-save-wallet">
+                            <i class="fa-solid fa-floppy-disk me-1"></i> Lưu Cấu Hình Ví
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

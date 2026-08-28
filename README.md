@@ -29,21 +29,49 @@ Hệ thống Bot Auto Trade chuyên sâu cho sàn **Exness** (Vàng XAUUSD, Ngo�
    - **Bảng Vị Thế Đang Mở (Active Positions Table)** kèm nút Đóng Lệnh 1-click.
    - **Bảng Lịch Sử Giao Dịch Đã Đóng (Closed Trades History Table)**.
 
-4. **Trang Quản Trị & Cài Đặt (`/admin-panel/`)**:
-   - Thêm / Sửa / Xóa ví Exness (Loại Real/Demo, MT5 ID, Server, % Rủi ro, Cặp cho phép).
+4. **Trang Quản Trị & Cài Đặt (`/admin-panel/`) — [🔒 YÊU CẦU ĐĂNG NHẬP ADMIN]**:
+   - Chỉ Quản trị viên đã đăng nhập mới có quyền truy cập vào đây.
+   - **Quản lý Master Data Sàn Exness**:
+     - Danh mục **50+ Máy Chủ Exness** (`Exness-MT5Real` 1-35, `Exness-MT5Trial` 1-15) kèm tính năng **Thêm/Xóa Server bằng tay**.
+     - Danh mục **Loại Tài Khoản Exness** (Standard, Raw Spread, Zero, Pro, Cent, Demo...) kèm tính năng **Thêm/Xóa Loại tài khoản bằng tay**.
+     - Danh mục **Cặp Tiền Master Data** với bộ chọn thẻ chip (Symbol Chips) trực quan.
+   - Thêm / Sửa / Xóa ví Exness (Đồng bộ số dư & lệnh 100% realtime từ MT5).
    - Bật / Tắt và tùy chỉnh cặp giao dịch (Khung M1/M5/M15/H1, Chiến thuật SMC/Scalping/Breakout, Max Spread).
    - Cài đặt quản trị rủi ro toàn cục (Risk per trade, Max Daily Drawdown, Trailing Stop).
    - Nút Khẩn cấp: Dừng bot & Đóng toàn bộ lệnh của tất cả các ví.
+   - Giám sát nhật ký lỗi kỹ thuật và sự cố của Bot (`BotLog`).
 
 5. **Native MQL5 EA (`mql5/XAUUSD_Exness_Bot.mq5`)**:
    - File mã nguồn EA đầy đủ cho ai muốn chạy trực tiếp trên phần mềm MetaTrader 5 Exness MetaEditor.
 
 ---
 
-## 🛠️ Cài Đặt & Cấu Hình
+---
 
-### 1. File Môi Trường `.env`
-Hệ thống sử dụng cơ sở dữ liệu `sandbox_exness` được định nghĩa trong file `.env`:
+## 🛠️ Hướng Dẫn Cài Đặt & Khởi Động Dự Án
+
+### 1️⃣ Bước 1: Tạo & Kích hoạt Môi Trường Ảo (`venv`)
+- **Trên Linux / macOS / VPS**:
+  ```bash
+  python3 -m venv venv
+  source venv/bin/activate
+  ```
+- **Trên Windows**:
+  ```cmd
+  python -m venv venv
+  venv\Scripts\activate
+  ```
+
+### 2️⃣ Bước 2: Cài đặt các thư viện phụ thuộc
+```bash
+pip install -r requirements.txt
+```
+
+### 3️⃣ Bước 3: Tạo file cấu hình `.env`
+```bash
+cp .env.example .env
+```
+Mở file `.env` và kiểm tra/điền thông tin kết nối MySQL của bạn (nếu có mật khẩu):
 ```env
 DJANGO_SECRET_KEY=django-insecure-exness-auto-trade-sandbox-secret-key-2026
 DJANGO_DEBUG=True
@@ -51,79 +79,67 @@ DJANGO_DEBUG=True
 # Cấu hình MySQL Database
 DB_NAME=sandbox_exness
 DB_USER=root
-DB_PASSWORD=
+DB_PASSWORD=mat_khau_mysql_neu_co
 DB_HOST=127.0.0.1
 DB_PORT=3306
 ```
 
-### 2. Cài Đặt Thư Viện
+### 4️⃣ Bước 4: Tạo tài khoản Admin Quản Trị
+Chạy lệnh tạo tài khoản Admin nhanh qua CMD:
 ```bash
-pip install -r requirements.txt
+python3 create_admin.py admin 123456
 ```
+*(Lệnh này tự động tạo Database `sandbox_exness` trên MySQL và khởi tạo tài khoản: User là `admin`, Password là `123456`)*
 
----
-
-## 🔑 Tạo Tài Khoản Admin Qua CMD
-
-Để tạo tài khoản Admin đăng nhập quản trị, chạy lệnh:
-```bash
-python3 create_admin.py
-```
-Hoặc tạo trực tiếp nhanh bằng 1 dòng lệnh:
-```bash
-python3 create_admin.py --username admin --password yourpassword --email admin@example.com
-```
-Hoặc qua Django CLI:
-```bash
-python3 manage.py create_admin --username admin --password yourpassword
-```
-
----
-
-## 🚀 Khởi Động Hệ Thống (1-Click)
-
-Chạy lệnh để khởi động toàn bộ Web Dashboard và Bot Worker:
+### 5️⃣ Bước 5: Khởi động Hệ Thống (Web + Bot Worker)
+Chạy lệnh duy nhất để khởi động toàn bộ Web Dashboard và Bot Worker:
 ```bash
 python3 run_bot.py
 ```
-
-- **Trang Chủ Theo Dõi**: [http://localhost:8000/](http://localhost:8000/)
-- **Trang Quản Trị Admin**: [http://localhost:8000/admin-panel/](http://localhost:8000/admin-panel/)
-- **Django Admin**: [http://localhost:8000/admin-django/](http://localhost:8000/admin-django/)
+*(Tùy chọn: Bạn có thể đổi cổng bằng cách chạy `python3 run_bot.py 8080`)*
 
 ---
 
-## 📁 Cấu Trúc Mã Nguồn
+## 🌐 Đường Dẫn Truy Cập Hệ Thống:
+
+- 📊 **Trang Chủ Công Khai (Public Portal)**: 👉 [http://localhost:8000/](http://localhost:8000/)
+- 🔍 **Chi Tiết Ví & Dự Báo Tiếp Theo**: 👉 [http://localhost:8000/wallet/1/](http://localhost:8000/wallet/1/)
+- 🔒 **Đăng Nhập Quản Trị (Admin Login)**: 👉 [http://localhost:8000/login/](http://localhost:8000/login/)
+  - Tài khoản mặc định: Username: `admin` | Password: `123456`
+- ⚙️ **Bảng Điều Khiển Quản Trị (Admin Control Panel)**:
+  - 📈 **Tổng Quan Hệ Thống**: 👉 [http://localhost:8000/admin-panel/overview/](http://localhost:8000/admin-panel/overview/)
+  - 💼 **Quản Lý Đa Ví Exness**: 👉 [http://localhost:8000/admin-panel/wallets/](http://localhost:8000/admin-panel/wallets/)
+  - 🪙 **Cặp Giao Dịch & Chiến Thuật**: 👉 [http://localhost:8000/admin-panel/master-data/symbols/](http://localhost:8000/admin-panel/master-data/symbols/)
+  - 🛡️ **Quản Trị Rủi Ro & Lot Calculator**: 👉 [http://localhost:8000/admin-panel/risk/](http://localhost:8000/admin-panel/risk/)
+  - 📊 **Kiểm Thử & Backtest Chiến Lược**: 👉 [http://localhost:8000/admin-panel/backtest/](http://localhost:8000/admin-panel/backtest/)
+  - 🌐 **Master Data Máy Chủ Exness**: 👉 [http://localhost:8000/admin-panel/master-data/servers/](http://localhost:8000/admin-panel/master-data/servers/)
+  - 📑 **Master Data Loại Tài Khoản**: 👉 [http://localhost:8000/admin-panel/master-data/account-types/](http://localhost:8000/admin-panel/master-data/account-types/)
+  - 🚨 **Trung Tâm Giám Sát & Báo Lỗi Bot**: 👉 [http://localhost:8000/admin-panel/logs/](http://localhost:8000/admin-panel/logs/)
+
+---
+
+## 📁 Cấu Trúc Giao Diện & Templates
 
 ```
-exness/
-├── .env                       # Cấu hình DB_NAME=sandbox_exness, MySQL configs
-├── .env.example               # Mẫu biến môi trường
-├── .gitignore                 # Danh sách loại trừ Git
-├── PLAN.md                    # Kế hoạch chi tiết & Lộ trình phát triển dự án
-├── requirements.txt           # Danh sách thư viện Python
-├── run_bot.py                 # Script 1-Click khởi động Web + Bot Engine
-├── manage.py                  # Django CLI
-├── exness_project/            # Cấu hình Django (settings, urls, wsgi)
-├── apps/
-│   ├── accounts/              # Model & logic WalletAccount (Real, Demo, Sim)
-│   ├── symbols/               # Model SymbolConfig (XAUUSD, EURUSD, BTCUSD...)
-│   ├── analysis/              # MarketForecast & TechnicalAnalyzer (Phân tích & Dự báo)
-│   ├── plans/                 # TradingPlan & AutoPlanGenerator
-│   ├── trading/               # Position, TradeHistory, ExecutionEngine & Risk
-│   ├── api/                   # REST API Endpoints
-│   └── dashboard/             # Template Views cho Home, Wallet Detail, Admin
-├── templates/
-│   ├── base.html              # Layout chung, Topbar, Toast notifications
-│   ├── dashboard/
-│   │   ├── home.html          # Báo cáo tổng thể & Danh sách các ví
-│   │   └── wallet_detail.html # Báo cáo riêng + Phân tích Bot tiếp theo + Bảng lệnh
-│   └── admin/
-│       └── admin_panel.html   # Quản trị kết nối ví, cặp Exness & rủi ro
-├── static/
-│   ├── css/ (style.css, tables.css)
-│   └── js/ (home.js, wallet_detail.js, admin.js)
-├── mql5/
-│   └── XAUUSD_Exness_Bot.mq5  # Mã nguồn MQL5 Expert Advisor cho MT5
-└── tests/
+templates/
+├── auth/
+│   └── login.html                     # Trang Đăng Nhập Quản Trị (CoolAdmin)
+├── admin/
+│   ├── layout/
+│   │   └── master.html                # Master Layout Sidebar, Topbar, Status Pill, Modals
+│   ├── overview.html                  # Tổng quan KPIs, Ticker, Vị thế mở, Kế hoạch AI, Lịch sử
+│   ├── wallets.html                   # Quản lý đa ví (Real, Demo, Sim) + Modal Add/Edit
+│   ├── master_symbols.html            # Cấu hình cặp giao dịch (Metals, Forex, Crypto, Indices)
+│   ├── risk.html                      # Quản trị rủi ro, Lot Size Calculator & Circuit Breaker
+│   ├── backtest.html                  # Kiểm thử định lượng, biểu đồ Equity Curve Chart.js
+│   ├── master_servers.html            # Master Data 50+ máy chủ Exness MT5/MT4
+│   ├── master_accounts.html           # Master Data loại tài khoản Exness
+│   └── logs.html                      # Trung tâm báo lỗi & Traceback viewer cho Bot
+├── dashboard/
+│   ├── home.html                      # Trang chủ công khai theo dõi đa ví
+│   └── wallet_detail.html             # Chi tiết ví, phân tích nến tiếp theo & xuất CSV
+└── static/
+    ├── cooladmin/ (css, js, vendor, fonts, images)
+    ├── css/admin_custom.css
+    └── js/admin.js
 ```

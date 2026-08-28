@@ -115,7 +115,7 @@ class BotLog(models.Model):
     
     @classmethod
     def log(cls, level='INFO', category='SYSTEM', message='', traceback='', wallet=None, symbol=''):
-        """Helper lưu log nhanh vào database để Admin theo dõi."""
+        """Lưu log Bot vào Database (không lưu file)."""
         try:
             return cls.objects.create(
                 level=level,
@@ -126,6 +126,79 @@ class BotLog(models.Model):
                 symbol=symbol
             )
         except Exception as e:
-            print(f"[LOGGER ERROR] Không thể lưu log: {e}")
+            print(f"[BOT LOGGER DB ERROR] Không thể lưu log vào DB: {e}")
             return None
+
+
+class CodeLog(models.Model):
+    LOG_LEVELS = [
+        ('ERROR', 'Lỗi (ERROR)'),
+        ('CRITICAL', 'Nghiêm Trọng (CRITICAL)'),
+        ('WARNING', 'Cảnh Báo (WARNING)'),
+        ('INFO', 'Thông Tin (INFO)'),
+    ]
+
+    level = models.CharField(max_length=15, choices=LOG_LEVELS, default='ERROR', db_index=True)
+    module = models.CharField(max_length=255, blank=True, default='', verbose_name="Module / Tệp Gặp Lỗi")
+    line_number = models.IntegerField(null=True, blank=True, verbose_name="Số Dòng")
+    exception_type = models.CharField(max_length=100, blank=True, default='', verbose_name="Loại Ngoại Lệ")
+    message = models.TextField(verbose_name="Nội Dung Lỗi Code")
+    traceback = models.TextField(blank=True, default='', verbose_name="Chi Tiết Traceback Kỹ Thuật")
+    request_path = models.CharField(max_length=255, blank=True, default='', verbose_name="URL / API Endpoint")
+    request_method = models.CharField(max_length=10, blank=True, default='', verbose_name="Method (GET/POST)")
+    is_resolved = models.BooleanField(default=False, verbose_name="Đã Xử Lý")
+    created_at = models.DateTimeField(default=timezone.now, db_index=True, verbose_name="Thời Điểm Ghi Nhận")
+
+    class Meta:
+        verbose_name = "Nhật Ký & Báo Lỗi Code"
+        verbose_name_plural = "Nhật Ký & Báo Lỗi Code"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"[{self.level}] {self.exception_type or self.module}: {self.message[:60]}"
+
+    @classmethod
+    def log_exception(cls, exception=None, request=None, level='ERROR', custom_message='', module='', line_number=None, traceback_str=''):
+        """Tự động ghi nhận lỗi code/exception vào Database."""
+        import traceback as tb_module
+        
+        if not traceback_str and exception:
+            traceback_str = tb_module.format_exc()
+
+        exc_type = type(exception).__name__ if exception else 'SystemError'
+        msg = custom_message or (str(exception) if exception else 'Lỗi thực thi mã nguồn')
+
+        mod_name = module
+        line_no = line_number
+
+        if not mod_name and exception and hasattr(exception, '__traceback__') and exception.__traceback__:
+            tb = exception.__traceback__
+            while tb.tb_next:
+                tb = tb.tb_next
+            frame = tb.tb_frame
+            mod_name = frame.f_code.co_filename
+            line_no = tb.tb_lineno
+
+        req_path = ''
+        req_method = ''
+        if request:
+            req_path = getattr(request, 'path', '')
+            req_method = getattr(request, 'method', '')
+
+        try:
+            return cls.objects.create(
+                level=level,
+                module=mod_name,
+                line_number=line_no,
+                exception_type=exc_type,
+                message=msg,
+                traceback=traceback_str or '',
+                request_path=req_path,
+                request_method=req_method
+            )
+        except Exception as e:
+            print(f"[CODE LOGGER DB ERROR] Không thể lưu code log: {e}")
+            return None
+
+
 

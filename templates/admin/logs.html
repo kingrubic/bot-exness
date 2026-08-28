@@ -1,0 +1,733 @@
+{% extends 'admin/layout/master.html' %}
+
+{% block title %}Nhật Ký & Báo Lỗi Hệ Thống{% endblock %}
+
+{% block content %}
+<!-- PAGE HEADER & ACTIONS -->
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="font-weight-bold text-dark mb-1">Trung Tâm Giám Sát, Báo Lỗi Bot & Debug Code</h2>
+        <p class="text-muted small mb-0">Hệ thống phân tách rõ ràng 2 luồng: <b>Nhật Ký Bot Trading</b> và <b>Nhật Ký Báo Lỗi Code Backend</b> để tiện debug</p>
+    </div>
+</div>
+
+<!-- NAVIGATION TABS -->
+<ul class="nav nav-pills mb-4 gap-2 bg-white p-2 rounded-4 shadow-sm border" id="logSystemTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active rounded-pill px-4 font-weight-bold" id="tab-bot-logs-btn" data-bs-toggle="pill" data-bs-target="#tab-bot-logs" type="button" role="tab" onclick="switchTab('bot')">
+            <i class="fa-solid fa-robot me-2 text-primary"></i> 1. Nhật Ký & Lỗi Bot Trading
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link rounded-pill px-4 font-weight-bold" id="tab-code-logs-btn" data-bs-toggle="pill" data-bs-target="#tab-code-logs" type="button" role="tab" onclick="switchTab('code')">
+            <i class="fa-solid fa-bug me-2 text-danger"></i> 2. Nhật Ký & Báo Lỗi Code Backend (Debug)
+        </button>
+    </li>
+</ul>
+
+<!-- TAB CONTENT CONTAINER -->
+<div class="tab-content" id="logSystemTabsContent">
+    
+    <!-- ==================== TAB 1: BOT TRADING LOGS ==================== -->
+    <div class="tab-pane fade show active" id="tab-bot-logs" role="tabpanel">
+        <!-- BOT LOG STATS -->
+        <div class="row g-3 mb-4">
+            <div class="col-sm-6 col-xl-3">
+                <div class="metric-card-modern" onclick="filterBotLogsByLevel('ALL')" style="cursor: pointer;">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <div class="metric-label">Tổng Bản Ghi Bot</div>
+                            <div class="metric-value text-dark" id="bot-stat-total">0</div>
+                            <div class="metric-subtext">Toàn bộ thông điệp Bot</div>
+                        </div>
+                        <div class="card-icon-wrap icon-bg-blue">
+                            <i class="fa-solid fa-robot"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-xl-3">
+                <div class="metric-card-modern" onclick="filterBotLogsByLevel('ERROR')" style="cursor: pointer;">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <div class="metric-label">Lỗi Bot Chưa Xử Lý</div>
+                            <div class="metric-value text-danger font-weight-bold" id="bot-stat-unresolved">0</div>
+                            <div class="metric-subtext">Lệnh trượt, MT5 ngắt kết nối</div>
+                        </div>
+                        <div class="card-icon-wrap icon-bg-rose">
+                            <i class="fa-solid fa-triangle-exclamation"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-xl-3">
+                <div class="metric-card-modern" onclick="filterBotLogsByLevel('WARNING')" style="cursor: pointer;">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <div class="metric-label">Cảnh Báo Bot (Warning)</div>
+                            <div class="metric-value text-warning font-weight-bold" id="bot-stat-warning">0</div>
+                            <div class="metric-subtext">Giãn spread, vốn chạm ngưỡng</div>
+                        </div>
+                        <div class="card-icon-wrap icon-bg-amber">
+                            <i class="fa-solid fa-shield-halved"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-xl-3">
+                <div class="metric-card-modern" onclick="filterBotLogsByLevel('INFO')" style="cursor: pointer;">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <div class="metric-label">Thông Tin (Info)</div>
+                            <div class="metric-value text-success font-weight-bold" id="bot-stat-info">0</div>
+                            <div class="metric-subtext">Quét nến & khớp lệnh</div>
+                        </div>
+                        <div class="card-icon-wrap icon-bg-green">
+                            <i class="fa-solid fa-circle-check"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- BOT LOGS TABLE -->
+        <div class="au-card-clean mb-4">
+            <div class="card-title-wrap">
+                <div class="card-title-left">
+                    <i class="fa-solid fa-list-check text-primary fs-5"></i>
+                    <h5 class="font-weight-bold text-dark mb-0">Bảng Nhật Ký Hoạt Động & Lỗi Bot Trading</h5>
+                </div>
+                <div class="card-title-right">
+                    <select class="form-select form-select-sm shadow-none" id="select-bot-log-level" style="width: 125px; height: 38px;" onchange="filterBotLogsByLevel(this.value)">
+                        <option value="ALL">Tất cả</option>
+                        <option value="ERROR">Lỗi</option>
+                        <option value="WARNING">Cảnh báo</option>
+                        <option value="INFO">Thông tin</option>
+                    </select>
+                    <button class="btn btn-danger-soft btn-sm rounded-pill px-4 shadow-xs" style="height: 38px;" onclick="clearAllBotLogs()">
+                        <i class="fa-solid fa-trash-can"></i> Xóa Hết Log Bot
+                    </button>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table-clean" id="table-bot-logs">
+                    <thead>
+                        <tr>
+                            <th>Thời Điểm</th>
+                            <th>Mức Độ</th>
+                            <th>Phân Loại</th>
+                            <th>Ví / Cặp Tiền</th>
+                            <th>Nội Dung Thông Điệp</th>
+                            <th>Trạng Thái</th>
+                            <th class="text-end">Thao Tác</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tbody-bot-logs">
+                        <tr>
+                            <td colspan="7" class="text-center py-4 text-muted">
+                                <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải nhật ký Bot...
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <!-- PAGINATION 20/PAGE -->
+            <div id="pagination-bot-logs"></div>
+        </div>
+    </div>
+
+    <!-- ==================== TAB 2: CODE BACKEND LOGS ==================== -->
+    <div class="tab-pane fade" id="tab-code-logs" role="tabpanel">
+        <!-- CODE LOG STATS -->
+        <div class="row g-3 mb-4">
+            <div class="col-sm-6 col-xl-3">
+                <div class="metric-card-modern" onclick="filterCodeLogsByLevel('ALL')" style="cursor: pointer;">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <div class="metric-label">Tổng Lỗi Code</div>
+                            <div class="metric-value text-dark" id="code-stat-total">0</div>
+                            <div class="metric-subtext">Toàn bộ ngoại lệ phát sinh</div>
+                        </div>
+                        <div class="card-icon-wrap icon-bg-blue">
+                            <i class="fa-solid fa-code"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-xl-3">
+                <div class="metric-card-modern" onclick="filterCodeLogsByLevel('ERROR')" style="cursor: pointer;">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <div class="metric-label">Lỗi Code Chưa Xử Lý</div>
+                            <div class="metric-value text-danger font-weight-bold" id="code-stat-unresolved">0</div>
+                            <div class="metric-subtext">Cần lập trình viên fix code</div>
+                        </div>
+                        <div class="card-icon-wrap icon-bg-rose">
+                            <i class="fa-solid fa-bug"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-xl-3">
+                <div class="metric-card-modern" onclick="filterCodeLogsByLevel('CRITICAL')" style="cursor: pointer;">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <div class="metric-label">Nghiêm Trọng (Critical)</div>
+                            <div class="metric-value text-danger font-weight-bold" id="code-stat-critical">0</div>
+                            <div class="metric-subtext">Sập module, lỗi crash</div>
+                        </div>
+                        <div class="card-icon-wrap icon-bg-amber">
+                            <i class="fa-solid fa-skull-crossbones"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-xl-3">
+                <div class="metric-card-modern" onclick="filterCodeLogsByLevel('WARNING')" style="cursor: pointer;">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <div class="metric-label">Cảnh Báo Code</div>
+                            <div class="metric-value text-warning font-weight-bold" id="code-stat-warning">0</div>
+                            <div class="metric-subtext">Deprecation, Timeout nhẹ</div>
+                        </div>
+                        <div class="card-icon-wrap icon-bg-green">
+                            <i class="fa-solid fa-circle-exclamation"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- CODE LOGS TABLE -->
+        <div class="au-card-clean mb-4">
+            <div class="card-title-wrap">
+                <div class="card-title-left">
+                    <i class="fa-solid fa-bug text-danger fs-5"></i>
+                    <h5 class="font-weight-bold text-dark mb-0">Bảng Nhật Ký Báo Lỗi Code & Ngoại Lệ (Debug)</h5>
+                </div>
+                <div class="card-title-right">
+                    <select class="form-select form-select-sm shadow-none" id="select-code-log-level" style="width: 125px; height: 38px;" onchange="filterCodeLogsByLevel(this.value)">
+                        <option value="ALL">Tất cả</option>
+                        <option value="ERROR">Lỗi</option>
+                        <option value="CRITICAL">Nghiêm trọng</option>
+                        <option value="WARNING">Cảnh báo</option>
+                    </select>
+                    <button class="btn btn-danger-soft btn-sm rounded-pill px-4 shadow-xs" style="height: 38px;" onclick="clearAllCodeLogs()">
+                        <i class="fa-solid fa-trash-can"></i> Xóa Hết Log Code
+                    </button>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table-clean" id="table-code-logs">
+                    <thead>
+                        <tr>
+                            <th>Thời Điểm</th>
+                            <th>Mức Độ</th>
+                            <th>Loại Ngoại Lệ (Exception)</th>
+                            <th>Module & Dòng</th>
+                            <th>Endpoint / URL</th>
+                            <th>Nội Dung Lỗi Code</th>
+                            <th>Trạng Thái</th>
+                            <th class="text-end">Traceback / Xử Lý</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tbody-code-logs">
+                        <tr>
+                            <td colspan="8" class="text-center py-4 text-muted">
+                                <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải nhật ký Code...
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <!-- PAGINATION 20/PAGE -->
+            <div id="pagination-code-logs"></div>
+        </div>
+    </div>
+
+</div>
+{% endblock %}
+
+{% block modals %}
+<!-- BOT TRACEBACK MODAL -->
+<div class="modal fade" id="modal-bot-traceback" tabindex="-1" aria-labelledby="modalBotTracebackLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content rounded-4 border-0 shadow-lg">
+            <div class="modal-header border-bottom px-4 py-3 bg-dark text-white rounded-top-4">
+                <h5 class="modal-title font-weight-bold" id="modalBotTracebackLabel">
+                    <i class="fa-solid fa-robot text-primary me-2"></i> Chi Tiết Ngoại Lệ Bot (Bot Traceback)
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-4">
+                <div class="mb-3">
+                    <h6 class="font-weight-bold text-dark mb-1" id="bot-tb-message">Message</h6>
+                    <div class="small text-muted" id="bot-tb-meta">Meta info</div>
+                </div>
+                <pre class="bg-dark text-light p-3 rounded-3 small font-monospace" style="max-height: 400px; overflow-y: auto;" id="bot-tb-content"></pre>
+            </div>
+            <div class="modal-footer border-top px-4 py-3 bg-light rounded-bottom-4">
+                <button type="button" class="btn btn-secondary btn-sm rounded-pill px-3" data-bs-dismiss="modal">Đóng</button>
+                <button type="button" class="btn btn-success btn-sm rounded-pill px-4 shadow-sm" id="btn-bot-modal-resolve" onclick="resolveCurrentBotLog()">
+                    <i class="fa-solid fa-check me-1"></i> Đánh Dấu Đã Xử Lý
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- CODE ERROR TRACEBACK MODAL -->
+<div class="modal fade" id="modal-code-traceback" tabindex="-1" aria-labelledby="modalCodeTracebackLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content rounded-4 border-0 shadow-lg">
+            <div class="modal-header border-bottom px-4 py-3 bg-danger text-white rounded-top-4">
+                <h5 class="modal-title font-weight-bold" id="modalCodeTracebackLabel">
+                    <i class="fa-solid fa-bug text-warning me-2"></i> Chi Tiết Lỗi Code Backend (Python Stack Trace)
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-4">
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label small text-muted font-weight-bold mb-0">Loại Exception:</label>
+                        <div class="font-weight-bold text-danger fs-6" id="code-tb-exception-type">Exception</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small text-muted font-weight-bold mb-0">File & Dòng Lỗi:</label>
+                        <div class="font-monospace small font-weight-bold text-primary" id="code-tb-file-line">file.py:L0</div>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label small text-muted font-weight-bold mb-0">Thông Điệp Lỗi:</label>
+                        <div class="bg-light p-2 rounded border font-weight-bold text-dark small" id="code-tb-message">Error message</div>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label small text-muted font-weight-bold mb-0">URL Endpoint & Request Method:</label>
+                        <div class="small font-monospace text-secondary" id="code-tb-endpoint">GET /path/</div>
+                    </div>
+                </div>
+
+                <label class="form-label small text-muted font-weight-bold mb-1">Toàn Bộ Stack Trace (Python Traceback):</label>
+                <div class="bg-dark text-light p-3 rounded-4 shadow-inner" style="max-height: 450px; overflow-y: auto; font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 12.5px; line-height: 1.6;" id="code-tb-content">
+                </div>
+            </div>
+            <div class="modal-footer border-top px-4 py-3 bg-light rounded-bottom-4">
+                <button type="button" class="btn btn-secondary btn-sm rounded-pill px-3" data-bs-dismiss="modal">Đóng</button>
+                <button type="button" class="btn btn-success btn-sm rounded-pill px-4 shadow-sm" id="btn-code-modal-resolve" onclick="resolveCurrentCodeLog()">
+                    <i class="fa-solid fa-check me-1"></i> Đánh Dấu Đã Fix Xong
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    let currentBotLogs = [];
+    let currentCodeLogs = [];
+    let currentBotPage = 1;
+    let currentCodePage = 1;
+    const LOGS_PAGE_SIZE = 20;
+    let selectedBotLogId = null;
+    let selectedCodeLogId = null;
+    let currentBotFilter = 'ALL';
+    let currentCodeFilter = 'ALL';
+    let currentActiveTab = 'bot'; // 'bot' or 'code'
+
+    function changeBotLogsPage(page) {
+        currentBotPage = page;
+        renderBotLogsTable(currentBotLogs);
+    }
+
+    function changeCodeLogsPage(page) {
+        currentCodePage = page;
+        renderCodeLogsTable(currentCodeLogs);
+    }
+
+    let highlightedLogHandled = false;
+
+    function checkAndHighlightLogFromUrl() {
+        if (highlightedLogHandled) return;
+        const urlParams = new URLSearchParams(window.location.search);
+        const targetLogId = urlParams.get('log_id');
+        const targetTab = urlParams.get('tab') || 'bot';
+
+        if (targetTab === 'code' && targetLogId && currentCodeLogs.length > 0) {
+            highlightedLogHandled = true;
+            const codeBtn = document.getElementById('tab-code-logs-btn');
+            if (codeBtn) {
+                const bsTab = new bootstrap.Tab(codeBtn);
+                bsTab.show();
+                currentActiveTab = 'code';
+            }
+            const idx = currentCodeLogs.findIndex(x => String(x.id) === String(targetLogId));
+            if (idx !== -1) {
+                currentCodePage = Math.floor(idx / LOGS_PAGE_SIZE) + 1;
+                renderCodeLogsTable(currentCodeLogs);
+                setTimeout(() => {
+                    const row = document.getElementById(`code-log-row-${targetLogId}`);
+                    if (row) {
+                        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        row.classList.add('highlight-flash-row');
+                        setTimeout(() => row.classList.remove('highlight-flash-row'), 4000);
+                    }
+                }, 250);
+            }
+        } else if (targetLogId && currentBotLogs.length > 0) {
+            highlightedLogHandled = true;
+            const botBtn = document.getElementById('tab-bot-logs-btn');
+            if (botBtn) {
+                const bsTab = new bootstrap.Tab(botBtn);
+                bsTab.show();
+                currentActiveTab = 'bot';
+            }
+            const idx = currentBotLogs.findIndex(x => String(x.id) === String(targetLogId));
+            if (idx !== -1) {
+                currentBotPage = Math.floor(idx / LOGS_PAGE_SIZE) + 1;
+                renderBotLogsTable(currentBotLogs);
+                setTimeout(() => {
+                    const row = document.getElementById(`log-row-${targetLogId}`);
+                    if (row) {
+                        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        row.classList.add('highlight-flash-row');
+                        setTimeout(() => row.classList.remove('highlight-flash-row'), 4000);
+                    }
+                }, 250);
+            }
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        loadBotLogs();
+        loadCodeLogs();
+        setInterval(() => {
+            if (currentActiveTab === 'bot') {
+                loadBotLogs();
+            } else {
+                loadCodeLogs();
+            }
+        }, 5000);
+    });
+
+    function switchTab(tab) {
+        currentActiveTab = tab;
+        if (tab === 'bot') loadBotLogs();
+        else loadCodeLogs();
+    }
+
+    function refreshCurrentTab() {
+        if (currentActiveTab === 'bot') loadBotLogs();
+        else loadCodeLogs();
+    }
+
+    /* ==================== 1. BOT LOGS LOGIC ==================== */
+    async function loadBotLogs() {
+        try {
+            const res = await fetch(`/api/admin/logs/?level=${currentBotFilter}`);
+            const data = await res.json();
+            currentBotLogs = data.logs || [];
+            
+            document.getElementById('bot-stat-total').innerText = data.total || currentBotLogs.length;
+            document.getElementById('bot-stat-unresolved').innerText = data.unresolved_errors || 0;
+            
+            const warningCount = currentBotLogs.filter(l => l.level === 'WARNING').length;
+            const infoCount = currentBotLogs.filter(l => l.level === 'INFO').length;
+            document.getElementById('bot-stat-warning').innerText = warningCount;
+            document.getElementById('bot-stat-info').innerText = infoCount;
+
+            renderBotLogsTable(currentBotLogs);
+            checkAndHighlightLogFromUrl();
+        } catch (e) {
+            console.error("Error loading bot logs:", e);
+        }
+    }
+
+    function renderBotLogsTable(logs) {
+        const tbody = document.getElementById('tbody-bot-logs');
+        if (!logs || logs.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="7" class="text-center py-4 text-muted"><i class="fa-solid fa-check-circle text-success me-2"></i> Không có bản ghi log Bot nào</td></tr>`;
+            renderPaginationComponent('pagination-bot-logs', 0, 1, LOGS_PAGE_SIZE, 'changeBotLogsPage');
+            return;
+        }
+
+        const totalPages = Math.ceil(logs.length / LOGS_PAGE_SIZE) || 1;
+        if (currentBotPage > totalPages) currentBotPage = totalPages;
+        if (currentBotPage < 1) currentBotPage = 1;
+
+        const startIndex = (currentBotPage - 1) * LOGS_PAGE_SIZE;
+        const paged = logs.slice(startIndex, startIndex + LOGS_PAGE_SIZE);
+
+        tbody.innerHTML = paged.map(l => {
+            let levelBadge = 'bg-info';
+            if (l.level === 'ERROR' || l.level === 'CRITICAL') levelBadge = 'bg-danger';
+            else if (l.level === 'WARNING') levelBadge = 'bg-warning text-dark';
+
+            return `
+                <tr id="log-row-${l.id}">
+                    <td class="small text-muted font-monospace">${l.created_at}</td>
+                    <td><span class="badge ${levelBadge} font-weight-bold">${l.level}</span></td>
+                    <td><span class="badge bg-light text-secondary border">${l.category_display || l.category}</span></td>
+                    <td><small class="font-weight-bold text-dark">${l.wallet_name || 'Hệ thống'} ${l.symbol ? `[${l.symbol}]` : ''}</small></td>
+                    <td><div class="text-truncate" style="max-width: 320px;" title="${l.message}">${l.message}</div></td>
+                    <td>
+                        <span class="badge ${l.is_resolved ? 'bg-success' : 'bg-secondary'}">
+                            ${l.is_resolved ? '<i class="fa-solid fa-check me-1"></i> Đã xử lý' : 'Chưa xử lý'}
+                        </span>
+                    </td>
+                    <td class="text-end text-nowrap">
+                        <div class="d-inline-flex align-items-center gap-1">
+                            ${l.traceback ? `
+                                <button class="btn btn-sm btn-outline-info btn-action-icon" onclick="viewBotTraceback(${l.id})" title="Xem Traceback chi tiết">
+                                    <i class="fa-solid fa-code"></i>
+                                </button>
+                            ` : ''}
+                            ${!l.is_resolved && (l.level === 'ERROR' || l.level === 'CRITICAL') ? `
+                                <button class="btn btn-sm btn-outline-success btn-action-icon" onclick="resolveBotLog(${l.id})" title="Đánh dấu đã xử lý">
+                                    <i class="fa-solid fa-check"></i>
+                                </button>
+                            ` : ''}
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+
+        renderPaginationComponent('pagination-bot-logs', logs.length, currentBotPage, LOGS_PAGE_SIZE, 'changeBotLogsPage');
+    }
+
+    function filterBotLogsByLevel(level) {
+        currentBotFilter = level;
+        document.getElementById('select-bot-log-level').value = level;
+        loadBotLogs();
+    }
+
+    function viewBotTraceback(id) {
+        const log = currentBotLogs.find(l => l.id === id);
+        if (!log) return;
+        selectedBotLogId = id;
+        document.getElementById('bot-tb-message').innerText = log.message;
+        document.getElementById('bot-tb-meta').innerText = `[${log.level}] ${log.category} • ${log.created_at} • Ví: ${log.wallet_name || 'Hệ thống'}`;
+        document.getElementById('bot-tb-content').innerText = log.traceback || 'Không có traceback chi tiết.';
+        
+        const resolveBtn = document.getElementById('btn-bot-modal-resolve');
+        if (log.is_resolved) {
+            resolveBtn.classList.add('d-none');
+        } else {
+            resolveBtn.classList.remove('d-none');
+        }
+
+        const modal = new bootstrap.Modal(document.getElementById('modal-bot-traceback'));
+        modal.show();
+    }
+
+    async function resolveBotLog(id) {
+        try {
+            const res = await fetch(`/api/admin/logs/${id}/resolve/`, {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCsrfToken() }
+            });
+            const data = await res.json();
+            if (data.success) {
+                showToast(data.message, 'success');
+                loadBotLogs();
+            }
+        } catch (e) {
+            showToast('Lỗi đánh dấu xử lý log bot', 'error');
+        }
+    }
+
+    async function resolveCurrentBotLog() {
+        if (selectedBotLogId) {
+            await resolveBotLog(selectedBotLogId);
+            bootstrap.Modal.getInstance(document.getElementById('modal-bot-traceback')).hide();
+        }
+    }
+
+    async function clearAllBotLogs() {
+        if (!confirm('Bạn có chắc chắn muốn xóa toàn bộ nhật ký Bot trong Database?')) return;
+        try {
+            const res = await fetch('/api/admin/logs/clear/', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCsrfToken() }
+            });
+            const data = await res.json();
+            if (data.success) {
+                showToast(data.message, 'success');
+                loadBotLogs();
+            }
+        } catch (e) {
+            showToast('Lỗi dọn dẹp log bot', 'error');
+        }
+    }
+
+    /* ==================== 2. CODE BACKEND LOGS LOGIC ==================== */
+    async function loadCodeLogs() {
+        try {
+            const res = await fetch(`/api/admin/logs/code/?level=${currentCodeFilter}`);
+            const data = await res.json();
+            currentCodeLogs = data.logs || [];
+            
+            document.getElementById('code-stat-total').innerText = data.total || currentCodeLogs.length;
+            document.getElementById('code-stat-unresolved').innerText = data.unresolved_errors || 0;
+            document.getElementById('code-stat-critical').innerText = data.error_count || 0;
+            document.getElementById('code-stat-warning').innerText = data.warning_count || 0;
+
+            renderCodeLogsTable(currentCodeLogs);
+            checkAndHighlightLogFromUrl();
+        } catch (e) {
+            console.error("Error loading code logs:", e);
+        }
+    }
+
+    function renderCodeLogsTable(logs) {
+        const tbody = document.getElementById('tbody-code-logs');
+        if (!logs || logs.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="8" class="text-center py-4 text-muted"><i class="fa-solid fa-circle-check text-success me-2"></i> Hệ thống code hoạt động hoàn hảo, không có lỗi code nào</td></tr>`;
+            renderPaginationComponent('pagination-code-logs', 0, 1, LOGS_PAGE_SIZE, 'changeCodeLogsPage');
+            return;
+        }
+
+        const totalPages = Math.ceil(logs.length / LOGS_PAGE_SIZE) || 1;
+        if (currentCodePage > totalPages) currentCodePage = totalPages;
+        if (currentCodePage < 1) currentCodePage = 1;
+
+        const startIndex = (currentCodePage - 1) * LOGS_PAGE_SIZE;
+        const paged = logs.slice(startIndex, startIndex + LOGS_PAGE_SIZE);
+
+        tbody.innerHTML = paged.map(l => {
+            let levelBadge = 'bg-danger';
+            if (l.level === 'CRITICAL') levelBadge = 'bg-dark text-danger border border-danger';
+            else if (l.level === 'WARNING') levelBadge = 'bg-warning text-dark';
+            else if (l.level === 'INFO') levelBadge = 'bg-info';
+
+            const shortModule = l.module ? l.module.split('/').slice(-2).join('/') : 'system';
+
+            return `
+                <tr id="code-log-row-${l.id}">
+                    <td class="small text-muted font-monospace">${l.created_at}</td>
+                    <td><span class="badge ${levelBadge} font-weight-bold">${l.level}</span></td>
+                    <td><span class="badge bg-light text-danger border font-monospace font-weight-bold">${l.exception_type || 'Error'}</span></td>
+                    <td>
+                        <div class="small font-monospace font-weight-bold text-primary text-truncate" style="max-width: 180px;" title="${l.module}">
+                            ${shortModule}
+                        </div>
+                        ${l.line_number ? `<small class="text-muted font-monospace">Dòng: ${l.line_number}</small>` : ''}
+                    </td>
+                    <td>
+                        ${l.request_path ? `
+                            <span class="badge bg-light text-dark border font-monospace">${l.request_method || 'GET'}</span>
+                            <small class="font-monospace text-secondary text-truncate d-block" style="max-width: 140px;" title="${l.request_path}">${l.request_path}</small>
+                        ` : '<span class="text-muted small">Background Worker</span>'}
+                    </td>
+                    <td><div class="text-truncate font-weight-bold text-dark" style="max-width: 250px;" title="${l.message}">${l.message}</div></td>
+                    <td>
+                        <span class="badge ${l.is_resolved ? 'bg-success' : 'bg-danger'}">
+                            ${l.is_resolved ? '<i class="fa-solid fa-check me-1"></i> Đã fix' : 'Chưa xử lý'}
+                        </span>
+                    </td>
+                    <td class="text-end text-nowrap">
+                        <div class="d-inline-flex align-items-center gap-1">
+                            <button class="btn btn-sm btn-outline-danger btn-action-icon" onclick="viewCodeTraceback(${l.id})" title="Xem Stack Trace chi tiết">
+                                <i class="fa-solid fa-code"></i>
+                            </button>
+                            ${!l.is_resolved ? `
+                                <button class="btn btn-sm btn-outline-success btn-action-icon" onclick="resolveCodeLog(${l.id})" title="Đánh dấu đã fix xong">
+                                    <i class="fa-solid fa-check"></i>
+                                </button>
+                            ` : ''}
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+
+        renderPaginationComponent('pagination-code-logs', logs.length, currentCodePage, LOGS_PAGE_SIZE, 'changeCodeLogsPage');
+    }
+
+    function filterCodeLogsByLevel(level) {
+        currentCodeFilter = level;
+        document.getElementById('select-code-log-level').value = level;
+        loadCodeLogs();
+    }
+
+    function viewCodeTraceback(id) {
+        const log = currentCodeLogs.find(l => l.id === id);
+        if (!log) return;
+        selectedCodeLogId = id;
+
+        document.getElementById('code-tb-exception-type').innerText = log.exception_type || 'UnknownException';
+        document.getElementById('code-tb-file-line').innerText = `${log.module || 'N/A'} ${log.line_number ? '(Line ' + log.line_number + ')' : ''}`;
+        document.getElementById('code-tb-message').innerText = log.message;
+        document.getElementById('code-tb-endpoint').innerText = log.request_path ? `${log.request_method || 'GET'} ${log.request_path}` : 'Background Thread / Worker Process';
+
+        // Format highlight traceback
+        const terminal = document.getElementById('code-tb-content');
+        if (log.traceback && log.traceback.trim() !== '') {
+            let escaped = log.traceback.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            let lines = escaped.split('\n').map(line => {
+                if (line.includes('File ') || line.includes('line ')) {
+                    return `<span style="color: #4dabf7; font-weight: bold;">${line}</span>`;
+                } else if (line.includes('Error:') || line.includes('Exception:')) {
+                    return `<span style="color: #ff6b6b; font-weight: bold;">${line}</span>`;
+                }
+                return `<span style="color: #ced4da;">${line}</span>`;
+            }).join('\n');
+            terminal.innerHTML = `<pre class="m-0" style="white-space: pre-wrap; word-break: break-all;">${lines}</pre>`;
+        } else {
+            terminal.innerHTML = `<div class="text-muted p-2">Không có traceback chi tiết cho bản ghi này.</div>`;
+        }
+
+        const resolveBtn = document.getElementById('btn-code-modal-resolve');
+        if (log.is_resolved) {
+            resolveBtn.classList.add('d-none');
+        } else {
+            resolveBtn.classList.remove('d-none');
+        }
+
+        const modal = new bootstrap.Modal(document.getElementById('modal-code-traceback'));
+        modal.show();
+    }
+
+    async function resolveCodeLog(id) {
+        try {
+            const res = await fetch(`/api/admin/logs/code/${id}/resolve/`, {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCsrfToken() }
+            });
+            const data = await res.json();
+            if (data.success) {
+                showToast(data.message, 'success');
+                loadCodeLogs();
+            }
+        } catch (e) {
+            showToast('Lỗi đánh dấu xử lý log code', 'error');
+        }
+    }
+
+    async function resolveCurrentCodeLog() {
+        if (selectedCodeLogId) {
+            await resolveCodeLog(selectedCodeLogId);
+            bootstrap.Modal.getInstance(document.getElementById('modal-code-traceback')).hide();
+        }
+    }
+
+    async function clearAllCodeLogs() {
+        if (!confirm('Bạn có chắc chắn muốn xóa toàn bộ nhật ký lỗi Code trong Database?')) return;
+        try {
+            const res = await fetch('/api/admin/logs/code/clear/', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCsrfToken() }
+            });
+            const data = await res.json();
+            if (data.success) {
+                showToast(data.message, 'success');
+                loadCodeLogs();
+            }
+        } catch (e) {
+            showToast('Lỗi dọn dẹp log code', 'error');
+        }
+    }
+</script>
+{% endblock %}

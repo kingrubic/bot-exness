@@ -1,0 +1,285 @@
+{% extends 'admin/layout/master.html' %}
+
+{% block title %}Master Data - Máy Chủ Exness{% endblock %}
+
+{% block content %}
+<!-- PAGE HEADER & ACTIONS -->
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="font-weight-bold text-dark mb-1">Danh Mục Máy Chủ Sàn Exness (Master Data)</h2>
+        <p class="text-muted small mb-0">Quản lý danh sách các server kết nối MetaTrader 5 & MetaTrader 4 (Real & Trial)</p>
+    </div>
+    <div>
+        <button class="btn btn-primary btn-sm rounded-pill px-3 shadow-sm" data-bs-toggle="modal" data-bs-target="#modal-server" onclick="openAddServerModal()">
+            <i class="fa-solid fa-plus me-1"></i> Thêm Server Mới
+        </button>
+    </div>
+</div>
+
+<!-- SERVERS TABLE -->
+<div class="au-card-clean mb-4">
+    <div class="card-title-wrap">
+        <div class="card-title-left">
+            <i class="fa-solid fa-network-wired text-primary fs-5"></i>
+            <h5 class="font-weight-bold text-dark mb-0">Danh Sách Server Đã Cấu Hình</h5>
+        </div>
+        <div class="card-title-right">
+            <!-- Modern Filter Pills by Category -->
+            <div class="filter-pills-group" id="server-filter-pills">
+                <button type="button" class="filter-pill-btn active" data-type="ALL" onclick="selectServerTypeFilter('ALL', this)">
+                    <i class="fa-solid fa-layer-group"></i> Tất Cả
+                </button>
+                <button type="button" class="filter-pill-btn pill-real" data-type="REAL" onclick="selectServerTypeFilter('REAL', this)">
+                    <i class="fa-solid fa-circle-dollar-to-slot text-success"></i> Real
+                </button>
+                <button type="button" class="filter-pill-btn pill-demo" data-type="DEMO" onclick="selectServerTypeFilter('DEMO', this)">
+                    <i class="fa-solid fa-flask text-warning"></i> Demo
+                </button>
+            </div>
+            <!-- Search input -->
+            <div class="custom-search-box search-sm">
+                <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                <input type="text" class="search-input" id="search-servers" placeholder="Tìm tên máy chủ..." oninput="filterServersTable()">
+            </div>
+        </div>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table-clean" id="table-servers">
+            <thead>
+                <tr>
+                    <th style="width: 65px;">STT</th>
+                    <th style="min-width: 200px;">Tên Máy Chủ (Server Name)</th>
+                    <th style="width: 120px;">Phân Loại</th>
+                    <th style="min-width: 240px;">Mô Tả / Ghi Chú</th>
+                    <th style="width: 100px;">Thứ Tự</th>
+                    <th style="width: 130px;">Trạng Thái</th>
+                    <th class="text-end" style="width: 110px;">Thao Tác</th>
+                </tr>
+            </thead>
+            <tbody id="tbody-servers">
+                <tr>
+                    <td colspan="7" class="text-center py-4 text-muted">
+                        <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải danh sách server...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- PAGINATION 20/PAGE -->
+    <div id="pagination-servers"></div>
+</div>
+{% endblock %}
+
+{% block modals %}
+<!-- ADD / EDIT SERVER MODAL -->
+<div class="modal fade" id="modal-server" tabindex="-1" aria-labelledby="modalServerLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content rounded-4 border-0 shadow-lg">
+            <div class="modal-header border-bottom px-4 py-3 bg-light rounded-top-4">
+                <h5 class="modal-title font-weight-bold text-dark" id="modalServerLabel">
+                    <i class="fa-solid fa-network-wired text-primary me-2"></i> Thông Tin Server Exness
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form id="form-server" onsubmit="saveServer(event)">
+                <input type="hidden" id="server-id" name="server_id" value="">
+                <div class="modal-body p-4">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <label class="form-label font-weight-bold small text-secondary">Tên Máy Chủ (Server Name) <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="server-name" name="server_name" placeholder="Exness-MT5Real" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label font-weight-bold small text-secondary">Phân Loại Server</label>
+                            <select class="form-select" id="server-type" name="server_type">
+                                <option value="REAL">Real</option>
+                                <option value="DEMO">Demo</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label font-weight-bold small text-secondary">Thứ Tự Sắp Xếp</label>
+                            <input type="number" class="form-control" id="server-order" name="order" value="10">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label font-weight-bold small text-secondary">Mô Tả Ghi Chú</label>
+                            <input type="text" class="form-control" id="server-description" name="description" placeholder="Máy chủ giao dịch thật MT5">
+                        </div>
+                        <div class="col-12">
+                            <label class="modern-switch mt-2">
+                                <input type="checkbox" id="server-is-active" name="is_active" checked>
+                                <span class="modern-switch-slider"></span>
+                                <span class="modern-switch-label ms-2">Đang Hoạt Động (Active)</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-top px-4 py-3 bg-light rounded-bottom-4">
+                    <button type="button" class="btn btn-secondary btn-sm rounded-pill px-3" data-bs-dismiss="modal">Hủy</button>
+                    <button type="submit" class="btn btn-primary btn-sm rounded-pill px-4 shadow-sm">
+                        <i class="fa-solid fa-floppy-disk me-1"></i> Lưu Server
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', loadServers);
+
+    let serverDataList = [];
+    let currentServerPage = 1;
+    const SERVER_PAGE_SIZE = 20;
+
+    async function loadServers() {
+        try {
+            const res = await fetch('/api/admin/master-data/');
+            const data = await res.json();
+            serverDataList = data.servers || [];
+            filterServersTable(true);
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
+    let currentServerTypeFilter = 'ALL';
+
+    function selectServerTypeFilter(type, btn) {
+        currentServerTypeFilter = type;
+        document.querySelectorAll('#server-filter-pills .filter-pill-btn').forEach(b => b.classList.remove('active'));
+        if (btn) btn.classList.add('active');
+        filterServersTable(true);
+    }
+
+    function changeServerPage(page) {
+        currentServerPage = page;
+        filterServersTable(false);
+    }
+
+    function filterServersTable(resetPage = true) {
+        if (resetPage) currentServerPage = 1;
+        const query = (document.getElementById('search-servers')?.value || '').toLowerCase().trim();
+        const typeFilter = currentServerTypeFilter || 'ALL';
+
+        const filtered = serverDataList.filter(s => {
+            const matchQuery = !query || 
+                (s.server_name && s.server_name.toLowerCase().includes(query)) ||
+                (s.description && s.description.toLowerCase().includes(query));
+            const matchType = (typeFilter === 'ALL') || (s.server_type === typeFilter);
+            return matchQuery && matchType;
+        });
+
+        const tbody = document.getElementById('tbody-servers');
+        if (!tbody) return;
+
+        if (filtered.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="7" class="text-center py-4 text-muted"><i class="fa-solid fa-circle-info me-1"></i> Không tìm thấy server nào phù hợp với bộ lọc</td></tr>`;
+            renderPaginationComponent('pagination-servers', 0, 1, SERVER_PAGE_SIZE, 'changeServerPage');
+            return;
+        }
+
+        const totalPages = Math.ceil(filtered.length / SERVER_PAGE_SIZE) || 1;
+        if (currentServerPage > totalPages) currentServerPage = totalPages;
+        if (currentServerPage < 1) currentServerPage = 1;
+
+        const startIndex = (currentServerPage - 1) * SERVER_PAGE_SIZE;
+        const pagedItems = filtered.slice(startIndex, startIndex + SERVER_PAGE_SIZE);
+
+        tbody.innerHTML = pagedItems.map((s, idx) => `
+            <tr>
+                <td>${startIndex + idx + 1}</td>
+                <td class="font-weight-bold text-dark">${s.server_name}</td>
+                <td><span class="badge ${s.server_type === 'REAL' ? 'badge-real' : 'badge-demo'}">${s.server_type === 'REAL' ? 'Real' : 'Demo'}</span></td>
+                <td class="text-muted small">${s.description || '---'}</td>
+                <td>${s.order}</td>
+                <td><span class="badge ${s.is_active ? 'bg-success' : 'bg-secondary'}">${s.is_active ? 'Hoạt động' : 'Tắt'}</span></td>
+                <td class="text-end text-nowrap">
+                    <div class="d-inline-flex align-items-center gap-1">
+                        <button class="btn btn-sm btn-outline-primary btn-action-icon" onclick="openEditServerModal(${s.id})" title="Chỉnh sửa">
+                            <i class="fa-solid fa-pen"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-danger btn-action-icon" onclick="deleteServer(${s.id})" title="Xóa">
+                            <i class="fa-solid fa-trash"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+
+        renderPaginationComponent('pagination-servers', filtered.length, currentServerPage, SERVER_PAGE_SIZE, 'changeServerPage');
+    }
+
+    function openAddServerModal() {
+        document.getElementById('server-id').value = '';
+        document.getElementById('server-name').value = '';
+        document.getElementById('server-type').value = 'REAL';
+        document.getElementById('server-order').value = '10';
+        document.getElementById('server-description').value = '';
+        document.getElementById('server-is-active').checked = true;
+    }
+
+    function openEditServerModal(id) {
+        const s = serverDataList.find(x => x.id === id);
+        if (!s) return;
+        document.getElementById('server-id').value = s.id;
+        document.getElementById('server-name').value = s.server_name;
+        document.getElementById('server-type').value = s.server_type;
+        document.getElementById('server-order').value = s.order;
+        document.getElementById('server-description').value = s.description;
+        document.getElementById('server-is-active').checked = s.is_active;
+        const modal = new bootstrap.Modal(document.getElementById('modal-server'));
+        modal.show();
+    }
+
+    async function saveServer(e) {
+        e.preventDefault();
+        const id = document.getElementById('server-id').value;
+        const payload = {
+            server_name: document.getElementById('server-name').value,
+            server_type: document.getElementById('server-type').value,
+            order: parseInt(document.getElementById('server-order').value) || 10,
+            description: document.getElementById('server-description').value,
+            is_active: document.getElementById('server-is-active').checked
+        };
+
+        const url = id ? `/api/admin/servers/${id}/` : '/api/admin/servers/';
+        const method = id ? 'PUT' : 'POST';
+
+        try {
+            const res = await fetch(url, {
+                method: method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.success) {
+                showToast(data.message, 'success');
+                bootstrap.Modal.getInstance(document.getElementById('modal-server')).hide();
+                loadServers();
+            } else {
+                showToast(data.error || 'Có lỗi xảy ra', 'error');
+            }
+        } catch (e) {
+            showToast('Lỗi lưu server', 'error');
+        }
+    }
+
+    async function deleteServer(id) {
+        if (!confirm('Bạn có chắc chắn muốn xóa Server này khỏi Master Data?')) return;
+        try {
+            const res = await fetch(`/api/admin/servers/${id}/`, { method: 'DELETE' });
+            const data = await res.json();
+            if (data.success) {
+                showToast(data.message, 'success');
+                loadServers();
+            }
+        } catch (e) {
+            showToast('Lỗi xóa server', 'error');
+        }
+    }
+</script>
+{% endblock %}

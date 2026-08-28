@@ -1,224 +1,565 @@
-{% extends 'base.html' %}
-{% load static %}
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no"/>
+    <title>{{ wallet.name }} | Chi Tiết Ví & Dự Báo AI Exness</title>
+    
+    <!-- CoolAdmin & Custom CSS -->
+    <link href="/static/cooladmin/css/font-face.css" rel="stylesheet" media="all"/>
+    <link href="/static/cooladmin/vendor/fontawesome-7.3.1/css/all.min.css" rel="stylesheet" media="all"/>
+    <link href="/static/cooladmin/vendor/bootstrap-5.3.8.min.css" rel="stylesheet" media="all"/>
+    <link href="/static/cooladmin/css/theme.css" rel="stylesheet" media="all"/>
+    <link href="/static/cooladmin/css/app.css" rel="stylesheet" media="all"/>
+    <link href="/static/css/admin_custom.css" rel="stylesheet" media="all"/>
+</head>
+<body class="bg-light">
+    <!-- TOP NAVBAR -->
+    <nav class="navbar navbar-expand-lg navbar-white bg-white border-bottom shadow-sm py-3 sticky-top">
+        <div class="container">
+            <a class="sidebar-brand-custom" href="/">
+                <div class="sidebar-logo-icon"><i class="fa-solid fa-chart-line"></i></div>
+                <div>
+                    <div class="sidebar-brand-text text-dark">EXNESS AUTO-TRADE</div>
+                    <div class="sidebar-brand-sub text-muted">AI TRADING PORTAL</div>
+                </div>
+            </a>
 
-{% block title %}Chi Tiết Ví {{ wallet.name }} - Exness Auto Trade AI{% endblock %}
+            <div class="d-flex align-items-center gap-2">
+                <a href="/" class="btn btn-outline-secondary btn-sm rounded-pill px-3">
+                    <i class="fa-solid fa-arrow-left me-1"></i> Danh Sách Ví
+                </a>
+                {% if request.user.is_authenticated and request.user.is_staff %}
+                <a href="{% url 'admin_overview' %}" class="btn btn-primary btn-sm rounded-pill px-3 shadow-sm">
+                    <i class="fa-solid fa-gauge-high me-1"></i> Bảng Quản Trị
+                </a>
+                {% else %}
+                <a href="{% url 'login_view' %}" class="btn btn-outline-primary btn-sm rounded-pill px-3 shadow-sm">
+                    <i class="fa-solid fa-lock me-1"></i> Đăng Nhập
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </nav>
 
-{% block content %}
-<!-- Breadcrumb & Header -->
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
-  <div>
-    <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.25rem;">
-      <a href="{% url 'home' %}" style="color: var(--accent-cyan); text-decoration: none;">&larr; Quay lại Trang Chủ (Danh sách ví)</a>
+    <div class="container py-4">
+        <!-- WALLET HEADER INFO -->
+        <div class="d-flex flex-wrap justify-content-between align-items-center mb-4">
+            <div>
+                <div class="d-flex align-items-center gap-2 mb-1">
+                    <span class="badge {% if wallet.account_type == 'REAL' %}badge-real{% elif wallet.account_type == 'DEMO' %}badge-demo{% else %}badge-sim{% endif %}">
+                        {{ wallet.get_account_type_display }}
+                    </span>
+                    <span class="badge {% if wallet.bot_status == 'RUNNING' %}bg-success{% elif wallet.bot_status == 'PAUSED' %}bg-warning text-dark{% else %}bg-danger{% endif %}">
+                        {{ wallet.get_bot_status_display }}
+                    </span>
+                </div>
+                <h2 class="font-weight-bold text-dark mb-0">{{ wallet.name }}</h2>
+                <small class="text-muted font-monospace">MT5 Login: #{{ wallet.mt5_login }} &bull; Server: {{ wallet.mt5_server }} &bull; Đòn bẩy: 1:{{ wallet.leverage }}</small>
+            </div>
+            <div class="d-flex gap-2 mt-3 mt-md-0">
+                <button class="btn btn-outline-success btn-sm rounded-pill px-3 shadow-sm" onclick="exportTradeHistoryCSV()">
+                    <i class="fa-solid fa-file-csv me-1"></i> Xuất Báo Cáo CSV
+                </button>
+            </div>
+        </div>
+
+        <!-- WALLET FINANCIAL METRICS -->
+        <div class="row g-3 mb-4">
+            <div class="col-sm-6 col-xl-3">
+                <div class="metric-card-modern">
+                    <div class="metric-label">Số Dư (Balance)</div>
+                    <div class="metric-value text-dark" id="w-balance">${{ wallet.balance }}</div>
+                    <div class="metric-subtext">Ban đầu: ${{ wallet.initial_balance }}</div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-xl-3">
+                <div class="metric-card-modern">
+                    <div class="metric-label">Vốn Khả Dụng (Equity)</div>
+                    <div class="metric-value text-primary" id="w-equity">${{ wallet.equity }}</div>
+                    <div class="metric-subtext">Margin an toàn</div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-xl-3">
+                <div class="metric-card-modern">
+                    <div class="metric-label">Lãi/Lỗ Tạm Tính (Floating)</div>
+                    <div class="metric-value font-weight-bold {% if wallet.floating_pnl >= 0 %}text-success{% else %}text-danger{% endif %}" id="w-floating">
+                        {% if wallet.floating_pnl >= 0 %}+{% endif %}${{ wallet.floating_pnl }}
+                    </div>
+                    <div class="metric-subtext"><span id="w-pos-count">{{ wallet.positions.count }}</span> lệnh đang chạy</div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-xl-3">
+                <div class="metric-card-modern">
+                    <div class="metric-label">Tỷ Lệ Thắng (Win Rate)</div>
+                    <div class="metric-value text-success font-weight-bold" id="w-winrate">{{ wallet.win_rate }}%</div>
+                    <div class="metric-subtext">PF: {{ wallet.profit_factor }} | MaxDD: {{ wallet.max_drawdown }}%</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI FORWARD MARKET FORECAST CARDS -->
+        <div class="au-card-clean mb-4">
+            <div class="card-title-wrap">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="fa-solid fa-brain text-warning"></i>
+                    <h5 class="font-weight-bold text-dark mb-0">Dự Báo & Phân Tích Bước Giá Kế Tiếp Của Bot (Forward Market Forecast)</h5>
+                </div>
+            </div>
+
+            <div id="forecasts-container" class="row g-4">
+                <div class="col-12 text-center py-3 text-muted">
+                    <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải phân tích thị trường tiếp theo...
+                </div>
+            </div>
+        </div>
+
+        <!-- ACTIVE OPEN POSITIONS -->
+        <div class="au-card-clean mb-4">
+            <div class="card-title-wrap">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="fa-solid fa-layer-group text-primary"></i>
+                    <h5 class="font-weight-bold text-dark mb-0">Các Vị Thế Đang Mở Của Ví</h5>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table-clean">
+                    <thead>
+                        <tr>
+                            <th>Ticket</th>
+                            <th>Cặp Tiền</th>
+                            <th>Loại Lệnh</th>
+                            <th>Khối Lượng</th>
+                            <th>Giá Vào</th>
+                            <th>Giá Hiện Tại</th>
+                            <th>SL / TP</th>
+                            <th>Lãi/Lỗ ($)</th>
+                            <th>Trailing / BE</th>
+                            <th class="text-end">Thao Tác</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tbody-wallet-positions">
+                        <tr>
+                            <td colspan="10" class="text-center py-3 text-muted">Đang tải vị thế mở...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <!-- PAGINATION 20/PAGE -->
+            <div id="pagination-wallet-positions"></div>
+        </div>
+
+        <!-- AI TRADING PLANS -->
+        <div class="au-card-clean mb-4">
+            <div class="card-title-wrap">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="fa-solid fa-lightbulb text-warning"></i>
+                    <h5 class="font-weight-bold text-dark mb-0">Kế Hoạch Giao Dịch AI Của Ví Này</h5>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table-clean">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Cặp / Khung</th>
+                            <th>Hướng</th>
+                            <th>Vùng Entry</th>
+                            <th>Stop Loss</th>
+                            <th>Take Profit</th>
+                            <th>Tỷ Lệ R:R</th>
+                            <th>Lot Dự Tính</th>
+                            <th>Trạng Thái</th>
+                            <th>Lý Do Phân Tích</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tbody-wallet-plans">
+                        <tr>
+                            <td colspan="10" class="text-center py-3 text-muted">Đang tải kế hoạch AI...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <!-- PAGINATION 20/PAGE -->
+            <div id="pagination-wallet-plans"></div>
+        </div>
+
+        <!-- CLOSED TRADE HISTORY -->
+        <div class="au-card-clean">
+            <div class="card-title-wrap">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="fa-solid fa-clock-rotate-left text-success"></i>
+                    <h5 class="font-weight-bold text-dark mb-0">Lịch Sử Khớp Lệnh Đã Đóng</h5>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table-clean">
+                    <thead>
+                        <tr>
+                            <th>Ticket</th>
+                            <th>Cặp Tiền</th>
+                            <th>Loại Lệnh</th>
+                            <th>Khối Lượng</th>
+                            <th>Giá Vào / Giá Đóng</th>
+                            <th>Lãi/Lỗ ($)</th>
+                            <th>Lý Do Đóng</th>
+                            <th>Thời Điểm Đóng</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tbody-wallet-history">
+                        <tr>
+                            <td colspan="8" class="text-center py-3 text-muted">Đang tải lịch sử giao dịch...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <!-- PAGINATION 20/PAGE -->
+            <div id="pagination-wallet-history"></div>
+        </div>
     </div>
-    <div style="display: flex; align-items: center; gap: 0.85rem;">
-      <h2 style="font-size: 1.7rem; font-weight: 800; color: #ffffff;" id="wallet-header-name">{{ wallet.name }}</h2>
-      <span class="badge {% if wallet.account_type == 'REAL' %}badge-real{% elif wallet.account_type == 'DEMO' %}badge-demo{% else %}badge-sim{% endif %}" id="wallet-header-type">
-        {{ wallet.get_account_type_display }}
-      </span>
-      <span class="badge {% if wallet.bot_status == 'RUNNING' %}badge-running{% else %}badge-paused{% endif %}" id="wallet-header-status">
-        {{ wallet.get_bot_status_display }}
-      </span>
-    </div>
-    <div style="font-size: 0.85rem; color: var(--text-muted); font-family: var(--font-mono); margin-top: 0.2rem;">
-      Tài khoản MT5: <strong style="color: #ffffff;">#{{ wallet.mt5_login }}</strong> &bull; Server: {{ wallet.mt5_server }} &bull; Đòn bẩy: 1:{{ wallet.leverage }} &bull; Rủi ro/lệnh: {{ wallet.risk_percent }}%
-    </div>
-  </div>
 
-  <div style="display: flex; gap: 0.75rem;">
-    <button class="btn btn-secondary btn-sm" onclick="triggerManualScan()">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-      Cập Nhật Phân Tích Mới
-    </button>
-    <button class="btn btn-danger btn-sm" onclick="closeAllWalletPositions({{ wallet.id }})">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-      Đóng Hết Lệnh Ví Này
-    </button>
-  </div>
-</div>
+    <!-- FOOTER -->
+    <footer class="py-4 bg-white border-top text-center text-muted small mt-5">
+        <div class="container">
+            Exness Auto-Trade AI Platform &bull; Chi Tiết Ví {{ wallet.name }}
+        </div>
+    </footer>
 
-<!-- Section 1: Wallet Performance Report -->
-<section style="margin-bottom: 2rem;">
-  <div class="grid-5">
-    <div class="card">
-      <div class="stat-label">Số Dư Ví (Balance)</div>
-      <div class="stat-value" id="wallet-balance">${{ wallet.balance|floatformat:2 }}</div>
-      <div class="stat-sub">Vốn gốc: ${{ wallet.initial_balance|floatformat:2 }}</div>
-    </div>
+    <!-- Scripts -->
+    <script src="/static/cooladmin/vendor/bootstrap-5.3.8.bundle.min.js"></script>
+    <script src="/static/cooladmin/js/vanilla-utils.js"></script>
+    <script>
+        const walletId = {{ wallet.id }};
+        let cachedPositions = [];
+        let cachedPlans = [];
+        let cachedHistory = [];
+        let currentWposPage = 1;
+        let currentWplansPage = 1;
+        let currentWhistoryPage = 1;
+        const DETAIL_PAGE_SIZE = 20;
+        const prevPriceStore = {};
 
-    <div class="card">
-      <div class="stat-label">Vốn Khả Dụng (Equity)</div>
-      <div class="stat-value" id="wallet-equity">${{ wallet.equity|floatformat:2 }}</div>
-      <div class="stat-sub">Vốn sau khi cộng Floating</div>
-    </div>
+        function changeWposPage(page) {
+            currentWposPage = page;
+            renderPositions(cachedPositions);
+        }
 
-    <div class="card">
-      <div class="stat-label">Lãi/Lỗ Tạm Tính (Floating)</div>
-      <div class="stat-value {% if wallet.floating_pnl >= 0 %}profit{% else %}loss{% endif %}" id="wallet-floating">
-        {% if wallet.floating_pnl >= 0 %}+{% endif %}${{ wallet.floating_pnl|floatformat:2 }}
-      </div>
-      <div class="stat-sub"><span id="wallet-open-count">{{ wallet.positions.count }}</span> lệnh đang mở</div>
-    </div>
+        function changeWplansPage(page) {
+            currentWplansPage = page;
+            renderPlans(cachedPlans);
+        }
 
-    <div class="card">
-      <div class="stat-label">Lợi Nhuận Hôm Nay</div>
-      <div class="stat-value {% if wallet.today_pnl >= 0 %}profit{% else %}loss{% endif %}" id="wallet-today">
-        {% if wallet.today_pnl >= 0 %}+{% endif %}${{ wallet.today_pnl|floatformat:2 }}
-      </div>
-      <div class="stat-sub">Tổng lãi đã chốt: ${{ wallet.total_profit|floatformat:2 }}</div>
-    </div>
+        function changeWhistoryPage(page) {
+            currentWhistoryPage = page;
+            renderHistory(cachedHistory);
+        }
 
-    <div class="card">
-      <div class="stat-label">Tỷ Lệ Thắng (Win Rate)</div>
-      <div class="stat-value profit" id="wallet-winrate">{{ wallet.win_rate }}%</div>
-      <div class="stat-sub">{{ wallet.winning_trades }} thắng / {{ wallet.total_trades }} lệnh</div>
-    </div>
-  </div>
-</section>
+        function formatMoney(amount) {
+            if (amount === undefined || amount === null || isNaN(amount)) return '$0.00';
+            return '$' + Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
 
-<!-- Section 2: Bot Forward Market Analysis & Forecast for Wallet Pairs -->
-<section style="margin-bottom: 2.2rem;">
-  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-    <div>
-      <h3 style="font-size: 1.35rem; font-weight: 800; display: flex; align-items: center; gap: 0.6rem;">
-        <span style="color: var(--accent-cyan);">🤖</span> 
-        PHÂN TÍCH CỦA BOT & DỰ BÁO CÁC BƯỚC GIÁ TIẾP THEO
-      </h3>
-      <p style="color: var(--text-muted); font-size: 0.85rem;">
-        Bot tự động phân tích đa khung thời gian (H1/M15), cấu trúc SMC và dự báo các vùng giá tiếp theo cho các cặp được gán vào ví này
-      </p>
-    </div>
-  </div>
+        function formatPnl(amount, asBadge = false) {
+            if (amount === undefined || amount === null || isNaN(amount)) return '$0.00';
+            const num = Number(amount);
+            const isPos = num > 0;
+            const isNeg = num < 0;
+            const absVal = Math.abs(num).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            
+            let sign = '';
+            let arrow = '';
+            let colorClass = 'text-muted font-weight-bold';
+            let badgeClass = 'bg-light text-secondary border';
 
-  <!-- Container of forecast cards -->
-  <div id="forecasts-container">
-    <div style="text-align: center; padding: 2rem; color: var(--text-muted);" class="card">
-      Đang tải dữ liệu phân tích thị trường...
-    </div>
-  </div>
-</section>
+            if (isPos) {
+                sign = '+';
+                arrow = '<i class="fa-solid fa-arrow-trend-up me-1"></i>';
+                colorClass = 'text-success font-weight-bold';
+                badgeClass = 'badge-profit';
+            } else if (isNeg) {
+                sign = '-';
+                arrow = '<i class="fa-solid fa-arrow-trend-down me-1"></i>';
+                colorClass = 'text-danger font-weight-bold';
+                badgeClass = 'badge-loss';
+            }
 
-<!-- Section 3: AI Trading Plans Table -->
-<section style="margin-bottom: 2.2rem;">
-  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-    <div>
-      <h3 style="font-size: 1.25rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem;">
-        <span>📋</span> BẢNG KẾ HOẠCH GIAO DỊCH TỰ ĐỘNG (AI TRADING PLANS)
-      </h3>
-      <p style="color: var(--text-muted); font-size: 0.82rem;">Các Plan được bot tự động lập trước khi kích hoạt vào lệnh</p>
-    </div>
-  </div>
+            if (asBadge) {
+                return `<span class="badge ${badgeClass} px-2 py-1">${arrow}${sign}$${absVal}</span>`;
+            }
+            return `<span class="${colorClass}">${arrow}${sign}$${absVal}</span>`;
+        }
 
-  <div class="table-responsive">
-    <table class="table">
-      <thead>
-        <tr>
-          <th>Mã Plan</th>
-          <th>Cặp Giao Dịch</th>
-          <th>Hướng Lệnh</th>
-          <th>Vùng Entry</th>
-          <th>Stop Loss (SL)</th>
-          <th>Take Profit (TP1 / TP2)</th>
-          <th>Tỷ Lệ R:R</th>
-          <th>Khối Lượng Lot</th>
-          <th>Trạng Thái</th>
-          <th>Lý Do Kỹ Thuật</th>
-          <th>Thời Gian Tạo</th>
-        </tr>
-      </thead>
-      <tbody id="plans-table-body">
-        <tr>
-          <td colspan="11" class="table-empty">Đang tải danh sách kế hoạch...</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-</section>
+        function renderLivePrice(symbolKey, currentPrice) {
+            const prev = prevPriceStore[symbolKey];
+            const curr = Number(currentPrice);
+            prevPriceStore[symbolKey] = curr;
 
-<!-- Section 4: Live Open Positions Table -->
-<section style="margin-bottom: 2.2rem;">
-  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-    <div>
-      <h3 style="font-size: 1.25rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem;">
-        <span>⚡</span> BẢNG VỊ THẾ ĐANG MỞ (ACTIVE POSITIONS)
-      </h3>
-      <p style="color: var(--text-muted); font-size: 0.82rem;">Các lệnh đang chạy trên thị trường, cập nhật lãi/lỗ và trailing stop realtime</p>
-    </div>
-  </div>
+            let flashClass = '';
+            let trendIcon = '';
 
-  <div class="table-responsive">
-    <table class="table">
-      <thead>
-        <tr>
-          <th>Ticket MT5</th>
-          <th>Cặp</th>
-          <th>Loại Lệnh</th>
-          <th>Khối Lượng</th>
-          <th>Giá Khớp (Entry)</th>
-          <th>Giá Hiện Tại</th>
-          <th>Stop Loss (SL)</th>
-          <th>Take Profit (TP)</th>
-          <th>Lãi/Lỗ Tạm Tính ($)</th>
-          <th>Số Pips</th>
-          <th>Trailing</th>
-          <th>Thời Gian Mở</th>
-          <th>Thao Tác</th>
-        </tr>
-      </thead>
-      <tbody id="positions-table-body">
-        <tr>
-          <td colspan="13" class="table-empty">Đang tải danh sách vị thế mở...</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-</section>
+            if (prev !== undefined && prev !== 0) {
+                if (curr > prev) {
+                    flashClass = 'flash-price-up price-trend-up';
+                    trendIcon = '<i class="fa-solid fa-caret-up text-success ms-1"></i>';
+                } else if (curr < prev) {
+                    flashClass = 'flash-price-down price-trend-down';
+                    trendIcon = '<i class="fa-solid fa-caret-down text-danger ms-1"></i>';
+                }
+            }
 
-<!-- Section 5: Closed Trades History Table -->
-<section style="margin-bottom: 2rem;">
-  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
-    <div>
-      <h3 style="font-size: 1.25rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem;">
-        <span>📜</span> BẢNG LỊCH SỬ GIAO DỊCH ĐÃ ĐÓNG (CLOSED TRADES)
-      </h3>
-      <p style="color: var(--text-muted); font-size: 0.82rem;">Toàn bộ các lệnh đã chốt lời hoặc cắt lỗ của ví này</p>
-    </div>
-    <button class="btn btn-secondary btn-sm" onclick="exportHistoryCSV()">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-      Xuất Báo Cáo CSV
-    </button>
-  </div>
+            const formatted = curr.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+            return `<span class="${flashClass}">$${formatted}${trendIcon}</span>`;
+        }
 
-  <div class="table-responsive">
-    <table class="table">
-      <thead>
-        <tr>
-          <th>Ticket</th>
-          <th>Cặp</th>
-          <th>Loại Lệnh</th>
-          <th>Khối Lượng</th>
-          <th>Giá Vào</th>
-          <th>Giá Đóng</th>
-          <th>SL / TP</th>
-          <th>Lãi/Lỗ Thực Tế ($)</th>
-          <th>Số Pips</th>
-          <th>Lý Do Đóng</th>
-          <th>Thời Điểm Mở</th>
-          <th>Thời Điểm Đóng</th>
-        </tr>
-      </thead>
-      <tbody id="history-table-body">
-        <tr>
-          <td colspan="12" class="table-empty">Đang tải lịch sử giao dịch...</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-</section>
-{% endblock %}
+        document.addEventListener('DOMContentLoaded', () => {
+            loadWalletDetails();
+            setInterval(loadWalletDetails, 800);
+        });
 
-{% block extra_js %}
-<script>
-  const CURRENT_WALLET_ID = {{ wallet.id }};
-</script>
-<script src="{% static 'js/wallet_detail.js' %}"></script>
-{% endblock %}
+        async function loadWalletDetails() {
+            try {
+                const res = await fetch(`/api/wallets/${walletId}/`);
+                const data = await res.json();
+                
+                // 1. Report KPIs
+                const rep = data.report;
+                document.getElementById('w-balance').innerText = formatMoney(rep.balance);
+                document.getElementById('w-equity').innerText = formatMoney(rep.equity);
+                document.getElementById('w-floating').innerHTML = formatPnl(rep.floating_pnl);
+                document.getElementById('w-winrate').innerText = `${rep.win_rate}%`;
+                document.getElementById('w-pos-count').innerText = (data.positions || []).length;
+
+                // 2. Forecasts
+                renderForecasts(data.forecasts || []);
+
+                // 3. Positions
+                renderPositions(data.positions || []);
+
+                // 4. Plans
+                renderPlans(data.plans || []);
+
+                // 5. History
+                cachedHistory = data.history || [];
+                renderHistory(cachedHistory);
+
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function renderForecasts(forecasts) {
+            const container = document.getElementById('forecasts-container');
+            if (forecasts.length === 0) {
+                container.innerHTML = `<div class="col-12 text-center py-3 text-muted">Chưa có dữ liệu phân tích tiếp theo</div>`;
+                return;
+            }
+
+            container.innerHTML = forecasts.map(f => {
+                const isBull = f.trend_bias === 'BULLISH';
+                const trendIcon = isBull ? 'fa-arrow-trend-up text-success' : 'fa-arrow-trend-down text-danger';
+
+                return `
+                    <div class="col-lg-6">
+                        <div class="p-4 bg-white rounded-3 border h-100 shadow-sm">
+                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                <div>
+                                    <span class="h4 font-weight-bold text-dark mb-0">${f.symbol}</span>
+                                    <span class="badge bg-secondary ms-2">${f.timeframe}</span>
+                                </div>
+                                <div class="text-end">
+                                    <span class="badge ${isBull ? 'badge-buy' : 'badge-sell'} fs-6">
+                                        <i class="fa-solid ${trendIcon} me-1"></i> ${f.trend_bias_display}
+                                    </span>
+                                    <div class="small text-muted mt-1">Độ tin cậy: <b class="text-dark">${f.confidence_score}%</b></div>
+                                </div>
+                            </div>
+
+                            <div class="row g-2 p-3 bg-light rounded-3 border mb-3">
+                                <div class="col-6">
+                                    <small class="text-muted">Giá Hiện Tại:</small>
+                                    <div class="font-weight-bold">${renderLivePrice('fc_' + f.symbol, f.current_price)}</div>
+                                </div>
+                                <div class="col-6">
+                                    <small class="text-muted">Hành Động Khuyến Nghị:</small>
+                                    <div class="font-weight-bold text-dark">${f.recommended_action_display}</div>
+                                </div>
+                                <div class="col-6">
+                                    <small class="text-muted">Kháng Cự (Next R1 / R2):</small>
+                                    <div class="font-weight-bold text-danger">$${f.next_resistance_1} / $${f.next_resistance_2}</div>
+                                </div>
+                                <div class="col-6">
+                                    <small class="text-muted">Hỗ Trợ (Next S1 / S2):</small>
+                                    <div class="font-weight-bold text-success">$${f.next_support_1} / $${f.next_support_2}</div>
+                                </div>
+                            </div>
+
+                            <div class="mb-2">
+                                <small class="text-muted font-weight-bold">Điều Kiện Kích Hoạt Lệnh:</small>
+                                <div class="small text-dark">${f.trigger_condition}</div>
+                            </div>
+
+                            <div class="mb-2">
+                                <small class="text-muted font-weight-bold">Cấu Trúc Thị Trường (SMC / Price Action):</small>
+                                <div class="small font-weight-bold text-primary">${f.smc_structure}</div>
+                            </div>
+
+                            <div>
+                                <small class="text-muted font-weight-bold">Lý Do Phân Tích Kỹ Thuật:</small>
+                                <div class="small text-secondary fst-italic">${f.analysis_rationale}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderPositions(positions) {
+            cachedPositions = positions || [];
+            const tbody = document.getElementById('tbody-wallet-positions');
+            if (cachedPositions.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="10" class="text-center py-3 text-muted">Không có vị thế mở nào</td></tr>`;
+                renderPaginationComponent('pagination-wallet-positions', 0, 1, DETAIL_PAGE_SIZE, 'changeWposPage');
+                return;
+            }
+
+            const totalPages = Math.ceil(cachedPositions.length / DETAIL_PAGE_SIZE) || 1;
+            if (currentWposPage > totalPages) currentWposPage = totalPages;
+            if (currentWposPage < 1) currentWposPage = 1;
+
+            const startIndex = (currentWposPage - 1) * DETAIL_PAGE_SIZE;
+            const paged = cachedPositions.slice(startIndex, startIndex + DETAIL_PAGE_SIZE);
+
+            tbody.innerHTML = paged.map(p => `
+                <tr>
+                    <td class="font-monospace font-weight-bold">#${p.ticket}</td>
+                    <td><b>${p.symbol}</b></td>
+                    <td><span class="badge ${p.position_type === 'BUY' ? 'badge-buy' : 'badge-sell'}">${p.position_type}</span></td>
+                    <td class="font-weight-bold">${p.lot_size} Lot</td>
+                    <td>$${p.open_price}</td>
+                    <td class="font-weight-bold">${renderLivePrice('wpos_' + p.id, p.current_price)}</td>
+                    <td><small class="text-muted">${p.stop_loss} / ${p.take_profit}</small></td>
+                    <td>
+                        ${formatPnl(p.floating_pnl, true)}
+                    </td>
+                    <td>
+                        ${p.is_breakeven_set ? '<span class="badge bg-info text-dark me-1">BE</span>' : ''}
+                        ${p.is_trailing ? '<span class="badge bg-warning text-dark">Trailing</span>' : ''}
+                    </td>
+                    <td class="text-end text-nowrap">
+                        <button class="btn btn-sm btn-outline-danger btn-action-icon" onclick="closePos(${p.id})" title="Đóng Lệnh">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+
+            renderPaginationComponent('pagination-wallet-positions', cachedPositions.length, currentWposPage, DETAIL_PAGE_SIZE, 'changeWposPage');
+        }
+
+        function renderPlans(plans) {
+            cachedPlans = plans || [];
+            const tbody = document.getElementById('tbody-wallet-plans');
+            if (cachedPlans.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="10" class="text-center py-3 text-muted">Chưa có kế hoạch AI nào</td></tr>`;
+                renderPaginationComponent('pagination-wallet-plans', 0, 1, DETAIL_PAGE_SIZE, 'changeWplansPage');
+                return;
+            }
+
+            const totalPages = Math.ceil(cachedPlans.length / DETAIL_PAGE_SIZE) || 1;
+            if (currentWplansPage > totalPages) currentWplansPage = totalPages;
+            if (currentWplansPage < 1) currentWplansPage = 1;
+
+            const startIndex = (currentWplansPage - 1) * DETAIL_PAGE_SIZE;
+            const paged = cachedPlans.slice(startIndex, startIndex + DETAIL_PAGE_SIZE);
+
+            tbody.innerHTML = paged.map(pl => `
+                <tr>
+                    <td class="font-monospace">#${pl.id}</td>
+                    <td><b>${pl.symbol}</b> [${pl.timeframe}]</td>
+                    <td><span class="badge ${pl.direction === 'BUY' ? 'badge-buy' : 'badge-sell'}">${pl.direction}</span></td>
+                    <td class="font-weight-bold text-primary">$${pl.entry_price}</td>
+                    <td class="text-danger small">$${pl.stop_loss}</td>
+                    <td class="text-success small">$${pl.take_profit_1} / $${pl.take_profit_2}</td>
+                    <td>1:${pl.rr_ratio}</td>
+                    <td><b>${pl.calculated_lot}</b></td>
+                    <td><span class="badge bg-secondary">${pl.status_display}</span></td>
+                    <td><small class="text-muted">${pl.rationale}</small></td>
+                </tr>
+            `).join('');
+
+            renderPaginationComponent('pagination-wallet-plans', cachedPlans.length, currentWplansPage, DETAIL_PAGE_SIZE, 'changeWplansPage');
+        }
+
+        function renderHistory(history) {
+            cachedHistory = history || [];
+            const tbody = document.getElementById('tbody-wallet-history');
+            if (cachedHistory.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8" class="text-center py-3 text-muted">Chưa có lịch sử giao dịch</td></tr>`;
+                renderPaginationComponent('pagination-wallet-history', 0, 1, DETAIL_PAGE_SIZE, 'changeWhistoryPage');
+                return;
+            }
+
+            const totalPages = Math.ceil(cachedHistory.length / DETAIL_PAGE_SIZE) || 1;
+            if (currentWhistoryPage > totalPages) currentWhistoryPage = totalPages;
+            if (currentWhistoryPage < 1) currentWhistoryPage = 1;
+
+            const startIndex = (currentWhistoryPage - 1) * DETAIL_PAGE_SIZE;
+            const paged = cachedHistory.slice(startIndex, startIndex + DETAIL_PAGE_SIZE);
+
+            tbody.innerHTML = paged.map(h => `
+                <tr>
+                    <td class="font-monospace">#${h.ticket}</td>
+                    <td><b>${h.symbol}</b></td>
+                    <td><span class="badge ${h.position_type === 'BUY' ? 'badge-buy' : 'badge-sell'}">${h.position_type}</span></td>
+                    <td>${h.lot_size}</td>
+                    <td><small>$${h.open_price} &rarr; $${h.close_price}</small></td>
+                    <td>${formatPnl(h.pnl, true)}</td>
+                    <td><span class="badge bg-light text-secondary border">${h.close_reason_display}</span></td>
+                    <td class="small text-muted font-monospace">${h.closed_at}</td>
+                </tr>
+            `).join('');
+
+            renderPaginationComponent('pagination-wallet-history', cachedHistory.length, currentWhistoryPage, DETAIL_PAGE_SIZE, 'changeWhistoryPage');
+        }
+
+        async function closePos(posId) {
+            if (!confirm('Bạn có chắc chắn muốn đóng lệnh này?')) return;
+            try {
+                const res = await fetch(`/api/positions/${posId}/close/`, { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    alert(data.message);
+                    loadWalletDetails();
+                }
+            } catch (e) {
+                alert('Lỗi khi đóng lệnh');
+            }
+        }
+
+        function exportTradeHistoryCSV() {
+            if (cachedHistory.length === 0) {
+                alert('Không có dữ liệu lịch sử để xuất CSV');
+                return;
+            }
+
+            let csvContent = "data:text/csv;charset=utf-8,";
+            csvContent += "Ticket,Symbol,Type,Lot,Open Price,Close Price,SL,TP,PnL ($),Pips,Close Reason,Open Time,Close Time\n";
+
+            cachedHistory.forEach(h => {
+                csvContent += `${h.ticket},${h.symbol},${h.position_type},${h.lot_size},${h.open_price},${h.close_price},${h.stop_loss},${h.take_profit},${h.pnl},${h.pips},"${h.close_reason_display}",${h.opened_at},${h.closed_at}\n`;
+            });
+
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", `Trade_History_Wallet_${walletId}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+    </script>
+</body>
+</html>

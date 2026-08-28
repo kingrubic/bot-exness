@@ -2,6 +2,10 @@ from django.urls import path
 from apps.api import views
 
 urlpatterns = [
+    # Realtime Live Streaming Ticker (SSE & REST Fallback)
+    path('live-ticks/', views.live_ticks_api, name='api_live_ticks'),
+    path('stream-ticks/', views.stream_ticks_api, name='api_stream_ticks'),
+    
     # Global overview & Wallets
     path('overview/', views.global_overview_api, name='api_global_overview'),
     path('wallets/', views.wallet_list_api, name='api_wallet_list'),
@@ -14,6 +18,7 @@ urlpatterns = [
     path('bot/trigger-cycle/', views.trigger_trading_cycle_api, name='api_trigger_trading_cycle'),
     
     # Admin APIs
+    path('admin/wallets/test-connection/', views.admin_wallet_test_connection_api, name='api_admin_wallet_test_connection'),
     path('admin/wallets/', views.admin_wallet_manage_api, name='api_admin_create_wallet'),
     path('admin/wallets/<int:wallet_id>/', views.admin_wallet_manage_api, name='api_admin_manage_wallet'),
     path('admin/symbols/', views.admin_symbols_api, name='api_admin_symbols'),
@@ -21,5 +26,12 @@ urlpatterns = [
     path('admin/logs/', views.admin_logs_api, name='api_admin_logs'),
     path('admin/logs/<int:log_id>/resolve/', views.admin_log_resolve_api, name='api_admin_log_resolve'),
     path('admin/logs/clear/', views.admin_logs_clear_api, name='api_admin_logs_clear'),
+    path('admin/master-data/', views.admin_master_data_api, name='api_admin_master_data'),
+    path('admin/servers/', views.admin_servers_api, name='api_admin_servers'),
+    path('admin/servers/<int:server_id>/', views.admin_servers_api, name='api_admin_manage_server'),
+    path('admin/change-password/', views.admin_change_password_api, name='api_admin_change_password'),
+    path('admin/logs/code/', views.admin_code_logs_api, name='api_admin_code_logs'),
+    path('admin/logs/code/<int:log_id>/resolve/', views.admin_code_log_resolve_api, name='api_admin_code_log_resolve'),
+    path('admin/logs/code/clear/', views.admin_code_logs_clear_api, name='api_admin_code_logs_clear'),
     path('backtest/run/', views.run_backtest_api, name='api_run_backtest'),
 ]

@@ -129,45 +129,38 @@ Dựa trên nền tảng vững chắc hiện tại, các giai đoạn nâng c�
 
 ---
 
-## 4. HƯỚNG DẪN THAO TÁC & VẬN HÀNH DỰ ÁN
+## 4. HƯỚNG DẪN THAO TÁC & VẬN HÀNH DỰ ÁN (TỪ A ĐẾN Z)
 
-### 4.1 Cấu Hình Môi Trường (.env)
-File `.env` nằm tại thư mục gốc:
-```env
-DJANGO_SECRET_KEY=django-insecure-exness-auto-trade-sandbox-secret-key-2026
-DJANGO_DEBUG=True
-
-# MySQL Database
-DB_NAME=sandbox_exness
-DB_USER=root
-DB_PASSWORD=
-DB_HOST=127.0.0.1
-DB_PORT=3306
-```
-
-### 4.2 Lệnh Tạo Tài Khoản Admin Superuser Qua CMD
+### 4.1 Quy Trình Khởi Tạo & Chạy Dự Án
 ```bash
-python3 create_admin.py
-# hoặc:
-python3 create_admin.py --username admin --password yourpassword --email admin@example.com
-```
+# 1. Tạo và kích hoạt môi trường ảo (venv)
+python3 -m venv venv
+source venv/bin/activate    # (Trên Windows: venv\Scripts\activate)
 
-### 4.3 Lệnh Khởi Động Hệ Thống 1-Click
-```bash
+# 2. Cài đặt thư viện
+pip install -r requirements.txt
+
+# 3. Tạo file .env từ file mẫu và điền mật khẩu MySQL nếu có
+cp .env.example .env
+
+# 4. Tạo tài khoản Admin (tự động tạo DB sandbox_exness trên MySQL)
+python3 create_admin.py admin 123456
+
+# 5. Khởi động Web Dashboard và Bot Worker
 python3 run_bot.py
 ```
 
-### 4.4 Chạy Test Suite Tự Động
+### 4.2 Chạy Test Suite Tự Động
 ```bash
 python3 manage.py test tests
 ```
 
-### 4.5 Chạy Lệnh Quét & Khớp Lệnh Thủ Công Qua API
+### 4.3 Chạy Lệnh Quét & Khớp Lệnh Thủ Công Qua API
 ```bash
 curl -X POST http://localhost:8000/api/bot/trigger-cycle/
 ```
 
-### 4.6 Chạy Backtest Qua API
+### 4.4 Chạy Backtest Qua API
 ```bash
 curl -X POST http://localhost:8000/api/backtest/run/ \
   -H "Content-Type: application/json" \

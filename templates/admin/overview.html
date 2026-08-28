@@ -1,0 +1,262 @@
+{% extends 'admin/layout/master.html' %}
+
+{% block title %}Tổng Quan Quản Trị Hệ Thống{% endblock %}
+
+{% block content %}
+<!-- PAGE HEADER & ACTIONS -->
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="font-weight-bold text-dark mb-1">Tổng Quan Hiệu Suất Hệ Thống</h2>
+        <p class="text-muted small mb-0">Giám sát tài chính đa ví, trạng thái khớp lệnh và tín hiệu AI theo thời gian thực</p>
+    </div>
+    <div>
+        <a href="{% url 'admin_wallets' %}" class="btn btn-primary btn-sm rounded-pill px-3 shadow-sm">
+            <i class="fa-solid fa-plus me-1"></i> Thêm Ví Mới
+        </a>
+    </div>
+</div>
+
+<!-- TOP KPI METRIC CARDS -->
+<div class="row g-3 mb-4">
+    <!-- Total Balance -->
+    <div class="col-sm-6 col-xl-3">
+        <div class="metric-card-modern">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="metric-label">Tổng Số Dư (Balance)</div>
+                    <div class="metric-value text-dark" id="kpi-balance">$0.00</div>
+                    <div class="metric-subtext"><span id="kpi-wallets-count">0</span> ví Exness kết nối</div>
+                </div>
+                <div class="card-icon-wrap icon-bg-blue">
+                    <i class="fa-solid fa-vault"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Total Equity -->
+    <div class="col-sm-6 col-xl-3">
+        <div class="metric-card-modern">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="metric-label">Vốn Khả Dụng (Equity)</div>
+                    <div class="metric-value text-primary" id="kpi-equity">$0.00</div>
+                    <div class="metric-subtext">Đã bao gồm Floating PnL</div>
+                </div>
+                <div class="card-icon-wrap icon-bg-purple">
+                    <i class="fa-solid fa-chart-line"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating PnL -->
+    <div class="col-sm-6 col-xl-3">
+        <div class="metric-card-modern">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="metric-label">Lãi/Lỗ Tạm Tính (Floating)</div>
+                    <div class="metric-value text-success font-weight-bold" id="kpi-floating">$0.00</div>
+                    <div class="metric-subtext"><span id="kpi-positions-count">0</span> vị thế đang mở</div>
+                </div>
+                <div class="card-icon-wrap icon-bg-green">
+                    <i class="fa-solid fa-hand-holding-dollar"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Today PnL -->
+    <div class="col-sm-6 col-xl-3">
+        <div class="metric-card-modern">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="metric-label">Lãi/Lỗ Hôm Nay (Today)</div>
+                    <div class="metric-value text-success font-weight-bold" id="kpi-today">$0.00</div>
+                    <div class="metric-subtext">Winrate: <span id="kpi-winrate" class="font-weight-bold text-dark">0%</span></div>
+                </div>
+                <div class="card-icon-wrap icon-bg-amber">
+                    <i class="fa-solid fa-trophy"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="au-card-clean mb-4">
+    <div class="card-title-wrap">
+        <div class="card-title-left">
+            <i class="fa-solid fa-wave-square text-primary fs-5"></i>
+            <h5 class="font-weight-bold text-dark mb-0">Thị Trường Trực Tiếp (Live Market Ticker)</h5>
+        </div>
+        <div class="card-title-right">
+            <div class="custom-search-box search-sm">
+                <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                <input type="text" class="search-input" id="search-market-ticker" placeholder="Tìm cặp (XAU, BTC, EUR...)" oninput="filterMarketTicker(this.value)">
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3" id="live-symbols-container">
+        {% for s in symbols %}
+        <div class="col-sm-6 col-md-4 col-xl-3 ticker-card-col" data-symbol="{{ s.symbol }}" data-name="{{ s.display_name }}">
+            <div class="ticker-card-fintech">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="symbol-circle-icon"><i class="fa-solid fa-coins"></i></span>
+                        <div>
+                            <div class="font-weight-bold text-dark font-monospace mb-0 fs-6">{{ s.symbol }}</div>
+                            <small class="text-muted d-block text-truncate" style="max-width: 120px;" title="{{ s.display_name }}">{{ s.display_name }}</small>
+                        </div>
+                    </div>
+                    <span class="badge bg-light text-secondary border font-monospace">{{ s.timeframe }}</span>
+                </div>
+
+                <div class="d-flex align-items-center justify-content-between my-2" style="min-height: 28px;">
+                    <div class="live-price-val" id="sym-price-{{ s.symbol }}">${{ s.current_price }}</div>
+                    <div id="sym-diff-{{ s.symbol }}" class="d-flex align-items-center justify-content-end" style="min-height: 24px;">
+                        <span class="text-muted small">—</span>
+                    </div>
+                </div>
+
+                <div class="d-flex justify-content-between align-items-center pt-2 border-top mt-2 small text-muted">
+                    <span>Spread: <b class="text-dark" id="sym-spread-{{ s.symbol }}">{{ s.current_spread_pips }}</b> pips</span>
+                    <span class="text-success small"><i class="fa-solid fa-circle text-success" style="font-size: 7px;"></i> MT5 Live</span>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- ACTIVE POSITIONS TABLE -->
+<div class="au-card-clean mb-4">
+    <div class="card-title-wrap">
+        <div class="d-flex align-items-center gap-2">
+            <i class="fa-solid fa-layer-group text-primary"></i>
+            <h5 class="font-weight-bold text-dark mb-0">Danh Sách Vị Thế Đang Mở (Active Positions)</h5>
+            <span class="badge bg-primary rounded-pill ms-2" id="badge-open-count">0</span>
+        </div>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table-clean" id="table-active-positions">
+            <thead>
+                <tr>
+                    <th>Ticket MT5</th>
+                    <th>Ví Giao Dịch</th>
+                    <th>Cặp Tiền</th>
+                    <th>Loại Lệnh</th>
+                    <th>Khối Lượng</th>
+                    <th>Giá Vào (Entry)</th>
+                    <th>Giá Hiện Tại</th>
+                    <th>SL / TP</th>
+                    <th>Lãi/Lỗ ($)</th>
+                    <th>Trạng Thái</th>
+                    <th class="text-end">Thao Tác</th>
+                </tr>
+            </thead>
+            <tbody id="tbody-positions">
+                <tr>
+                    <td colspan="11" class="text-center py-4 text-muted">
+                        <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải dữ liệu vị thế mở...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    <!-- PAGINATION 20/PAGE -->
+    <div id="pagination-overview-positions"></div>
+</div>
+
+<!-- AI TRADING PLANS -->
+<div class="au-card-clean mb-4">
+    <div class="card-title-wrap">
+        <div class="d-flex align-items-center gap-2">
+            <i class="fa-solid fa-brain text-warning"></i>
+            <h5 class="font-weight-bold text-dark mb-0">Kế Hoạch Giao Dịch AI Gần Nhất (AI Trading Plans)</h5>
+        </div>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table-clean" id="table-ai-plans">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Ví</th>
+                    <th>Cặp / Khung</th>
+                    <th>Hướng</th>
+                    <th>Vùng Kích Hoạt Entry</th>
+                    <th>Stop Loss</th>
+                    <th>Take Profit (TP1 / TP2)</th>
+                    <th>Tỷ lệ R:R</th>
+                    <th>Lot Dự Tính</th>
+                    <th>Trạng Thái Plan</th>
+                    <th>Lý Do Phân Tích Kỹ Thuật</th>
+                </tr>
+            </thead>
+            <tbody id="tbody-plans">
+                <tr>
+                    <td colspan="11" class="text-center py-4 text-muted">
+                        <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải kế hoạch AI...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    <!-- PAGINATION 20/PAGE -->
+    <div id="pagination-overview-plans"></div>
+</div>
+
+<!-- CLOSED HISTORY & SYSTEM LOGS SUMMARY -->
+<div class="row g-4">
+    <div class="col-xl-7">
+        <div class="au-card-clean h-100">
+            <div class="card-title-wrap">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="fa-solid fa-clock-rotate-left text-success"></i>
+                    <h5 class="font-weight-bold text-dark mb-0">Lịch Sử Khớp Lệnh Đã Đóng</h5>
+                </div>
+            </div>
+            <div class="table-responsive">
+                <table class="table-clean">
+                    <thead>
+                        <tr>
+                            <th>Ticket</th>
+                            <th>Ví</th>
+                            <th>Cặp</th>
+                            <th>Loại</th>
+                            <th>Lot</th>
+                            <th>Giá Vào / Đóng</th>
+                            <th>Lãi/Lỗ ($)</th>
+                            <th>Lý Do Đóng</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tbody-history-summary">
+                        <tr>
+                            <td colspan="8" class="text-center py-3 text-muted">Đang tải lịch sử...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <!-- PAGINATION 20/PAGE -->
+            <div id="pagination-overview-history"></div>
+        </div>
+    </div>
+
+    <div class="col-xl-5">
+        <div class="au-card-clean h-100">
+            <div class="card-title-wrap">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="fa-solid fa-triangle-exclamation text-danger"></i>
+                    <h5 class="font-weight-bold text-dark mb-0">Nhật Ký & Cảnh Báo Bot</h5>
+                </div>
+                <a href="{% url 'admin_logs' %}" class="small text-primary text-decoration-none">Chi tiết &rarr;</a>
+            </div>
+            <div id="logs-summary-list" class="d-flex flex-column gap-2" style="max-height: 380px; overflow-y: auto;">
+                <div class="text-center py-3 text-muted">Đang kiểm tra nhật ký...</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

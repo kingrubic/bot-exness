@@ -4,9 +4,8 @@ import json
 
 class WalletAccount(models.Model):
     ACCOUNT_TYPES = [
-        ('REAL', 'Tài Khoản Real'),
-        ('DEMO', 'Tài Khoản Demo'),
-        ('SIMULATION', 'Tài Khoản Giả Lập Sandbox'),
+        ('REAL', 'Real'),
+        ('DEMO', 'Demo'),
     ]
 
     BOT_STATUSES = [
@@ -23,10 +22,8 @@ class WalletAccount(models.Model):
     currency = models.CharField(max_length=10, default="USD", verbose_name="Tiền Tệ")
     leverage = models.IntegerField(default=2000, verbose_name="Đòn Bẩy (1:X)")
     
-    # Financial Balances
-    initial_balance = models.DecimalField(max_digits=15, decimal_places=2, default=10000.00, verbose_name="Số Dư Ban Đầu")
-    balance = models.DecimalField(max_digits=15, decimal_places=2, default=10000.00, verbose_name="Số Dư Hiện Tại (Balance)")
-    equity = models.DecimalField(max_digits=15, decimal_places=2, default=10000.00, verbose_name="Vốn Khả Dụng (Equity)")
+    # Financial Capital & Metrics (Chỉ lưu vốn khi connect, số dư và equity lấy động)
+    capital = models.DecimalField(max_digits=15, decimal_places=2, default=1000.00, verbose_name="Vốn Khi Kết Nối (Capital USD)")
     floating_pnl = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Lãi/Lỗ Tạm Tính (Floating PnL)")
     today_pnl = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Lãi/Lỗ Hôm Nay")
     total_profit = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Tổng Lợi Nhuận Đã Chốt")
@@ -64,6 +61,38 @@ class WalletAccount(models.Model):
         return f"{self.name} ({self.account_type}) - #{self.mt5_login}"
 
     @property
+    def initial_balance(self):
+        return self.capital
+
+    @initial_balance.setter
+    def initial_balance(self, val):
+        self.capital = val
+
+    @property
+    def balance(self):
+        """Số dư tính động theo sàn hoặc theo Vốn + Tổng lãi đã chốt."""
+        if hasattr(self, '_live_balance') and self._live_balance is not None:
+            return self._live_balance
+        from decimal import Decimal
+        return Decimal(str(self.capital)) + Decimal(str(self.total_profit))
+
+    @balance.setter
+    def balance(self, val):
+        self._live_balance = val
+
+    @property
+    def equity(self):
+        """Vốn khả dụng tính động theo Số dư + Lãi/lỗ thả nổi."""
+        if hasattr(self, '_live_equity') and self._live_equity is not None:
+            return self._live_equity
+        from decimal import Decimal
+        return Decimal(str(self.balance)) + Decimal(str(self.floating_pnl))
+
+    @equity.setter
+    def equity(self, val):
+        self._live_equity = val
+
+    @property
     def allowed_symbols(self):
         try:
             return json.loads(self.allowed_symbols_json)
@@ -79,5 +108,25 @@ class WalletAccount(models.Model):
             self.win_rate = round((self.winning_trades / self.total_trades) * 100, 1)
         else:
             self.win_rate = 0.0
-        from decimal import Decimal
-        self.equity = Decimal(str(self.balance)) + Decimal(str(self.floating_pnl))
+
+
+class ExnessServerMaster(models.Model):
+    SERVER_TYPES = [
+        ('REAL', 'Real'),
+        ('DEMO', 'Demo'),
+    ]
+
+    server_name = models.CharField(max_length=100, unique=True, verbose_name="Tên Server Exness")
+    server_type = models.CharField(max_length=20, choices=SERVER_TYPES, default='REAL', verbose_name="Loại Máy Chủ")
+    description = models.CharField(max_length=200, blank=True, default='', verbose_name="Mô Tả / Ghi Chú")
+    is_active = models.BooleanField(default=True, verbose_name="Đang Hoạt Động")
+    order = models.IntegerField(default=0, verbose_name="Thứ Tự Sắp Xếp")
+
+    class Meta:
+        verbose_name = "Server Exness (Master Data)"
+        verbose_name_plural = "Danh Sách Server Exness (Master Data)"
+        ordering = ['order', 'server_name']
+
+    def __str__(self):
+        return f"{self.server_name} ({self.get_server_type_display()})"
+

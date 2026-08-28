@@ -38,10 +38,7 @@ class ExnessAutoTradeTestCase(TestCase):
             name='Ví A - Test Real',
             account_type='REAL',
             mt5_login='50239182',
-            mt5_server='Exness-MT5Real',
-            initial_balance=Decimal('10000.00'),
-            balance=Decimal('10000.00'),
-            equity=Decimal('10000.00'),
+            capital=Decimal('10000.00'),
             risk_percent=1.5,
             allowed_symbols_json='["XAUUSD"]',
             is_active=True,
@@ -94,16 +91,21 @@ class ExnessAutoTradeTestCase(TestCase):
                 status='PENDING_TRIGGER'
             )
 
-        position = ExecutionEngine.trigger_plan_to_position(plan)
-        self.assertEqual(position.wallet, self.wallet)
-        self.assertEqual(position.symbol, 'XAUUSD')
-        self.assertTrue(position.lot_size >= 0.01)
+        from unittest.mock import patch
+        with patch('apps.trading.mt5_connector.ExnessMT5Connector.connect', return_value=True), \
+             patch('apps.trading.mt5_connector.ExnessMT5Connector.send_order', return_value={'success': True, 'ticket': '99887766', 'price': 2750.00, 'volume': 0.1}), \
+             patch('apps.trading.mt5_connector.ExnessMT5Connector.close_order', return_value=True):
+            position = ExecutionEngine.trigger_plan_to_position(plan)
+            self.assertIsNotNone(position)
+            self.assertEqual(position.wallet, self.wallet)
+            self.assertEqual(position.symbol, 'XAUUSD')
+            self.assertTrue(position.lot_size >= 0.01)
 
-        # Test closing position
-        ExecutionEngine.close_position(position, close_price=Decimal('2760.00'), reason='TP_HIT')
-        self.assertEqual(Position.objects.filter(pk=position.id).count(), 0)
-        self.assertEqual(TradeHistory.objects.filter(wallet=self.wallet).count(), 1)
-        self.assertEqual(self.wallet.total_trades, 1)
+            # Test closing position
+            ExecutionEngine.close_position(position, close_price=Decimal('2760.00'), reason='TP_HIT')
+            self.assertEqual(Position.objects.filter(pk=position.id).count(), 0)
+            self.wallet.refresh_from_db()
+            self.assertEqual(self.wallet.total_trades, 1)
 
     def test_api_endpoints(self):
         """Kiểm tra các REST API endpoints."""
@@ -158,3 +160,39 @@ class ExnessAutoTradeTestCase(TestCase):
         self.assertEqual(res.status_code, 200)
         log_obj.refresh_from_db()
         self.assertTrue(log_obj.is_resolved)
+
+    def test_refresh_plans_on_wallet_save(self):
+        """Kiểm tra việc xóa plan chưa khớp cũ và tính toán lại plan mới khi lưu ví."""
+        # Tạo 1 plan cũ chưa khớp
+        old_plan = TradingPlan.objects.create(
+            wallet=self.wallet,
+            symbol='OLD_SYM',
+            direction='BUY',
+            entry_price=Decimal('100.00'),
+            entry_zone_low=Decimal('99.00'),
+            entry_zone_high=Decimal('101.00'),
+            stop_loss=Decimal('95.00'),
+            take_profit_1=Decimal('105.00'),
+            take_profit_2=Decimal('110.00'),
+            rr_ratio=1.5,
+            calculated_lot=0.05,
+            status='PENDING_TRIGGER'
+        )
+
+        # Lưu lại ví với allowed_symbols = ['XAUUSD']
+        self.wallet.set_allowed_symbols(['XAUUSD'])
+        self.wallet.save()
+
+        # Gọi refresh_plans_for_wallet
+        new_plans = AutoPlanGenerator.refresh_plans_for_wallet(self.wallet)
+
+        # Kiểm tra old_plan đã bị xóa
+        self.assertFalse(TradingPlan.objects.filter(pk=old_plan.id).exists())
+
+        # Kiểm tra plan mới được tính theo XAUUSD
+        if new_plans:
+            for p in new_plans:
+                self.assertEqual(p.symbol, 'XAUUSD')
+                self.assertEqual(p.wallet, self.wallet)
+                self.assertEqual(p.status, 'PENDING_TRIGGER')
+

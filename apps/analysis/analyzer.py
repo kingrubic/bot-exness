@@ -1,3 +1,4 @@
+import json
 import math
 import random
 from decimal import Decimal
@@ -17,19 +18,29 @@ class TechnicalAnalyzer:
         price = float(symbol_config.current_price)
         timeframe = symbol_config.timeframe
         
-        # Base ATR calculation based on symbol type
-        if "XAU" in symbol:
-            atr = round(random.uniform(8.5, 16.0), 2)
-            spread = round(random.uniform(1.0, 2.2), 1)
-        elif "BTC" in symbol:
-            atr = round(random.uniform(850.0, 1800.0), 2)
-            spread = round(random.uniform(2.5, 5.0), 1)
-        elif "OIL" in symbol:
-            atr = round(random.uniform(0.8, 1.8), 2)
+        # Base ATR calculation based on symbol category & price level
+        cat = getattr(symbol_config, 'category', 'FOREX')
+        digits = symbol_config.digits
+        if cat == 'CRYPTO' or 'BTC' in symbol or 'ETH' in symbol or 'SOL' in symbol or 'BNB' in symbol:
+            atr = round(price * random.uniform(0.015, 0.035), digits)
+            spread = round(random.uniform(2.0, 5.0), 1)
+        elif cat == 'METALS' or 'XAU' in symbol or 'XAG' in symbol or 'XPT' in symbol:
+            atr = round(price * random.uniform(0.004, 0.008), digits)
+            spread = round(random.uniform(0.8, 1.8), 1)
+        elif cat == 'INDICES' or 'US30' in symbol or 'US500' in symbol or 'DE40' in symbol or 'USTEC' in symbol:
+            atr = round(price * random.uniform(0.005, 0.012), digits)
+            spread = round(random.uniform(1.0, 3.0), 1)
+        elif cat == 'COMMODITIES' or 'OIL' in symbol or 'ENERGY' in cat:
+            atr = round(price * random.uniform(0.012, 0.025), digits)
             spread = round(random.uniform(1.2, 2.5), 1)
         else: # Forex pairs
-            atr = round(random.uniform(0.0030, 0.0070), 5)
-            spread = round(random.uniform(0.5, 1.2), 1)
+            atr = round(price * random.uniform(0.0035, 0.0070), digits)
+            spread = round(random.uniform(0.4, 1.2), 1)
+
+        # Enforce minimum ATR
+        min_atr = 5 * (10 ** (-digits))
+        if atr < min_atr:
+            atr = round(min_atr, digits)
 
         symbol_config.current_spread_pips = spread
         symbol_config.atr_value = atr
@@ -120,7 +131,7 @@ class TechnicalAnalyzer:
             'spread_pips': spread
         }
 
-        # Update or create Forecast record
+        # Update or create Forecast record (single atomic query)
         forecast, created = MarketForecast.objects.update_or_create(
             symbol=symbol,
             defaults={
@@ -137,9 +148,9 @@ class TechnicalAnalyzer:
                 'smc_structure': smc_structure,
                 'analysis_rationale': rationale,
                 'recommended_action': action,
+                'indicators_json': json.dumps(indicators_data),
                 'updated_at': timezone.now()
             }
         )
-        forecast.set_indicators(indicators_data)
-        forecast.save()
         return forecast
+

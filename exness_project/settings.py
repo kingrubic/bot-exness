@@ -54,6 +54,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'apps.core.middleware.CodeExceptionMiddleware',
 ]
 
 ROOT_URLCONF = 'exness_project.urls'
@@ -76,59 +77,17 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'exness_project.wsgi.application'
 
-# Database Configuration (100% Pure MySQL sandbox_exness)
-import pymysql
-try:
-    pymysql.install_as_MySQLdb()
-except Exception:
-    pass
-
-DB_NAME = os.getenv('DB_NAME', 'sandbox_exness')
-DB_USER = os.getenv('DB_USER', 'root')
-DB_PASSWORD = os.getenv('DB_PASSWORD', '')
-DB_HOST = os.getenv('DB_HOST', '127.0.0.1')
-DB_PORT = os.getenv('DB_PORT', '3306')
-
-is_testing = 'test' in sys.argv or 'pytest' in sys.modules
-
-can_connect_mysql = False
-try:
-    conn = pymysql.connect(
-        host=DB_HOST,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        port=int(DB_PORT),
-        connect_timeout=2
-    )
-    with conn.cursor() as cursor:
-        cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{DB_NAME}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;")
-    conn.close()
-    can_connect_mysql = True
-except Exception:
-    can_connect_mysql = False
-
-if can_connect_mysql or not is_testing:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.mysql',
-            'NAME': DB_NAME,
-            'USER': DB_USER,
-            'PASSWORD': DB_PASSWORD,
-            'HOST': DB_HOST,
-            'PORT': DB_PORT,
-            'OPTIONS': {
-                'charset': 'utf8mb4',
-                'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-            }
-        }
+# Database Configuration (100% Pure SQLite3 - Zero Config & High Concurrency WAL Mode)
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+        'OPTIONS': {
+            'timeout': 60, # 60 seconds busy timeout for SQLite locks
+        },
+        'CONN_MAX_AGE': 0,
     }
-else:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': ':memory:',
-        }
-    }
+}
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
@@ -158,6 +117,9 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # REST Framework settings
 REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'apps.api.authentication.CsrfExemptSessionAuthentication',
+    ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
@@ -168,6 +130,38 @@ REST_FRAMEWORK = {
 # CORS settings
 CORS_ALLOW_ALL_ORIGINS = True
 
+# Logging configurations (Console only, errors are captured to Database CodeLog)
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'simple': {
+            'format': '[{asctime}] [{levelname}] {message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S'
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+        'apps': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+    },
+}
+
 # Bot configurations
 BOT_SETTINGS = {
     'SCAN_INTERVAL_SECONDS': int(os.getenv('BOT_SCAN_INTERVAL_SECONDS', 5)),
@@ -175,3 +169,4 @@ BOT_SETTINGS = {
     'MAX_DAILY_DRAWDOWN_PERCENT': float(os.getenv('MAX_DAILY_DRAWDOWN_PERCENT', 4.0)),
     'MAX_SPREAD_PIPS': float(os.getenv('MAX_SPREAD_PIPS', 3.0)),
 }
+

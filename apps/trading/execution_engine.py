@@ -1,3 +1,4 @@
+import logging
 import random
 import traceback
 from decimal import Decimal
@@ -9,6 +10,9 @@ from apps.analysis.analyzer import TechnicalAnalyzer
 from apps.plans.models import TradingPlan
 from apps.plans.planner import AutoPlanGenerator
 from apps.trading.models import Position, TradeHistory, BotLog
+from apps.trading.mt5_connector import ExnessMT5Connector
+
+logger = logging.getLogger(__name__)
 
 class ExecutionEngine:
     """
@@ -18,34 +22,85 @@ class ExecutionEngine:
     """
 
     @classmethod
-    def simulate_price_tick(cls):
-        """Mô phỏng biến động giá nhỏ cho các cặp Exness đang kích hoạt."""
+    def sync_symbol_prices_from_mt5(cls):
+        """Đồng bộ giá Bid/Ask/Spread thực tế 100% từ MT5 và Real Financial Feeds."""
         try:
-            for sym in SymbolConfig.objects.filter(is_active=True):
-                price = float(sym.current_price)
-                delta_pct = random.uniform(-0.0012, 0.0012)
-                new_price = round(price * (1 + delta_pct), sym.digits)
-                sym.current_price = Decimal(str(new_price))
-                sym.current_bid = Decimal(str(round(new_price - (sym.point_size * 10), sym.digits)))
-                sym.current_ask = Decimal(str(round(new_price + (sym.point_size * 10), sym.digits)))
-                sym.save()
+            from apps.trading.live_market_feed import LiveMarketFeedService
+            LiveMarketFeedService.sync_all_symbols()
         except Exception as e:
-            BotLog.log(level='ERROR', category='SYSTEM', message=f'Lỗi cập nhật giá nến: {e}', traceback=traceback.format_exc())
+            logger.warning(f"Lỗi khi đồng bộ giá thị trường thực tế: {e}")
 
     @classmethod
     def trigger_plan_to_position(cls, plan: TradingPlan) -> Position:
-        """Kích hoạt Trading Plan thành một Lệnh Mở (Position)."""
-        ticket = f"{random.randint(10000000, 99999999)}"
-        
+        """Kích hoạt Trading Plan (Hỗ trợ Live MT5 cho ví Real và Sandbox Engine cho ví Demo)."""
+        wallet = plan.wallet
+        if not wallet or not wallet.is_active:
+            plan.status = 'CANCELLED'
+            plan.save()
+            return None
+
+        is_demo = (wallet.account_type in ['DEMO', 'SIMULATION']) or ('Trial' in wallet.mt5_server) or ('Demo' in wallet.mt5_server)
+        connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
+        connected_mt5 = connector.connect()
+
+        # Nếu là ví Real mà không kết nối được MT5 -> Bắt buộc hủy và báo lỗi
+        if not is_demo and not connected_mt5:
+            plan.status = 'FAILED'
+            plan.save()
+            BotLog.log(
+                level='ERROR',
+                category='EXECUTION',
+                wallet=wallet,
+                symbol=plan.symbol,
+                message=f"Không thể kết nối tới Exness MT5 Live để mở lệnh {plan.direction} {plan.symbol} cho ví Real '{wallet.name}' (#{wallet.mt5_login}).",
+                traceback=f"MT5 connect failed on server {wallet.mt5_server} for wallet #{wallet.mt5_login}"
+            )
+            return None
+
+        if connected_mt5:
+            # Gửi lệnh trực tiếp lên sàn Exness MT5
+            order_res = connector.send_order(
+                symbol=plan.symbol,
+                order_type=plan.direction,
+                volume=float(plan.calculated_lot),
+                price=float(plan.entry_price),
+                sl=float(plan.stop_loss) if plan.stop_loss else 0.0,
+                tp=float(plan.take_profit_1) if plan.take_profit_1 else 0.0,
+                comment=f"AI-{plan.symbol}"
+            )
+
+            if not order_res.get('success'):
+                plan.status = 'FAILED'
+                plan.save()
+                BotLog.log(
+                    level='ERROR',
+                    category='EXECUTION',
+                    wallet=wallet,
+                    symbol=plan.symbol,
+                    message=f"Khớp lệnh THẬT thất bại trên sàn Exness MT5: {order_res.get('error')}",
+                    traceback=str(order_res)
+                )
+                return None
+
+            ticket = order_res.get('ticket')
+            exec_price = Decimal(str(order_res.get('price', plan.entry_price)))
+            exec_volume = float(order_res.get('volume', plan.calculated_lot))
+        else:
+            # Khớp lệnh Demo Sandbox (chạy thử nghiệm thuật toán trên máy tính/Linux)
+            import random
+            ticket = f"DEMO-{random.randint(1000000, 9999999)}"
+            exec_price = plan.entry_price
+            exec_volume = float(plan.calculated_lot)
+
         position = Position.objects.create(
-            wallet=plan.wallet,
+            wallet=wallet,
             plan=plan,
             ticket=ticket,
             symbol=plan.symbol,
             position_type=plan.direction,
-            lot_size=plan.calculated_lot,
-            open_price=plan.entry_price,
-            current_price=plan.entry_price,
+            lot_size=exec_volume,
+            open_price=exec_price,
+            current_price=exec_price,
             stop_loss=plan.stop_loss,
             take_profit=plan.take_profit_1,
             floating_pnl=Decimal("0.00"),
@@ -58,11 +113,12 @@ class ExecutionEngine:
         plan.save()
 
         # Ghi log thành công
+        mode_str = "THẬT TRÊN EXNESS MT5" if connected_mt5 else "DEMO SANDBOX"
         BotLog.log(
             level='INFO',
             category='EXECUTION',
-            message=f"Đã khớp lệnh #{ticket}: {position.position_type} {position.symbol} {position.lot_size} Lot tại giá {position.open_price} cho ví '{plan.wallet.name}'",
-            wallet=plan.wallet,
+            message=f"ĐÃ MỞ LỆNH {mode_str} #{ticket}: {position.position_type} {position.symbol} {position.lot_size} Lot tại giá {position.open_price} cho ví '{wallet.name}'",
+            wallet=wallet,
             symbol=plan.symbol
         )
         return position
@@ -104,17 +160,17 @@ class ExecutionEngine:
 
                 # Kiểm tra chạm TP/SL
                 if position.position_type == 'BUY':
-                    if curr_price >= position.take_profit:
+                    if position.take_profit and curr_price >= position.take_profit:
                         cls.close_position(position, reason='TP_HIT')
                         continue
-                    elif curr_price <= position.stop_loss:
+                    elif position.stop_loss and curr_price <= position.stop_loss:
                         cls.close_position(position, reason='SL_HIT')
                         continue
                 else: # SELL
-                    if curr_price <= position.take_profit:
+                    if position.take_profit and curr_price <= position.take_profit:
                         cls.close_position(position, reason='TP_HIT')
                         continue
-                    elif curr_price >= position.stop_loss:
+                    elif position.stop_loss and curr_price >= position.stop_loss:
                         cls.close_position(position, reason='SL_HIT')
                         continue
 
@@ -126,8 +182,21 @@ class ExecutionEngine:
 
     @classmethod
     def close_position(cls, position: Position, close_price: Decimal = None, reason: str = 'TP_HIT'):
-        """Đóng một vị thế và lưu vào lịch sử."""
+        """Đóng vị thế THẬT trên sàn Exness MT5 và lưu vào lịch sử."""
         wallet = position.wallet
+        connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
+        
+        # Gửi yêu cầu đóng lệnh lên Exness MT5
+        closed_on_broker = connector.close_order(
+            ticket=int(position.ticket) if str(position.ticket).isdigit() else 0,
+            symbol=position.symbol,
+            order_type=position.position_type,
+            volume=position.lot_size
+        )
+        
+        if not closed_on_broker:
+            logger.warning(f"Đóng lệnh #{position.ticket} trên Exness MT5: Trả về False (hoặc lệnh đã tự đóng tại sàn do SL/TP).")
+
         if close_price is not None:
             position.current_price = close_price
         pnl = position.floating_pnl
@@ -151,7 +220,7 @@ class ExecutionEngine:
             closed_at=timezone.now()
         )
 
-        # Cập nhật số dư ví và thống kê
+        # Cập nhật số dư ví, thống kê và winrate
         wallet.balance = Decimal(str(wallet.balance)) + pnl
         wallet.today_pnl = Decimal(str(wallet.today_pnl)) + pnl
         wallet.total_profit = Decimal(str(wallet.total_profit)) + pnl
@@ -163,20 +232,17 @@ class ExecutionEngine:
         wallet.calculate_metrics()
         wallet.save()
 
+        BotLog.log(
+            level='INFO',
+            category='EXECUTION',
+            message=f"ĐÃ ĐÓNG LỆNH THẬT TRÊN EXNESS MT5 #{position.ticket}: {position.position_type} {position.symbol} (PnL: {pnl:+} USD, Lý do: {reason})",
+            wallet=wallet,
+            symbol=position.symbol
+        )
         # Cập nhật trạng thái Plan nếu có
         if position.plan:
             position.plan.status = 'COMPLETED'
             position.plan.save()
-
-        # Ghi log đóng lệnh
-        reason_text = "Chạm TP" if reason == 'TP_HIT' else ("Chạm SL" if reason == 'SL_HIT' else "Đóng thủ công")
-        BotLog.log(
-            level='INFO' if is_win else 'WARNING',
-            category='EXECUTION',
-            message=f"Đã đóng lệnh #{position.ticket} {position.symbol} ({reason_text}) -> PnL: {'+' if pnl >= 0 else ''}${pnl} cho ví '{wallet.name}'",
-            wallet=wallet,
-            symbol=position.symbol
-        )
 
         position.delete()
 
@@ -195,11 +261,53 @@ class ExecutionEngine:
     def run_full_trading_cycle(cls):
         """
         Chạy 1 chu kỳ giao dịch hoàn chỉnh:
-        Tự động ghi nhật ký lỗi chi tiết nếu có bất kỳ sự cố nào.
+        Tự động đồng bộ số dư & lệnh từ Exness MT5 và ghi nhật ký lỗi chi tiết nếu có sự cố.
         """
         try:
-            # Step 1: Simulate ticks
-            cls.simulate_price_tick()
+            # Step 0: Đồng bộ số dư và vị thế realtime từ Exness MT5
+            for wallet in WalletAccount.objects.filter(is_active=True):
+                if wallet.account_type == 'REAL' and wallet.mt5_login:
+                    try:
+                        connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
+                        if connector.connect():
+                            connector.sync_account_info(wallet)
+                            connector.sync_positions(wallet)
+                        else:
+                            # Không thể kết nối tới máy chủ Exness: Tự động vô hiệu hóa ví Real để tránh spam log
+                            wallet.is_active = False
+                            wallet.bot_status = 'STOPPED'
+                            wallet.save(update_fields=['is_active', 'bot_status'])
+                            BotLog.log(
+                                level='ERROR',
+                                category='SYSTEM',
+                                wallet=wallet,
+                                message=f"Đã tự động ngắt kết nối và tạm dừng ví Real '{wallet.name}' (#{wallet.mt5_login}) do mất kết nối tới máy chủ Exness ({wallet.mt5_server}).",
+                                traceback=f"Auto-disabled wallet #{wallet.mt5_login} on server {wallet.mt5_server} to prevent spam."
+                            )
+                    except Exception as me:
+                        logger.warning(f"Không thể đồng bộ MT5 #{wallet.mt5_login}: {me}")
+                        wallet.is_active = False
+                        wallet.bot_status = 'STOPPED'
+                        wallet.save(update_fields=['is_active', 'bot_status'])
+                        BotLog.log(
+                            level='ERROR',
+                            category='SYSTEM',
+                            wallet=wallet,
+                            message=f"Đã tự động tắt ví '{wallet.name}' (#{wallet.mt5_login}) do lỗi ngoại lệ kết nối: {str(me)}",
+                            traceback=traceback.format_exc()
+                        )
+                elif wallet.account_type == 'DEMO' and wallet.mt5_login:
+                    # Với ví Demo: Nếu có MT5 Live thì sync từ MT5, nếu trên Sandbox thì duy trì hoạt động
+                    try:
+                        connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
+                        if connector.connect():
+                            connector.sync_account_info(wallet)
+                            connector.sync_positions(wallet)
+                    except Exception:
+                        pass
+
+            # Step 1: Đồng bộ giá thị trường thực tế từ MT5
+            cls.sync_symbol_prices_from_mt5()
 
             # Step 2: Generate technical forecasts for all active symbols
             forecasts = {}
