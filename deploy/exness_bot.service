@@ -1,0 +1,23 @@
+# ==============================================================================
+# SYSTEMD SERVICE CHẠY BOT VÀ WEB DASHBOARD 24/7 TỰ ĐỘNG KHỞI ĐỘNG
+# Lưu tại: /etc/systemd/system/exness_bot.service
+# Kích hoạt: 
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable exness_bot
+#   sudo systemctl start exness_bot
+# ==============================================================================
+
+[Unit]
+Description=Exness Auto Trade AI Platform & Web Dashboard
+After=network.target mysql.service
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Documents/resource/github-user/exness
+ExecStart=/usr/bin/python3 run_bot.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,224 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Chi Tiết Ví {{ wallet.name }} - Exness Auto Trade AI{% endblock %}
+
+{% block content %}
+<!-- Breadcrumb & Header -->
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
+  <div>
+    <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.25rem;">
+      <a href="{% url 'home' %}" style="color: var(--accent-cyan); text-decoration: none;">&larr; Quay lại Trang Chủ (Danh sách ví)</a>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.85rem;">
+      <h2 style="font-size: 1.7rem; font-weight: 800; color: #ffffff;" id="wallet-header-name">{{ wallet.name }}</h2>
+      <span class="badge {% if wallet.account_type == 'REAL' %}badge-real{% elif wallet.account_type == 'DEMO' %}badge-demo{% else %}badge-sim{% endif %}" id="wallet-header-type">
+        {{ wallet.get_account_type_display }}
+      </span>
+      <span class="badge {% if wallet.bot_status == 'RUNNING' %}badge-running{% else %}badge-paused{% endif %}" id="wallet-header-status">
+        {{ wallet.get_bot_status_display }}
+      </span>
+    </div>
+    <div style="font-size: 0.85rem; color: var(--text-muted); font-family: var(--font-mono); margin-top: 0.2rem;">
+      Tài khoản MT5: <strong style="color: #ffffff;">#{{ wallet.mt5_login }}</strong> &bull; Server: {{ wallet.mt5_server }} &bull; Đòn bẩy: 1:{{ wallet.leverage }} &bull; Rủi ro/lệnh: {{ wallet.risk_percent }}%
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 0.75rem;">
+    <button class="btn btn-secondary btn-sm" onclick="triggerManualScan()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+      Cập Nhật Phân Tích Mới
+    </button>
+    <button class="btn btn-danger btn-sm" onclick="closeAllWalletPositions({{ wallet.id }})">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      Đóng Hết Lệnh Ví Này
+    </button>
+  </div>
+</div>
+
+<!-- Section 1: Wallet Performance Report -->
+<section style="margin-bottom: 2rem;">
+  <div class="grid-5">
+    <div class="card">
+      <div class="stat-label">Số Dư Ví (Balance)</div>
+      <div class="stat-value" id="wallet-balance">${{ wallet.balance|floatformat:2 }}</div>
+      <div class="stat-sub">Vốn gốc: ${{ wallet.initial_balance|floatformat:2 }}</div>
+    </div>
+
+    <div class="card">
+      <div class="stat-label">Vốn Khả Dụng (Equity)</div>
+      <div class="stat-value" id="wallet-equity">${{ wallet.equity|floatformat:2 }}</div>
+      <div class="stat-sub">Vốn sau khi cộng Floating</div>
+    </div>
+
+    <div class="card">
+      <div class="stat-label">Lãi/Lỗ Tạm Tính (Floating)</div>
+      <div class="stat-value {% if wallet.floating_pnl >= 0 %}profit{% else %}loss{% endif %}" id="wallet-floating">
+        {% if wallet.floating_pnl >= 0 %}+{% endif %}${{ wallet.floating_pnl|floatformat:2 }}
+      </div>
+      <div class="stat-sub"><span id="wallet-open-count">{{ wallet.positions.count }}</span> lệnh đang mở</div>
+    </div>
+
+    <div class="card">
+      <div class="stat-label">Lợi Nhuận Hôm Nay</div>
+      <div class="stat-value {% if wallet.today_pnl >= 0 %}profit{% else %}loss{% endif %}" id="wallet-today">
+        {% if wallet.today_pnl >= 0 %}+{% endif %}${{ wallet.today_pnl|floatformat:2 }}
+      </div>
+      <div class="stat-sub">Tổng lãi đã chốt: ${{ wallet.total_profit|floatformat:2 }}</div>
+    </div>
+
+    <div class="card">
+      <div class="stat-label">Tỷ Lệ Thắng (Win Rate)</div>
+      <div class="stat-value profit" id="wallet-winrate">{{ wallet.win_rate }}%</div>
+      <div class="stat-sub">{{ wallet.winning_trades }} thắng / {{ wallet.total_trades }} lệnh</div>
+    </div>
+  </div>
+</section>
+
+<!-- Section 2: Bot Forward Market Analysis & Forecast for Wallet Pairs -->
+<section style="margin-bottom: 2.2rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+    <div>
+      <h3 style="font-size: 1.35rem; font-weight: 800; display: flex; align-items: center; gap: 0.6rem;">
+        <span style="color: var(--accent-cyan);">🤖</span> 
+        PHÂN TÍCH CỦA BOT & DỰ BÁO CÁC BƯỚC GIÁ TIẾP THEO
+      </h3>
+      <p style="color: var(--text-muted); font-size: 0.85rem;">
+        Bot tự động phân tích đa khung thời gian (H1/M15), cấu trúc SMC và dự báo các vùng giá tiếp theo cho các cặp được gán vào ví này
+      </p>
+    </div>
+  </div>
+
+  <!-- Container of forecast cards -->
+  <div id="forecasts-container">
+    <div style="text-align: center; padding: 2rem; color: var(--text-muted);" class="card">
+      Đang tải dữ liệu phân tích thị trường...
+    </div>
+  </div>
+</section>
+
+<!-- Section 3: AI Trading Plans Table -->
+<section style="margin-bottom: 2.2rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+    <div>
+      <h3 style="font-size: 1.25rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem;">
+        <span>📋</span> BẢNG KẾ HOẠCH GIAO DỊCH TỰ ĐỘNG (AI TRADING PLANS)
+      </h3>
+      <p style="color: var(--text-muted); font-size: 0.82rem;">Các Plan được bot tự động lập trước khi kích hoạt vào lệnh</p>
+    </div>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Mã Plan</th>
+          <th>Cặp Giao Dịch</th>
+          <th>Hướng Lệnh</th>
+          <th>Vùng Entry</th>
+          <th>Stop Loss (SL)</th>
+          <th>Take Profit (TP1 / TP2)</th>
+          <th>Tỷ Lệ R:R</th>
+          <th>Khối Lượng Lot</th>
+          <th>Trạng Thái</th>
+          <th>Lý Do Kỹ Thuật</th>
+          <th>Thời Gian Tạo</th>
+        </tr>
+      </thead>
+      <tbody id="plans-table-body">
+        <tr>
+          <td colspan="11" class="table-empty">Đang tải danh sách kế hoạch...</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Section 4: Live Open Positions Table -->
+<section style="margin-bottom: 2.2rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+    <div>
+      <h3 style="font-size: 1.25rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem;">
+        <span>⚡</span> BẢNG VỊ THẾ ĐANG MỞ (ACTIVE POSITIONS)
+      </h3>
+      <p style="color: var(--text-muted); font-size: 0.82rem;">Các lệnh đang chạy trên thị trường, cập nhật lãi/lỗ và trailing stop realtime</p>
+    </div>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Ticket MT5</th>
+          <th>Cặp</th>
+          <th>Loại Lệnh</th>
+          <th>Khối Lượng</th>
+          <th>Giá Khớp (Entry)</th>
+          <th>Giá Hiện Tại</th>
+          <th>Stop Loss (SL)</th>
+          <th>Take Profit (TP)</th>
+          <th>Lãi/Lỗ Tạm Tính ($)</th>
+          <th>Số Pips</th>
+          <th>Trailing</th>
+          <th>Thời Gian Mở</th>
+          <th>Thao Tác</th>
+        </tr>
+      </thead>
+      <tbody id="positions-table-body">
+        <tr>
+          <td colspan="13" class="table-empty">Đang tải danh sách vị thế mở...</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Section 5: Closed Trades History Table -->
+<section style="margin-bottom: 2rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
+    <div>
+      <h3 style="font-size: 1.25rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem;">
+        <span>📜</span> BẢNG LỊCH SỬ GIAO DỊCH ĐÃ ĐÓNG (CLOSED TRADES)
+      </h3>
+      <p style="color: var(--text-muted); font-size: 0.82rem;">Toàn bộ các lệnh đã chốt lời hoặc cắt lỗ của ví này</p>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="exportHistoryCSV()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+      Xuất Báo Cáo CSV
+    </button>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Ticket</th>
+          <th>Cặp</th>
+          <th>Loại Lệnh</th>
+          <th>Khối Lượng</th>
+          <th>Giá Vào</th>
+          <th>Giá Đóng</th>
+          <th>SL / TP</th>
+          <th>Lãi/Lỗ Thực Tế ($)</th>
+          <th>Số Pips</th>
+          <th>Lý Do Đóng</th>
+          <th>Thời Điểm Mở</th>
+          <th>Thời Điểm Đóng</th>
+        </tr>
+      </thead>
+      <tbody id="history-table-body">
+        <tr>
+          <td colspan="12" class="table-empty">Đang tải lịch sử giao dịch...</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  const CURRENT_WALLET_ID = {{ wallet.id }};
+</script>
+<script src="{% static 'js/wallet_detail.js' %}"></script>
+{% endblock %}

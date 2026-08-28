@@ -1,0 +1,10 @@
+{
+  "terminal.integrated.allowChaining": true,
+  "terminal.integrated.confirmOnExit": "never",
+  "agent.autoApprove": true,
+  "agent.autoExecute": "always",
+  "agent.terminalAutoRun": "always",
+  "cursor.agent.autoRun": "always",
+  "cursor.agent.alwaysAllowCommands": true,
+  "chat.commandApproval": "never"
+}

@@ -1,0 +1,89 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Trang Chủ - Danh Sách Ví & Báo Cáo Tổng Hợp Exness{% endblock %}
+
+{% block content %}
+<!-- Section 1: Global Performance Summary Report -->
+<section style="margin-bottom: 2rem;">
+  <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 1.2rem;">
+    <div>
+      <h2 style="font-size: 1.6rem; font-weight: 800; letter-spacing: -0.5px;">BÁO CÁO TỔNG HỢP TẤT CẢ CÁC VÍ</h2>
+      <p style="color: var(--text-muted); font-size: 0.88rem;">Theo dõi tổng lãi lỗ và tiến độ giao dịch của toàn bộ tài khoản Exness</p>
+    </div>
+    <div style="font-size: 0.8rem; color: var(--text-dim); font-family: var(--font-mono);" id="last-updated-text">
+      Cập nhật: Đang tải...
+    </div>
+  </div>
+
+  <div class="grid-5">
+    <!-- Card 1: Total Balance -->
+    <div class="card">
+      <div class="stat-label">Tổng Số Dư (Balance)</div>
+      <div class="stat-value" id="stat-total-balance">$0.00</div>
+      <div class="stat-sub">
+        <span id="stat-wallets-count">0</span> ví Exness kết nối
+      </div>
+    </div>
+
+    <!-- Card 2: Total Equity -->
+    <div class="card">
+      <div class="stat-label">Tổng Vốn Khả Dụng (Equity)</div>
+      <div class="stat-value" id="stat-total-equity">$0.00</div>
+      <div class="stat-sub">Vốn thực tế sau PnL</div>
+    </div>
+
+    <!-- Card 3: Floating PnL -->
+    <div class="card">
+      <div class="stat-label">Lãi/Lỗ Tạm Tính (Floating)</div>
+      <div class="stat-value" id="stat-total-floating">$0.00</div>
+      <div class="stat-sub">
+        <span id="stat-active-positions-count" class="profit-text" style="color: var(--accent-cyan);">0</span> lệnh đang chạy
+      </div>
+    </div>
+
+    <!-- Card 4: Today PnL -->
+    <div class="card">
+      <div class="stat-label">Lợi Nhuận Hôm Nay (PnL)</div>
+      <div class="stat-value" id="stat-total-today">$0.00</div>
+      <div class="stat-sub">Đã chốt trong ngày</div>
+    </div>
+
+    <!-- Card 5: Overall Win Rate -->
+    <div class="card">
+      <div class="stat-label">Tỷ Lệ Thắng Tổng (Win Rate)</div>
+      <div class="stat-value profit" id="stat-overall-winrate">0.0%</div>
+      <div class="stat-sub">
+        Tổng <span id="stat-total-trades">0</span> lệnh đã chốt
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Section 2: Connected Wallets Hub -->
+<section>
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.2rem; flex-wrap: wrap; gap: 1rem;">
+    <div>
+      <h3 style="font-size: 1.35rem; font-weight: 700;">DANH SÁCH CÁC VÍ EXNESS</h3>
+      <p style="color: var(--text-muted); font-size: 0.85rem;">Chọn một ví để xem báo cáo riêng, phân tích tiếp theo của Bot, và bảng lệnh chi tiết</p>
+    </div>
+    
+    <a href="{% url 'admin_panel' %}" class="btn btn-primary btn-sm">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+      + Kết Nối Ví Exness Mới
+    </a>
+  </div>
+
+  <!-- Wallets Grid -->
+  <div class="grid-3" id="wallets-grid-container">
+    <!-- Rendered dynamically by JS -->
+    <div style="grid-column: 1 / -1; text-align: center; padding: 3rem; color: var(--text-muted);">
+      Đang tải danh sách ví...
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/home.js' %}"></script>
+{% endblock %}
