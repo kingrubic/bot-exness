@@ -1,46 +1,15 @@
-from django.shortcuts import render, redirect, get_object_or_404
+from django.shortcuts import render, redirect
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.admin.views.decorators import staff_member_required
 from apps.accounts.models import WalletAccount
 from apps.symbols.models import SymbolConfig
 
-def home_view(request):
-    """Trang chủ Công Khai: Ai cũng có thể vào xem Báo cáo tổng thể lãi lỗ & Danh sách ví/lệnh."""
-    from apps.trading.models import Position
-    wallets = WalletAccount.objects.all()
-    symbols = SymbolConfig.objects.filter(is_active=True)
-    tot_bal = sum(w.balance for w in wallets)
-    tot_eq = sum(w.equity for w in wallets)
-    tot_fl = sum(w.floating_pnl for w in wallets)
-    tot_profit = sum(w.total_profit for w in wallets)
-    all_positions_count = Position.objects.count()
-    return render(request, 'dashboard/home.html', {
-        'wallets': wallets,
-        'symbols': symbols,
-        'tot_bal': tot_bal,
-        'tot_eq': tot_eq,
-        'tot_fl': tot_fl,
-        'tot_profit': tot_profit,
-        'all_positions_count': all_positions_count,
-    })
-
-def wallet_detail_view(request, wallet_id):
-    """Trang chi tiết ví Công Khai: Báo cáo riêng, Dự Báo Nến Tiếp Theo của Bot, Bảng Plans, Bảng Lệnh Mở, Lịch Sử."""
-    wallet = get_object_or_404(WalletAccount, pk=wallet_id)
-    breakdown = wallet.get_performance_breakdown()
-    return render(request, 'dashboard/wallet_detail.html', {
-        'wallet': wallet,
-        'breakdown': breakdown,
-        'bot_metrics': breakdown['bot'],
-        'user_metrics': breakdown['user'],
-    })
-
-# ==================== ADMIN DEDICATED VIEWS (MỖI CHỨC NĂNG 1 LINK) ====================
+# ==================== ADMIN DEDICATED VIEWS ====================
 
 @staff_member_required(login_url='/login/')
 def admin_view(request):
-    """Trang Quản Trị: Báo Cáo Hiệu Suất Vốn."""
-    from apps.trading.models import TradeHistory
+    """Trang Quản Trị: Báo Cáo Hiệu Suất Vốn & Tổng Quan."""
+    from apps.trading.models import TradeHistory, Position
     from django.db.models import Sum
     from django.utils import timezone
 
@@ -66,7 +35,6 @@ def admin_view(request):
             'total_volume': vol,
         }
 
-    from apps.trading.models import Position
     all_hist = TradeHistory.objects.all()
     bot_metrics = _calc_stats(all_hist.filter(source='BOT'))
     user_metrics = _calc_stats(all_hist.filter(source='USER'))
@@ -100,13 +68,6 @@ def admin_wallets_view(request):
         'symbols': symbols,
         'active_page': 'wallets',
     })
-
-
-
-@staff_member_required(login_url='/login/')
-def admin_risk_view(request):
-    """Trang Quản Trị: Đã bỏ quản trị rủi ro -> Chuyển tiếp sang Quản lý Ví."""
-    return redirect('admin_wallets')
 
 @staff_member_required(login_url='/login/')
 def admin_master_servers_view(request):
@@ -159,4 +120,4 @@ def login_view(request):
 def logout_view(request):
     """Đăng xuất tài khoản Admin."""
     logout(request)
-    return redirect('home')
+    return redirect('login_view')

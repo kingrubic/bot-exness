@@ -102,40 +102,39 @@ python3 run_bot.py
 
 ## 🌐 Đường Dẫn Truy Cập Hệ Thống:
 
-- 📊 **Trang Chủ Công Khai (Public Portal)**: 👉 [http://localhost:8888/](http://localhost:8888/)
-- 🔍 **Chi Tiết Ví & Dự Báo Tiếp Theo**: 👉 [http://localhost:8888/wallet/1/](http://localhost:8888/wallet/1/)
 - 🔒 **Đăng Nhập Quản Trị (Admin Login)**: 👉 [http://localhost:8888/login/](http://localhost:8888/login/)
   - Tài khoản mặc định: Username: `admin` | Password: `123456`
-- ⚙️ **Bảng Điều Khiển Quản Trị (Admin Control Panel)**:
-  - 📈 **Tổng Quan Hệ Thống**: 👉 [http://localhost:8888/admin-panel/overview/](http://localhost:8888/admin-panel/overview/)
-  - 💼 **Quản Lý Đa Ví Exness**: 👉 [http://localhost:8888/admin-panel/wallets/](http://localhost:8888/admin-panel/wallets/)
-  - 🪙 **Cặp Giao Dịch & Chiến Thuật**: 👉 [http://localhost:8888/admin-panel/master-data/symbols/](http://localhost:8888/admin-panel/master-data/symbols/)
-  - 🌐 **Master Data Máy Chủ Exness**: 👉 [http://localhost:8888/admin-panel/master-data/servers/](http://localhost:8888/admin-panel/master-data/servers/)
-  - 🚨 **Trung Tâm Giám Sát & Báo Lỗi Bot**: 👉 [http://localhost:8888/admin-panel/logs/](http://localhost:8888/admin-panel/logs/)
+- ⚙️ **Bảng Điều Khiển Quản Trị (Admin Panel)**:
+  - 📈 **Tổng Quan & Hiệu Suất Vốn**: 👉 [http://localhost:8888/admin-panel/overview/](http://localhost:8888/admin-panel/overview/)
+  - 💼 **Quản Lý Danh Sách Ví & Vào Lệnh**: 👉 [http://localhost:8888/admin-panel/wallets/](http://localhost:8888/admin-panel/wallets/)
+  - 🖥️ **Master Data Máy Chủ Exness**: 👉 [http://localhost:8888/admin-panel/master-data/servers/](http://localhost:8888/admin-panel/master-data/servers/)
+  - 📊 **Master Data Cặp Giao Dịch**: 👉 [http://localhost:8888/admin-panel/master-data/symbols/](http://localhost:8888/admin-panel/master-data/symbols/)
+  - ⚠️ **Nhật Ký & Báo Lỗi Kỹ Thuật (BotLog)**: 👉 [http://localhost:8888/admin-panel/logs/](http://localhost:8888/admin-panel/logs/)
 
 ---
 
-## 📁 Cấu Trúc Giao Diện & Templates
-
+## 📁 Cấu Trúc Thư Mục Dự Án:
 ```
-templates/
-├── auth/
-│   └── login.html                     # Trang Đăng Nhập Quản Trị (CoolAdmin)
-├── admin/
-│   ├── layout/
-│   │   └── master.html                # Master Layout Sidebar, Topbar, Status Pill, Modals
-│   ├── overview.html                  # Tổng quan KPIs, Ticker, Vị thế mở, Kế hoạch AI, Lịch sử
-│   ├── wallets.html                   # Quản lý đa ví (Real, Demo, Sim) + Modal Add/Edit
-│   ├── master_symbols.html            # Cấu hình cặp giao dịch (Metals, Forex, Crypto, Indices)
-│   ├── risk.html                      # Quản trị rủi ro, Lot Size Calculator & Circuit Breaker
-│   ├── master_servers.html            # Master Data 50+ máy chủ Exness MT5/MT4
-│   ├── master_accounts.html           # Master Data loại tài khoản Exness
-│   └── logs.html                      # Trung tâm báo lỗi & Traceback viewer cho Bot
-├── dashboard/
-│   ├── home.html                      # Trang chủ công khai theo dõi đa ví
-│   └── wallet_detail.html             # Chi tiết ví, phân tích nến tiếp theo & xuất CSV
-└── static/
-    ├── cooladmin/ (css, js, vendor, fonts, images)
-    ├── css/admin_custom.css
-    └── js/admin.js
+exness/
+├── apps/
+│   ├── accounts/              # Model Ví, Số dư, Phân loại BOT/USER
+│   ├── analysis/              # Technical Analyzer: EMA, RSI, SMC
+│   ├── api/                   # REST API & WebSocket Feeds
+│   ├── dashboard/             # Views Admin Panel & Auth
+│   ├── plans/                 # AutoPlanGenerator: Kế hoạch lướt sóng
+│   ├── symbols/               # Cặp tiền & cấu hình spread
+│   └── trading/               # Execution Engine & MT5 Connector
+├── deploy/
+│   └── mt5_wine_bridge.py     # Bridge Server MT5 trên Linux
+├── mql5/
+│   ├── ClosePosition.mq5      # EA đóng vị thế MT5
+│   └── MT5_Command_Bridge.mq5 # EA khớp lệnh MT5
+├── templates/
+│   ├── admin/                 # Giao diện Quản Trị Hệ Thống
+│   └── auth/                  # Giao diện Đăng nhập
+├── static/                    # CSS, JS (admin.js) & Webfonts
+├── tests/                     # Test Suite (12 unit tests)
+├── manage.py
+├── run_bot.py
+└── README.md
 ```

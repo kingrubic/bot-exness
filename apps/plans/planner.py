@@ -45,10 +45,10 @@ class AutoPlanGenerator:
         lot = max(0.01, round(lot, 2))
         eq_val = float(wallet.equity if (wallet.equity and wallet.equity > 0) else (wallet.balance or 0.0))
 
-        tag_name = "AI Nhồi Lệnh Theo Trend (Scale-In)" if is_pyramiding else "AI Đánh Lướt Sóng Theo Trend (Micro-Scalping)"
+        tag_name = "AI Nhồi Lệnh Theo Trend (Scale-In)" if is_pyramiding else "AI Đánh Theo Trend (Trend-Following)"
         rationale = (
             f"{tag_name}: Khớp thị trường {direction} {lot} Lot theo xu hướng {forecast.trend_bias}. "
-            f"Kiểm soát hạn mức an toàn vốn (${eq_val:.2f}), đánh lướt sóng nhanh và tự động chốt lời ngay khi có lãi ròng sau phí."
+            f"Kiểm soát hạn mức an toàn vốn (${eq_val:.2f}), yêu cầu lãi trên 1.00 USD (>= 1U) + logic kỹ thuật (Trailing đỉnh / Đảo chiều trend) mới tự động chốt lời."
         )
 
         plan = TradingPlan.objects.create(

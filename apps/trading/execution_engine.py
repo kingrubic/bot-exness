@@ -281,7 +281,7 @@ class ExecutionEngine:
                         position.lowest_price = curr_price
 
                 # =========================================================================
-                # 1. TÍNH TOÁN LỢI NHUẬN RÒNG SAU TRỪ CHI PHÍ SÀN (COMMISSION, SPREAD, SWAP)
+                # 1. TÍNH TOÁN LỢI NHUẬN RÒNG SAU TRỪ CHI PHÍ SÀN (COMMISSION, SWAP)
                 # =========================================================================
                 actual_comm = float(position.commission or 0.0)
                 est_comm = abs(actual_comm) if actual_comm != 0.0 else round(lot * 3.0, 2)
@@ -291,39 +291,58 @@ class ExecutionEngine:
                 net_pnl = round(pnl - est_comm - swap_fee, 2)
 
                 # =========================================================================
-                # 2. TỰ ĐỘNG CHỐT LỜI SIÊU TỐC (ULTRA-FAST MICRO SCALPING - LƯỚT SÓNG RÚT GỌN)
+                # 2. ĐIỀU KIỆN CHỐT LỜI: BẮT BUỘC LÃI TRÊN 1.00 USD (>= 1U) + THỎA MÃN LOGIC KỸ THUẬT
                 # =========================================================================
-                # Lướt sóng nhanh: Lãi ròng chỉ cần đạt từ $0.15 hoặc 1.0 pip là kích hoạt chốt
-                min_profit_threshold = max(round(lot * 1.2, 2), 0.15)
+                min_profit_threshold = max(1.00, round(lot * 20.0, 2)) # Tối thiểu luôn >= 1.00 USD
                 
                 should_take_profit = False
                 close_reason = 'PROFIT_TAKE'
 
-                if net_pnl >= min_profit_threshold or pips >= 1.0:
+                # Chỉ xem xét chốt lời khi lợi nhuận thực nhận ĐÃ VƯỢT TRÊN 1.00 USD (>= 1U)
+                if net_pnl >= min_profit_threshold:
+                    forecast = MarketForecast.objects.filter(symbol=position.symbol).first()
+
                     if position.position_type == 'BUY':
-                        # Chốt khi nến hạ nhiệt thoái lui 25% từ đỉnh
+                        # LOGIC 1: Trailing thoái lui 25% từ đỉnh cao nhất (khi đỉnh từng lãi >= $1.20)
                         if position.highest_price and position.highest_price > position.open_price:
                             peak_gain = float(position.highest_price) - open_p
                             curr_gain = curr_p - open_p
-                            if curr_gain <= peak_gain * 0.75:
+                            peak_pnl_est = round(peak_gain * contract_size * lot - est_comm - swap_fee, 2)
+                            if peak_pnl_est >= 1.20 and curr_gain <= peak_gain * 0.75:
                                 should_take_profit = True
                                 close_reason = 'TRAILING_TP'
-                        # Lãi đạt từ 2.0 pips hoặc $0.30+ -> Chốt lời dứt khoát thu tiền về
-                        if net_pnl >= max(lot * 2.5, 0.30) or pips >= 2.0:
+
+                        # LOGIC 2: Đạt mục tiêu sóng lớn (Lợi nhuận >= $2.00 hoặc >= 5.0 pips)
+                        target_tp_usd = max(2.00, round(lot * 40.0, 2))
+                        if net_pnl >= target_tp_usd or pips >= 5.0:
                             should_take_profit = True
                             close_reason = 'TP_HIT'
+
+                        # LOGIC 3: Xu hướng kỹ thuật đảo chiều (Trend đảo sang BEARISH hoặc quá mua)
+                        if forecast and (forecast.trend_bias == 'BEARISH' or 'SELL' in str(forecast.recommended_action)):
+                            should_take_profit = True
+                            close_reason = 'TREND_REVERSAL'
+
                     else: # SELL
-                        # Chốt khi nến bật lên thoái lui 25% từ đáy
+                        # LOGIC 1: Trailing thoái lui 25% từ đáy thấp nhất (khi đáy từng lãi >= $1.20)
                         if position.lowest_price and position.lowest_price < position.open_price:
                             peak_gain = open_p - float(position.lowest_price)
                             curr_gain = open_p - curr_p
-                            if curr_gain <= peak_gain * 0.75:
+                            peak_pnl_est = round(peak_gain * contract_size * lot - est_comm - swap_fee, 2)
+                            if peak_pnl_est >= 1.20 and curr_gain <= peak_gain * 0.75:
                                 should_take_profit = True
                                 close_reason = 'TRAILING_TP'
-                        # Lãi đạt từ 2.0 pips hoặc $0.30+ -> Chốt lời dứt khoát thu tiền về
-                        if net_pnl >= max(lot * 2.5, 0.30) or pips >= 2.0:
+
+                        # LOGIC 2: Đạt mục tiêu sóng lớn (Lợi nhuận >= $2.00 hoặc >= 5.0 pips)
+                        target_tp_usd = max(2.00, round(lot * 40.0, 2))
+                        if net_pnl >= target_tp_usd or pips >= 5.0:
                             should_take_profit = True
                             close_reason = 'TP_HIT'
+
+                        # LOGIC 3: Xu hướng kỹ thuật đảo chiều (Trend đảo sang BULLISH hoặc quá bán)
+                        if forecast and (forecast.trend_bias == 'BULLISH' or 'BUY' in str(forecast.recommended_action)):
+                            should_take_profit = True
+                            close_reason = 'TREND_REVERSAL'
 
                 if should_take_profit:
                     cls.close_position(position, reason=close_reason)
