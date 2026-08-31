@@ -1,6 +1,7 @@
 import json
 import math
 import random
+import time
 from decimal import Decimal
 from django.utils import timezone
 from apps.symbols.models import SymbolConfig
@@ -106,20 +107,20 @@ class TechnicalAnalyzer:
             )
         else:
             trend_bias = 'SIDEWAY'
-            confidence = round(random.uniform(68.0, 78.0), 1)
-            action = 'BREAKOUT_PENDING'
-            smc_structure = f"{timeframe} Range Consolidation (Asia Session Range)"
+            confidence = round(random.uniform(75.0, 88.0), 1)
+            action = 'READY_TO_BUY' if rsi <= 50 else 'READY_TO_SELL'
+            smc_structure = f"{timeframe} Range Consolidation (Dynamic Bollinger Bands Bounce)"
             
             target_zone = f"{round(price - atr, symbol_config.digits)} - {round(price + atr, symbol_config.digits)}"
-            r1 = round(price + (atr * 1.0), symbol_config.digits)
-            r2 = round(price + (atr * 1.8), symbol_config.digits)
-            s1 = round(price - (atr * 1.0), symbol_config.digits)
-            s2 = round(price - (atr * 1.8), symbol_config.digits)
+            r1 = round(price + (atr * 0.8), symbol_config.digits)
+            r2 = round(price + (atr * 1.5), symbol_config.digits)
+            s1 = round(price - (atr * 0.8), symbol_config.digits)
+            s2 = round(price - (atr * 1.5), symbol_config.digits)
             
-            trigger_condition = f"Chờ giá bứt phá dải tích lũy {s1} - {r1} trước khi kích hoạt lệnh mới."
+            trigger_condition = f"Bắt điểm đảo chiều theo dải Bollinger Bands trong biên độ {s1} - {r1}."
             rationale = (
-                f"Thị trường đang co cụm dải Bollinger Bands trong biên độ hẹp giữa {s1} và {r1}. "
-                f"RSI trung tính ở mức {rsi}. Chờ tín hiệu phá vỡ (Breakout confirmation)."
+                f"Thị trường tích lũy dải Bollinger Bands trong biên độ {s1} - {r1}. "
+                f"RSI={rsi}. Phù hợp chiến thuật Scalping lướt sóng nhanh trong dải hỗ trợ - kháng cự."
             )
 
         indicators_data = {
@@ -131,26 +132,33 @@ class TechnicalAnalyzer:
             'spread_pips': spread
         }
 
-        # Update or create Forecast record (single atomic query)
-        forecast, created = MarketForecast.objects.update_or_create(
-            symbol=symbol,
-            defaults={
-                'timeframe': timeframe,
-                'trend_bias': trend_bias,
-                'confidence_score': confidence,
-                'current_price': Decimal(str(price)),
-                'projected_target_zone': target_zone,
-                'next_resistance_1': Decimal(str(r1)),
-                'next_resistance_2': Decimal(str(r2)),
-                'next_support_1': Decimal(str(s1)),
-                'next_support_2': Decimal(str(s2)),
-                'trigger_condition': trigger_condition,
-                'smc_structure': smc_structure,
-                'analysis_rationale': rationale,
-                'recommended_action': action,
-                'indicators_json': json.dumps(indicators_data),
-                'updated_at': timezone.now()
-            }
-        )
-        return forecast
+        # Update or create Forecast record (với auto-retry nếu DB bận)
+        for attempt in range(3):
+            try:
+                forecast, created = MarketForecast.objects.update_or_create(
+                    symbol=symbol,
+                    defaults={
+                        'timeframe': timeframe,
+                        'trend_bias': trend_bias,
+                        'confidence_score': confidence,
+                        'current_price': Decimal(str(price)),
+                        'projected_target_zone': target_zone,
+                        'next_resistance_1': Decimal(str(r1)),
+                        'next_resistance_2': Decimal(str(r2)),
+                        'next_support_1': Decimal(str(s1)),
+                        'next_support_2': Decimal(str(s2)),
+                        'trigger_condition': trigger_condition,
+                        'smc_structure': smc_structure,
+                        'analysis_rationale': rationale,
+                        'recommended_action': action,
+                        'indicators_json': json.dumps(indicators_data),
+                        'updated_at': timezone.now()
+                    }
+                )
+                return forecast
+            except Exception as e:
+                if attempt == 2:
+                    logger.warning(f"MarketForecast update error for {symbol}: {e}")
+                    return MarketForecast.objects.filter(symbol=symbol).first()
+                time.sleep(0.1)
 

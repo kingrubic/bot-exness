@@ -1,3 +1,4 @@
+from decimal import Decimal
 from django.db import models
 from django.utils import timezone
 from apps.accounts.models import WalletAccount
@@ -26,9 +27,9 @@ class TradingPlan(models.Model):
     entry_zone_low = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Vùng Entry Min")
     entry_zone_high = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Vùng Entry Max")
     
-    stop_loss = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Cắt Lỗ (Stop Loss)")
-    take_profit_1 = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Chốt Lời 1 (TP1)")
-    take_profit_2 = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Chốt Lời 2 (TP2)")
+    stop_loss = models.DecimalField(max_digits=15, decimal_places=5, null=True, blank=True, default=Decimal('0.00'), verbose_name="Cắt Lỗ (Stop Loss)")
+    take_profit_1 = models.DecimalField(max_digits=15, decimal_places=5, null=True, blank=True, default=Decimal('0.00'), verbose_name="Chốt Lời 1 (TP1)")
+    take_profit_2 = models.DecimalField(max_digits=15, decimal_places=5, null=True, blank=True, default=Decimal('0.00'), verbose_name="Chốt Lời 2 (TP2)")
     
     rr_ratio = models.FloatField(default=2.0, verbose_name="Tỷ Lệ Risk:Reward (R:R)")
     calculated_lot = models.FloatField(default=0.1, verbose_name="Khối Lượng Tính Toán (Lot)")

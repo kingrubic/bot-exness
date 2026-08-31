@@ -482,7 +482,7 @@ body.app .navbar-sidebar .navbar__list > li.active > a::before,
 }
 
 
-/* Search Input with Centered Icon */
+/* Search Input with Icon at the End (behind input) */
 .custom-search-box {
     position: relative;
     display: inline-flex;
@@ -491,7 +491,8 @@ body.app .navbar-sidebar .navbar__list > li.active > a::before,
 }
 .custom-search-box .search-icon {
     position: absolute;
-    left: 14px;
+    right: 14px;
+    left: auto;
     top: 50%;
     transform: translateY(-50%);
     color: #94a3b8;
@@ -502,8 +503,8 @@ body.app .navbar-sidebar .navbar__list > li.active > a::before,
 }
 .custom-search-box .search-input {
     width: 100%;
-    padding-left: 38px !important;
-    padding-right: 14px;
+    padding-left: 14px !important;
+    padding-right: 38px !important;
     border-radius: 9999px;
     border: 1px solid #cbd5e1;
     background-color: #f8fafc;
@@ -520,10 +521,12 @@ body.app .navbar-sidebar .navbar__list > li.active > a::before,
 .custom-search-box.search-sm .search-input {
     height: 30px;
     font-size: 12px;
-    padding-left: 32px !important;
+    padding-left: 12px !important;
+    padding-right: 32px !important;
 }
 .custom-search-box.search-sm .search-icon {
-    left: 11px;
+    right: 11px;
+    left: auto;
     font-size: 11px;
 }
 

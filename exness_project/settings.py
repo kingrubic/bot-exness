@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     'corsheaders',
     
     # Local apps
+    'apps.core',
     'apps.accounts',
     'apps.symbols',
     'apps.analysis',
@@ -44,6 +45,8 @@ INSTALLED_APPS = [
     'apps.api',
     'apps.dashboard',
 ]
+
+WSGI_APPLICATION = 'exness_project.wsgi.application'
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',

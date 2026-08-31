@@ -13,83 +13,42 @@ class AutoPlanGenerator:
     """
 
     @staticmethod
-    def generate_plan_for_wallet(wallet: WalletAccount, symbol_config: SymbolConfig, forecast: MarketForecast) -> TradingPlan:
+    def generate_plan_for_wallet(wallet: WalletAccount, symbol_config: SymbolConfig, forecast: MarketForecast, is_pyramiding: bool = False) -> TradingPlan:
         # Check if symbol is allowed for this wallet
         if symbol_config.symbol not in wallet.allowed_symbols:
             return None
 
-        # If market is sideway with low confidence, do not generate risky plan
-        if forecast.trend_bias == 'SIDEWAY' and forecast.confidence_score < 75.0:
-            return None
-
         price = float(symbol_config.current_price)
         digits = symbol_config.digits
-        atr = max(float(symbol_config.atr_value), price * 0.005, 5 * (10 ** (-digits)))
         
-        direction = 'BUY' if forecast.trend_bias == 'BULLISH' else 'SELL'
-        
-        # Enforce healthy SL distance (at least 1.0 * ATR)
-        sl_diff = round(atr * random.uniform(1.0, 1.4), digits)
-        min_diff = max(5 * (10 ** (-digits)), price * 0.001)
-        sl_diff = max(sl_diff, min_diff)
-        
-        tp1_diff = round(sl_diff * random.uniform(1.6, 2.2), digits)
-        tp2_diff = round(sl_diff * random.uniform(2.6, 3.6), digits)
-
-        if direction == 'BUY':
-            entry_price = round(price * (1 - random.uniform(0.0005, 0.0015)), digits)
-            entry_low = round(entry_price - (sl_diff * 0.2), digits)
-            entry_high = round(entry_price + (sl_diff * 0.2), digits)
-            sl = round(entry_price - sl_diff, digits)
-            tp1 = round(entry_price + tp1_diff, digits)
-            tp2 = round(entry_price + tp2_diff, digits)
-        else: # SELL
-            entry_price = round(price * (1 + random.uniform(0.0005, 0.0015)), digits)
-            entry_low = round(entry_price - (sl_diff * 0.2), digits)
-            entry_high = round(entry_price + (sl_diff * 0.2), digits)
-            sl = round(entry_price + sl_diff, digits)
-            tp1 = round(entry_price - tp1_diff, digits)
-            tp2 = round(entry_price - tp2_diff, digits)
-
-        sl_distance = max(abs(entry_price - sl), min_diff)
-        tp_distance = max(abs(tp1 - entry_price), sl_distance * 1.5)
-
-        rr_ratio = round(tp_distance / max(sl_distance, 0.0001), 2)
-        if rr_ratio < 1.4:
-            rr_ratio = 1.6
-        elif rr_ratio > 4.0:
-            rr_ratio = 2.5
-
-        # Calculate dynamic Lot Size based on wallet risk %
-        balance = float(wallet.balance)
-        risk_pct = wallet.risk_percent / 100.0
-        risk_amount_usd = round(balance * risk_pct, 2)
-        
-        # Accurate lot calculation by category & contract size
-        cat = getattr(symbol_config, 'category', 'FOREX')
-        contract = float(symbol_config.contract_size or 100.0)
-        
-        if cat == 'CRYPTO':
-            # 1 Lot = 1 coin. Loss in USD = lot * sl_distance * contract
-            lot = risk_amount_usd / max(sl_distance * contract, 1.0)
-        elif cat == 'METALS':
-            lot = risk_amount_usd / max(sl_distance * contract, 1.0)
-        elif cat == 'INDICES':
-            lot = risk_amount_usd / max(sl_distance * contract, 1.0)
-        else: # FOREX
-            if "JPY" in symbol_config.symbol:
-                lot = risk_amount_usd / max((sl_distance / max(price, 1.0)) * contract, 1.0)
+        # 1. HƯỚNG VÀO LỆNH THEO XU HƯỚNG THỊ TRƯỜNG (TREND-FOLLOWING)
+        if forecast.trend_bias == 'BULLISH':
+            direction = 'BUY'
+        elif forecast.trend_bias == 'BEARISH':
+            direction = 'SELL'
+        else:
+            if forecast.recommended_action == 'READY_TO_BUY' or 'BUY' in str(forecast.recommended_action):
+                direction = 'BUY'
+            elif forecast.recommended_action == 'READY_TO_SELL' or 'SELL' in str(forecast.recommended_action):
+                direction = 'SELL'
             else:
-                lot = risk_amount_usd / max(sl_distance * contract, 1.0)
+                direction = 'BUY' if price > float(symbol_config.current_price or price) else 'SELL'
 
-        # Normalize lot size between 0.01 and max limit
-        lot = max(0.01, min(round(lot, 2), 5.00))
+        # Khớp thẳng tại giá thị trường hiện tại
+        if direction == 'BUY':
+            entry_price = float(symbol_config.current_ask or symbol_config.current_price)
+        else:
+            entry_price = float(symbol_config.current_bid or symbol_config.current_price)
+        entry_price = round(entry_price, digits)
 
+        lot = float(wallet.default_lot_size or 0.01)
+        lot = max(0.01, round(lot, 2))
+        eq_val = float(wallet.equity if (wallet.equity and wallet.equity > 0) else (wallet.balance or 0.0))
+
+        tag_name = "AI Nhồi Lệnh Theo Trend (Scale-In)" if is_pyramiding else "AI Đánh Lướt Sóng Theo Trend (Micro-Scalping)"
         rationale = (
-            f"Chiến thuật {symbol_config.get_strategy_display()}: "
-            f"Dự báo {forecast.get_trend_bias_display()} với độ tin cậy {forecast.confidence_score}%. "
-            f"Vùng Entry: {entry_low} - {entry_high}. Cắt lỗ bảo toàn vốn tại {sl}. "
-            f"Tỷ lệ R:R = 1:{rr_ratio}. Khối lượng tính toán an toàn: {lot} Lot ({wallet.risk_percent}% vốn)."
+            f"{tag_name}: Khớp thị trường {direction} {lot} Lot theo xu hướng {forecast.trend_bias}. "
+            f"Kiểm soát hạn mức an toàn vốn (${eq_val:.2f}), đánh lướt sóng nhanh và tự động chốt lời ngay khi có lãi ròng sau phí."
         )
 
         plan = TradingPlan.objects.create(
@@ -98,19 +57,55 @@ class AutoPlanGenerator:
             timeframe=symbol_config.timeframe,
             direction=direction,
             entry_price=Decimal(str(entry_price)),
-            entry_zone_low=Decimal(str(entry_low)),
-            entry_zone_high=Decimal(str(entry_high)),
-            stop_loss=Decimal(str(sl)),
-            take_profit_1=Decimal(str(tp1)),
-            take_profit_2=Decimal(str(tp2)),
-            rr_ratio=rr_ratio,
+            entry_zone_low=Decimal(str(entry_price)),
+            entry_zone_high=Decimal(str(entry_price)),
+            stop_loss=None,
+            take_profit_1=None,
+            take_profit_2=None,
+            rr_ratio=1.0,
             calculated_lot=lot,
-            risk_amount_usd=Decimal(str(risk_amount_usd)),
+            risk_amount_usd=Decimal('0.00'),
             rationale=rationale,
             status='PENDING_TRIGGER',
             created_at=timezone.now()
         )
         return plan
+
+    @classmethod
+    def update_or_create_plan_for_wallet(cls, wallet: WalletAccount, symbol_config: SymbolConfig, forecast: MarketForecast, is_pyramiding: bool = False) -> TradingPlan:
+        """
+        Cập nhật kế hoạch giao dịch AI liên tục theo biến động giá thị trường thời gian thực.
+        Nếu đã có plan PENDING_TRIGGER thì update giá entry, SL, TP, Lot mới nhất theo nến và giá sàn.
+        Nếu chưa có thì tạo plan mới.
+        """
+        existing_plan = TradingPlan.objects.filter(
+            wallet=wallet,
+            symbol=symbol_config.symbol,
+            status='PENDING_TRIGGER'
+        ).first()
+
+        new_plan = cls.generate_plan_for_wallet(wallet, symbol_config, forecast, is_pyramiding=is_pyramiding)
+        if not new_plan:
+            return existing_plan
+
+        if existing_plan and existing_plan.id != new_plan.id:
+            # Sync new calculations into existing plan to keep stable ID
+            existing_plan.direction = new_plan.direction
+            existing_plan.entry_price = new_plan.entry_price
+            existing_plan.entry_zone_low = new_plan.entry_zone_low
+            existing_plan.entry_zone_high = new_plan.entry_zone_high
+            existing_plan.stop_loss = new_plan.stop_loss
+            existing_plan.take_profit_1 = new_plan.take_profit_1
+            existing_plan.take_profit_2 = new_plan.take_profit_2
+            existing_plan.rr_ratio = new_plan.rr_ratio
+            existing_plan.calculated_lot = new_plan.calculated_lot
+            existing_plan.risk_amount_usd = new_plan.risk_amount_usd
+            existing_plan.rationale = new_plan.rationale
+            existing_plan.created_at = timezone.now()
+            existing_plan.save()
+            new_plan.delete()
+            return existing_plan
+        return new_plan
 
     @classmethod
     def refresh_plans_for_wallet(cls, wallet: WalletAccount) -> list:

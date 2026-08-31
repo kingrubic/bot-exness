@@ -2,34 +2,38 @@
 # EXNESS AUTO TRADING PLATFORM - GITIGNORE
 # ==============================================================================
 
-# Environment & Sensitive Credentials
+# 1. Environment & Sensitive Credentials
 .env
 .env.local
 .env.*.local
+*.pem
+*.key
+*.cert
+*.crt
 
-# Python Bytecode & Cache
+# 2. Python Bytecode, Caches & Builds
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
+*.egg
+*.egg-info/
+.eggs/
 build/
-develop-eggs/
 dist/
+develop-eggs/
 downloads/
 eggs/
-.eggs/
 lib/
 lib64/
 parts/
 sdist/
 var/
 wheels/
-*.egg-info/
+.Python
 .installed.cfg
-*.egg
 
-# Virtual Environments
+# 3. Virtual Environments
 venv/
 env/
 ENV/
@@ -37,7 +41,7 @@ ENV/
 env.bak/
 venv.bak/
 
-# Testing & Coverage
+# 4. Testing, Linting & Coverage
 .pytest_cache/
 .coverage
 .coverage.*
@@ -47,8 +51,10 @@ coverage.xml
 *.cover
 *.py,cover
 htmlcov/
+.mypy_cache/
+.ruff_cache/
 
-# Database files
+# 5. Database Files (SQLite & Backups)
 *.sqlite3
 *.sqlite3-journal
 *.sqlite3-shm
@@ -60,19 +66,36 @@ htmlcov/
 db_backup.*
 sandbox_exness.sqlite3
 
-# Django Static & Media uploads
+# 6. Django Static, Uploads & Media
 staticfiles/
 media/
 
-# Logs & Temporary Files
+# 7. Logs & Temporary Files
 *.log
 logs/
+storage/logs/
 *.tmp
 *.bak
 *.swp
 *.swo
+*~
 
-# OS Specific files
+# 8. Temporary Scratch & Debug Scripts
+scratch/
+scratch_*/
+scratch_*.py
+
+# 9. Wine & Windows Emulation Artifacts (Rất nặng & không đưa lên Git)
+drive_c/
+dosdevices/
+*.reg
+.update-timestamp
+*.exe
+*.msi
+*.dll
+*.iso
+
+# 10. OS Specific Files
 .DS_Store
 .DS_Store?
 ._*
@@ -80,12 +103,15 @@ logs/
 .Trashes
 ehthumbs.db
 Thumbs.db
+desktop.ini
 
-# IDE & Editor Settings
+# 11. IDE & Editor Workspace Settings
 .idea/
+.vscode/
 *.sublime-project
 *.sublime-workspace
 
-# MQL5 Compiled Executables
+# 12. MQL5 Compiled Executables
 *.ex5
 *.ex4
+*.bin

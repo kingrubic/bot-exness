@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
+from django.db.models import Sum, Count, Q
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -17,21 +18,13 @@ from apps.analysis.analyzer import TechnicalAnalyzer
 
 import time
 from django.http import StreamingHttpResponse
+from apps.core.time_utils import format_vn_time
 
 def build_live_ticks_data():
-    """Tạo payload đồng bộ giá Live, Vị thế, Lỗ/Lãi Thả Nổi, Số Dư, Vốn Khả Dụng và KPI thời gian thực."""
-    try:
-        from apps.trading.live_market_feed import LiveMarketFeedService
-        from apps.trading.execution_engine import ExecutionEngine
-        LiveMarketFeedService.sync_all_symbols()
-        # Tính toán lại Floating PnL của từng vị thế và Equity của từng Ví theo giá Live
-        ExecutionEngine.update_positions_and_pnl()
-    except Exception:
-        pass
-
-    # 1. Symbols
+    """Tạo payload đồng bộ giá Live, Vị thế, Lỗ/Lãi Thả Nổi, Số Dư, Vốn Khả Dụng và KPI thời gian thực siêu tốc (<2ms)."""
+    # 1. Symbols (Lấy toàn bộ các cặp cấu hình để phục vụ Quick Trade và Market Ticker)
     symbols = []
-    for s in SymbolConfig.objects.filter(is_active=True):
+    for s in SymbolConfig.objects.all():
         symbols.append({
             'symbol': s.symbol,
             'display_name': s.display_name,
@@ -43,11 +36,13 @@ def build_live_ticks_data():
             'spread': float(s.current_spread_pips),
             'timeframe': s.timeframe,
             'digits': s.digits,
+            'is_active': s.is_active,
         })
 
     # 2. Positions
     positions = []
     for p in Position.objects.select_related('wallet').all():
+        pos_source = getattr(p, 'source', 'BOT') or 'BOT'
         positions.append({
             'id': p.id,
             'ticket': p.ticket,
@@ -55,13 +50,16 @@ def build_live_ticks_data():
             'wallet_name': p.wallet.name if p.wallet else '',
             'symbol': p.symbol,
             'position_type': p.position_type,
-            'lot_size': float(p.lot_size),
-            'open_price': float(p.open_price),
-            'current_price': float(p.current_price),
-            'stop_loss': float(p.stop_loss),
-            'take_profit': float(p.take_profit),
-            'floating_pnl': float(p.floating_pnl),
-            'floating_pips': float(p.floating_pips),
+            'lot_size': float(p.lot_size or 0.01),
+            'open_price': float(p.open_price or 0.0),
+            'current_price': float(p.current_price or 0.0),
+            'stop_loss': float(p.stop_loss) if p.stop_loss is not None else None,
+            'take_profit': float(p.take_profit) if p.take_profit is not None else None,
+            'floating_pnl': float(p.floating_pnl or 0.0),
+            'floating_pips': float(p.floating_pips or 0.0),
+            'source': pos_source,
+            'source_display': 'BOT (Tự Động)' if pos_source == 'BOT' else 'USER (Người Dùng)',
+            'comment': getattr(p, 'comment', ''),
             'is_breakeven_set': p.is_breakeven_set,
             'is_trailing': p.is_trailing,
         })
@@ -77,15 +75,18 @@ def build_live_ticks_data():
     tot_wins = 0
 
     for w in WalletAccount.objects.all():
+        w_today_pnl = w.get_today_pnl()
         tot_bal += w.balance
         tot_eq += w.equity
         tot_fl += w.floating_pnl
-        tot_td += w.today_pnl
+        tot_td += w_today_pnl
         tot_prof += w.total_profit
         tot_trades += w.total_trades
         tot_wins += w.winning_trades
 
         p_count = sum(1 for pos in positions if pos['wallet_id'] == w.id)
+        lev_str = w.leverage_display
+        breakdown = w.get_performance_breakdown()
         wallets.append({
             'id': w.id,
             'name': w.name,
@@ -93,23 +94,106 @@ def build_live_ticks_data():
             'account_type_display': w.get_account_type_display(),
             'mt5_login': w.mt5_login,
             'mt5_server': w.mt5_server,
+            'currency': w.currency,
             'capital': float(w.capital),
             'balance': float(w.balance),
             'equity': float(w.equity),
             'floating_pnl': float(w.floating_pnl),
-            'today_pnl': float(w.today_pnl),
+            'margin': float(w.margin),
+            'margin_free': float(w.margin_free),
+            'margin_level': float(w.margin_level),
+            'leverage': w.leverage,
+            'leverage_display': lev_str,
+            'today_pnl': float(w_today_pnl),
             'total_profit': float(w.total_profit),
             'win_rate': w.win_rate,
             'total_trades': w.total_trades,
             'active_trades_count': p_count,
             'risk_percent': w.risk_percent,
+            'default_lot_size': float(w.default_lot_size or 0.01),
             'is_active': w.is_active,
             'bot_status': w.bot_status,
             'bot_status_display': w.get_bot_status_display(),
             'allowed_symbols': w.allowed_symbols,
+            'bot_metrics': breakdown['bot'],
+            'user_metrics': breakdown['user'],
         })
 
     winrate = round((tot_wins / tot_trades) * 100, 1) if tot_trades > 0 else 0.0
+
+    def _calc_live_source_stats(source_name):
+        qs = TradeHistory.objects.filter(source=source_name)
+        tot = qs.count()
+        wins = qs.filter(pnl__gt=0).count()
+        losses = qs.filter(pnl__lt=0).count()
+        wr = round((wins / tot) * 100, 1) if tot > 0 else 0.0
+        pnl = float(qs.aggregate(s=Sum('pnl'))['s'] or 0.0)
+        today = timezone.localdate()
+        today_pnl = float(qs.filter(closed_at__date=today).aggregate(s=Sum('pnl'))['s'] or 0.0)
+        vol = round(float(qs.aggregate(v=Sum('lot_size'))['v'] or 0.0), 2)
+        return {
+            'total_trades': tot,
+            'winning_trades': wins,
+            'losing_trades': losses,
+            'win_rate': wr,
+            'total_profit': round(pnl, 2),
+            'today_pnl': round(today_pnl, 2),
+            'total_volume': vol,
+        }
+
+    # 4. Plans
+    plans = []
+    for pl in TradingPlan.objects.select_related('wallet').all().order_by('-created_at')[:40]:
+        plans.append({
+            'id': pl.id,
+            'wallet_id': pl.wallet_id,
+            'wallet_name': pl.wallet.name if pl.wallet else '',
+            'symbol': pl.symbol,
+            'timeframe': pl.timeframe,
+            'direction': pl.direction,
+            'entry_price': float(pl.entry_price or 0.0),
+            'entry_zone': f"{pl.entry_zone_low} - {pl.entry_zone_high}",
+            'stop_loss': float(pl.stop_loss) if pl.stop_loss is not None else None,
+            'take_profit_1': float(pl.take_profit_1) if pl.take_profit_1 is not None else None,
+            'take_profit_2': float(pl.take_profit_2) if pl.take_profit_2 is not None else None,
+            'rr_ratio': pl.rr_ratio or 1.0,
+            'calculated_lot': float(pl.calculated_lot or 0.01),
+            'risk_amount_usd': float(pl.risk_amount_usd or 0.0),
+            'rationale': pl.rationale,
+            'status': pl.status,
+            'status_display': pl.get_status_display(),
+            'created_at': format_vn_time(pl.created_at),
+        })
+
+    # 5. History
+    history = []
+    for h in TradeHistory.objects.select_related('wallet').all().order_by('-closed_at')[:100]:
+        h_source = getattr(h, 'source', 'BOT') or 'BOT'
+        history.append({
+            'id': h.id,
+            'ticket': h.ticket,
+            'wallet_id': h.wallet_id,
+            'wallet_name': h.wallet.name if h.wallet else '',
+            'symbol': h.symbol,
+            'position_type': h.position_type,
+            'lot_size': float(h.lot_size or 0.01),
+            'open_price': float(h.open_price or 0.0),
+            'close_price': float(h.close_price or 0.0),
+            'stop_loss': float(h.stop_loss) if h.stop_loss else None,
+            'take_profit': float(h.take_profit) if h.take_profit else None,
+            'pnl': float(h.pnl or 0.0),
+            'commission': float(h.commission or 0.0),
+            'swap': float(h.swap or 0.0),
+            'pips': float(h.pips or 0.0),
+            'close_reason': h.close_reason,
+            'close_reason_display': h.get_close_reason_display(),
+            'is_win': h.is_win,
+            'source': h_source,
+            'source_display': 'BOT (Tự Động)' if h_source == 'BOT' else 'USER (Người Dùng)',
+            'comment': getattr(h, 'comment', ''),
+            'opened_at': format_vn_time(h.opened_at),
+            'closed_at': format_vn_time(h.closed_at),
+        })
 
     return {
         'overview': {
@@ -122,11 +206,15 @@ def build_live_ticks_data():
             'active_positions_count': len(positions),
             'active_wallets_count': len([w for w in wallets if w['is_active']]),
             'total_wallets_count': len(wallets),
+            'bot_metrics': _calc_live_source_stats('BOT'),
+            'user_metrics': _calc_live_source_stats('USER'),
         },
         'symbols': symbols,
         'positions': positions,
         'wallets': wallets,
-        'timestamp': timezone.now().strftime('%H:%M:%S')
+        'plans': plans,
+        'history': history,
+        'timestamp': format_vn_time(timezone.now(), '%H:%M:%S')
     }
 
 @api_view(['GET'])
@@ -163,7 +251,7 @@ def global_overview_api(request):
     total_balance = sum(w.balance for w in wallets)
     total_equity = sum(w.equity for w in wallets)
     total_floating = sum(w.floating_pnl for w in wallets)
-    total_today = sum(w.today_pnl for w in wallets)
+    total_today = sum(w.get_today_pnl() for w in wallets)
     total_profit = sum(w.total_profit for w in wallets)
     
     total_trades = sum(w.total_trades for w in wallets)
@@ -172,6 +260,29 @@ def global_overview_api(request):
     
     active_positions_count = Position.objects.count()
     active_wallets_count = wallets.filter(is_active=True).count()
+
+    def _calc_global_stats(qs):
+        tot = qs.count()
+        wins = qs.filter(pnl__gt=0).count()
+        losses = qs.filter(pnl__lt=0).count()
+        wr = round((wins / tot) * 100, 1) if tot > 0 else 0.0
+        pnl = float(qs.aggregate(s=Sum('pnl'))['s'] or 0.0)
+        today = timezone.localdate()
+        today_pnl = float(qs.filter(closed_at__date=today).aggregate(s=Sum('pnl'))['s'] or 0.0)
+        vol = round(float(qs.aggregate(v=Sum('lot_size'))['v'] or 0.0), 2)
+        return {
+            'total_trades': tot,
+            'winning_trades': wins,
+            'losing_trades': losses,
+            'win_rate': wr,
+            'total_profit': round(pnl, 2),
+            'today_pnl': round(today_pnl, 2),
+            'total_volume': vol,
+        }
+
+    all_hist = TradeHistory.objects.all()
+    bot_stats = _calc_global_stats(all_hist.filter(source='BOT'))
+    user_stats = _calc_global_stats(all_hist.filter(source='USER'))
     
     data = {
         'total_balance': float(total_balance),
@@ -184,7 +295,9 @@ def global_overview_api(request):
         'active_positions_count': active_positions_count,
         'active_wallets_count': active_wallets_count,
         'total_wallets_count': wallets.count(),
-        'updated_at': timezone.now().strftime('%H:%M:%S %d/%m/%Y')
+        'bot_metrics': bot_stats,
+        'user_metrics': user_stats,
+        'updated_at': format_vn_time(timezone.now(), '%H:%M:%S %d/%m/%Y')
     }
     return Response(data)
 
@@ -195,6 +308,7 @@ def wallet_list_api(request):
     wallets = WalletAccount.objects.all()
     result = []
     for w in wallets:
+        breakdown = w.get_performance_breakdown()
         result.append({
             'id': w.id,
             'name': w.name,
@@ -204,20 +318,27 @@ def wallet_list_api(request):
             'mt5_server': w.mt5_server,
             'currency': w.currency,
             'leverage': w.leverage,
+            'leverage_display': w.leverage_display,
             'capital': float(w.capital),
             'balance': float(w.balance),
             'equity': float(w.equity),
             'floating_pnl': float(w.floating_pnl),
-            'today_pnl': float(w.today_pnl),
+            'margin': float(w.margin),
+            'margin_free': float(w.margin_free),
+            'margin_level': float(w.margin_level),
+            'today_pnl': float(w.get_today_pnl()),
             'total_profit': float(w.total_profit),
             'win_rate': w.win_rate,
             'total_trades': w.total_trades,
             'active_trades_count': w.positions.count(),
             'risk_percent': w.risk_percent,
+            'default_lot_size': float(w.default_lot_size or 0.01),
             'is_active': w.is_active,
             'bot_status': w.bot_status,
             'bot_status_display': w.get_bot_status_display(),
             'allowed_symbols': w.allowed_symbols,
+            'bot_metrics': breakdown['bot'],
+            'user_metrics': breakdown['user'],
         })
     return Response(result)
 
@@ -230,7 +351,7 @@ def wallet_detail_api(request, wallet_id):
     except WalletAccount.DoesNotExist:
         return Response({'error': 'Không tìm thấy ví'}, status=status.HTTP_404_NOT_FOUND)
 
-    # 1. Performance Report for this wallet
+    breakdown = w.get_performance_breakdown()
     report = {
         'id': w.id,
         'name': w.name,
@@ -243,7 +364,12 @@ def wallet_detail_api(request, wallet_id):
         'balance': float(w.balance),
         'equity': float(w.equity),
         'floating_pnl': float(w.floating_pnl),
-        'today_pnl': float(w.today_pnl),
+        'margin': float(w.margin),
+        'margin_free': float(w.margin_free),
+        'margin_level': float(w.margin_level),
+        'leverage': w.leverage,
+        'leverage_display': w.leverage_display,
+        'today_pnl': float(w.get_today_pnl()),
         'total_profit': float(w.total_profit),
         'win_rate': w.win_rate,
         'total_trades': w.total_trades,
@@ -257,15 +383,15 @@ def wallet_detail_api(request, wallet_id):
         'bot_status': w.bot_status,
         'bot_status_display': w.get_bot_status_display(),
         'allowed_symbols': w.allowed_symbols,
+        'performance_breakdown': breakdown,
+        'bot_metrics': breakdown['bot'],
+        'user_metrics': breakdown['user'],
     }
 
     # 2. Forward Market Forecasts for the symbols enabled in this wallet
     forecasts_data = []
     for sym_name in w.allowed_symbols:
         forecast = MarketForecast.objects.filter(symbol=sym_name).first()
-        sym_config = SymbolConfig.objects.filter(symbol=sym_name).first()
-        if not forecast and sym_config:
-            forecast = TechnicalAnalyzer.generate_market_analysis(sym_config)
 
         if forecast:
             forecasts_data.append({
@@ -286,7 +412,7 @@ def wallet_detail_api(request, wallet_id):
                 'recommended_action': forecast.recommended_action,
                 'recommended_action_display': forecast.get_recommended_action_display(),
                 'indicators': forecast.indicators,
-                'updated_at': forecast.updated_at.strftime('%H:%M:%S %d/%m/%Y'),
+                'updated_at': format_vn_time(forecast.updated_at),
             })
 
     # 3. Trading Plans of this wallet
@@ -297,60 +423,73 @@ def wallet_detail_api(request, wallet_id):
             'symbol': p.symbol,
             'timeframe': p.timeframe,
             'direction': p.direction,
-            'entry_price': float(p.entry_price),
+            'entry_price': float(p.entry_price or 0.0),
             'entry_zone': f"{p.entry_zone_low} - {p.entry_zone_high}",
-            'stop_loss': float(p.stop_loss),
-            'take_profit_1': float(p.take_profit_1),
-            'take_profit_2': float(p.take_profit_2),
-            'rr_ratio': p.rr_ratio,
-            'calculated_lot': p.calculated_lot,
-            'risk_amount_usd': float(p.risk_amount_usd),
+            'stop_loss': float(p.stop_loss) if p.stop_loss is not None else None,
+            'take_profit_1': float(p.take_profit_1) if p.take_profit_1 is not None else None,
+            'take_profit_2': float(p.take_profit_2) if p.take_profit_2 is not None else None,
+            'rr_ratio': p.rr_ratio or 1.0,
+            'calculated_lot': float(p.calculated_lot or 0.01),
+            'risk_amount_usd': float(p.risk_amount_usd or 0.0),
             'rationale': p.rationale,
             'status': p.status,
             'status_display': p.get_status_display(),
-            'created_at': p.created_at.strftime('%H:%M:%S %d/%m/%Y'),
+            'created_at': format_vn_time(p.created_at),
         })
 
     # 4. Active Open Positions of this wallet
     positions_data = []
     for pos in w.positions.all():
+        pos_source = getattr(pos, 'source', 'BOT') or 'BOT'
         positions_data.append({
             'id': pos.id,
             'ticket': pos.ticket,
             'symbol': pos.symbol,
             'position_type': pos.position_type,
-            'lot_size': pos.lot_size,
-            'open_price': float(pos.open_price),
-            'current_price': float(pos.current_price),
-            'stop_loss': float(pos.stop_loss),
-            'take_profit': float(pos.take_profit),
-            'floating_pnl': float(pos.floating_pnl),
-            'floating_pips': pos.floating_pips,
+            'lot_size': float(pos.lot_size or 0.01),
+            'open_price': float(pos.open_price or 0.0),
+            'current_price': float(pos.current_price or 0.0),
+            'stop_loss': float(pos.stop_loss) if pos.stop_loss is not None else None,
+            'take_profit': float(pos.take_profit) if pos.take_profit is not None else None,
+            'floating_pnl': float(pos.floating_pnl or 0.0),
+            'commission': float(pos.commission or 0.0),
+            'swap': float(pos.swap or 0.0),
+            'net_pnl': float(pos.net_floating_pnl or 0.0),
+            'floating_pips': float(pos.floating_pips or 0.0),
+            'source': pos_source,
+            'source_display': 'BOT (Tự Động)' if pos_source == 'BOT' else 'USER (Người Dùng)',
+            'comment': getattr(pos, 'comment', ''),
             'is_trailing': pos.is_trailing,
             'is_breakeven_set': pos.is_breakeven_set,
-            'opened_at': pos.opened_at.strftime('%H:%M:%S %d/%m/%Y'),
+            'opened_at': format_vn_time(pos.opened_at),
         })
 
-    # 5. Closed Trade History of this wallet
+    # 5. Closed Trade History of this wallet (100% gốc từ MT5 sàn Exness)
     history_data = []
-    for h in w.trade_history.all()[:50]:
+    for h in w.trade_history.all()[:150]:
+        h_source = getattr(h, 'source', 'BOT') or 'BOT'
         history_data.append({
             'id': h.id,
             'ticket': h.ticket,
             'symbol': h.symbol,
             'position_type': h.position_type,
-            'lot_size': h.lot_size,
-            'open_price': float(h.open_price),
-            'close_price': float(h.close_price),
-            'stop_loss': float(h.stop_loss),
-            'take_profit': float(h.take_profit),
-            'pnl': float(h.pnl),
-            'pips': h.pips,
+            'lot_size': float(h.lot_size or 0.01),
+            'open_price': float(h.open_price or 0.0),
+            'close_price': float(h.close_price or 0.0),
+            'stop_loss': float(h.stop_loss) if h.stop_loss is not None else None,
+            'take_profit': float(h.take_profit) if h.take_profit is not None else None,
+            'pnl': float(h.pnl or 0.0),
+            'commission': float(h.commission or 0.0),
+            'swap': float(h.swap or 0.0),
+            'pips': float(h.pips or 0.0),
             'close_reason': h.close_reason,
             'close_reason_display': h.get_close_reason_display(),
             'is_win': h.is_win,
-            'opened_at': h.opened_at.strftime('%H:%M:%S %d/%m/%Y'),
-            'closed_at': h.closed_at.strftime('%H:%M:%S %d/%m/%Y'),
+            'source': h_source,
+            'source_display': 'BOT (Tự Động)' if h_source == 'BOT' else 'USER (Người Dùng)',
+            'comment': getattr(h, 'comment', ''),
+            'opened_at': format_vn_time(h.opened_at),
+            'closed_at': format_vn_time(h.closed_at),
         })
 
     return Response({
@@ -367,11 +506,13 @@ def close_position_api(request, position_id):
     """Đóng thủ công 1 lệnh đang mở."""
     try:
         pos = Position.objects.get(pk=position_id)
-        wallet = pos.wallet
-        ExecutionEngine.close_position(pos, reason='MANUAL_CLOSE')
-        return Response({'success': True, 'message': f'Đã đóng thành công lệnh #{pos.ticket}'})
+        ok, msg = ExecutionEngine.close_position(pos, reason='MANUAL_CLOSE')
+        if ok:
+            return Response({'success': True, 'message': msg})
+        else:
+            return Response({'success': False, 'error': msg}, status=status.HTTP_400_BAD_REQUEST)
     except Position.DoesNotExist:
-        return Response({'error': 'Không tìm thấy vị thế'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'success': False, 'error': 'Không tìm thấy vị thế trong cơ sở dữ liệu'}, status=status.HTTP_404_NOT_FOUND)
 
 
 @api_view(['POST'])
@@ -383,10 +524,23 @@ def close_all_positions_api(request, wallet_id=None):
         positions = Position.objects.all()
 
     count = positions.count()
+    success_count = 0
+    errors = []
     for pos in list(positions):
-        ExecutionEngine.close_position(pos, reason='MANUAL_CLOSE')
+        ok, msg = ExecutionEngine.close_position(pos, reason='MANUAL_CLOSE')
+        if ok:
+            success_count += 1
+        else:
+            errors.append(f"#{pos.ticket}: {msg}")
 
-    return Response({'success': True, 'message': f'Đã đóng toàn bộ {count} lệnh khẩn cấp!'})
+    if success_count == count:
+        return Response({'success': True, 'message': f'Đã đóng thành công toàn bộ {count} lệnh khẩn cấp trên sàn MT5!'})
+    else:
+        return Response({
+            'success': success_count > 0,
+            'message': f'Đã đóng {success_count}/{count} lệnh.',
+            'errors': errors
+        })
 
 
 @api_view(['POST'])
@@ -394,6 +548,76 @@ def trigger_trading_cycle_api(request):
     """Kích hoạt ngay 1 chu kỳ quét giá & tự động khớp lệnh của Bot."""
     ExecutionEngine.run_full_trading_cycle()
     return Response({'success': True, 'message': 'Đã hoàn tất 1 chu kỳ phân tích & khớp lệnh'})
+
+
+@api_view(['POST'])
+def manual_order_send_api(request):
+    """Mở lệnh trực tiếp từ Web lên sàn Exness MT5."""
+    data = request.data
+    wallet_id = data.get('wallet_id')
+    symbol = str(data.get('symbol', 'XAUUSD')).strip().upper()
+    order_type = str(data.get('order_type', 'BUY')).strip().upper()
+    try:
+        volume = float(data.get('volume', 0.01))
+    except (ValueError, TypeError):
+        volume = 0.01
+
+    sl = float(data['sl']) if data.get('sl') else 0.0
+    tp = float(data['tp']) if data.get('tp') else 0.0
+    comment = str(data.get('comment', 'Web Manual Trade'))
+
+    try:
+        if wallet_id:
+            wallet = WalletAccount.objects.get(pk=wallet_id)
+        else:
+            wallet = WalletAccount.objects.filter(is_active=True, mt5_login__isnull=False).first()
+    except WalletAccount.DoesNotExist:
+        return Response({'success': False, 'error': 'Không tìm thấy ví Exness'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not wallet:
+        return Response({'success': False, 'error': 'Chưa có ví Exness nào được kích hoạt'}, status=status.HTTP_400_BAD_REQUEST)
+
+    from apps.trading.mt5_connector import ExnessMT5Connector
+    connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
+    if not connector.connect():
+        return Response({'success': False, 'error': f'Không thể kết nối tới máy chủ MT5 ({wallet.mt5_server})'}, status=status.HTTP_400_BAD_REQUEST)
+
+    res = connector.send_order(
+        symbol=symbol,
+        order_type=order_type,
+        volume=volume,
+        sl=sl,
+        tp=tp,
+        comment=comment
+    )
+
+    if res and res.get('success'):
+        # Đồng bộ ngay lập tức số dư và vị thế từ MT5
+        connector.sync_account_info(wallet)
+        connector.sync_positions(wallet)
+        ticket = res.get('ticket')
+        deal = res.get('deal', '')
+        price = res.get('price', 0.0)
+
+        BotLog.log(
+            level='INFO',
+            category='EXECUTION',
+            wallet=wallet,
+            symbol=symbol,
+            message=f"Đã mở lệnh THẬT từ Web lên Exness MT5: {order_type} {volume} Lot {symbol} tại giá {price} (Ticket: #{ticket})"
+        )
+
+        return Response({
+            'success': True,
+            'message': f"Đã gửi lệnh thành công lên Exness MT5! Ticket #{ticket}",
+            'ticket': ticket,
+            'deal': deal,
+            'price': price,
+            'volume': volume
+        })
+    else:
+        err_msg = res.get('error', 'Lỗi không xác định khi gửi lệnh lên MT5') if res else 'Lỗi kết nối MT5'
+        return Response({'success': False, 'error': f"Exness MT5 từ chối lệnh: {err_msg}"}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ==================== ADMIN CRUD APIS ====================
@@ -435,6 +659,36 @@ def admin_wallet_test_connection_api(request):
     )
     if not is_valid:
         return Response({'success': False, 'error': msg}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Nếu ví đã tồn tại trong DB, lập tức đồng bộ toàn bộ dữ liệu mới nhất từ MT5 vào DB
+    w = None
+    if wallet_id:
+        try:
+            w = WalletAccount.objects.get(pk=wallet_id)
+        except WalletAccount.DoesNotExist:
+            pass
+    elif login:
+        w = WalletAccount.objects.filter(mt5_login=login).first()
+
+    if w:
+        try:
+            if acc_info.get('leverage'):
+                w.leverage = int(acc_info['leverage'])
+                w.save(update_fields=['leverage'])
+            connector = ExnessMT5Connector(login=w.mt5_login, password=w.mt5_password, server=w.mt5_server)
+            if connector.connect():
+                connector.sync_account_info(w)
+                connector.sync_positions(w)
+                connector.sync_history_from_mt5(w)
+            w.refresh_from_db()
+            acc_info['balance'] = float(w.balance)
+            acc_info['equity'] = float(w.equity)
+            acc_info['margin'] = float(w.margin)
+            acc_info['margin_free'] = float(w.margin_free)
+            acc_info['leverage'] = w.leverage
+            acc_info['leverage_display'] = w.leverage_display
+        except Exception:
+            pass
 
     return Response({
         'success': True,
@@ -486,20 +740,29 @@ def admin_wallet_manage_api(request, wallet_id=None):
         else:
             detected_type = 'REAL'
 
-        if 'capital' in data and data['capital'] is not None and str(data['capital']).strip() != '':
+        # Đối với ví Real: Tự động lấy số dư thực tế từ sàn MT5 (không bắt buộc nhập tay)
+        # Đối với ví Demo: Lấy số vốn từ form nếu có, hoặc từ thông tin kết nối
+        if detected_type == 'REAL':
+            init_cap = Decimal(str(acc_info.get('balance', 1000.00)))
+        elif 'capital' in data and data['capital'] is not None and str(data['capital']).strip() != '':
             init_cap = Decimal(str(data['capital']))
         elif 'balance' in data and data['balance'] is not None and str(data['balance']).strip() != '':
             init_cap = Decimal(str(data['balance']))
         else:
             init_cap = Decimal(str(acc_info.get('balance', 1000.00)))
 
+        lev_val = int(acc_info.get('leverage', 2000)) if 'acc_info' in locals() and acc_info and acc_info.get('leverage') else 2000
         wallet = WalletAccount.objects.create(
             name=name,
             account_type=detected_type,
             mt5_login=mt5_login,
             mt5_password=mt5_pass,
             mt5_server=server_name,
+            leverage=lev_val,
             capital=init_cap,
+            balance_db=init_cap,
+            equity_db=init_cap,
+            default_lot_size=float(data.get('default_lot_size', 0.01)),
             risk_percent=float(data.get('risk_percent', 1.5)),
             max_daily_loss_percent=float(data.get('max_daily_loss_percent', 4.0)),
             max_open_trades=int(data.get('max_open_trades', 5)),
@@ -548,11 +811,13 @@ def admin_wallet_manage_api(request, wallet_id=None):
         new_login = data.get('mt5_login', wallet.mt5_login).strip()
         new_pass = data.get('mt5_password', '').strip() or wallet.mt5_password
 
-        # Nếu thay đổi thông tin kết nối, kiểm tra lại với sàn
+        # Nếu thay đổi thông tin kết nối, kiểm tra lại với sàn và lưu đòn bẩy mới
         if ('mt5_server' in data or 'mt5_login' in data or ('mt5_password' in data and data['mt5_password'].strip())):
             is_valid, msg, acc_info = ExnessMT5Connector.test_connection(new_login, new_pass, new_server)
             if not is_valid:
                 return Response({'error': f'Lỗi kết nối sàn Exness: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
+            if acc_info and acc_info.get('leverage'):
+                wallet.leverage = int(acc_info['leverage'])
 
         if 'name' in data and data['name'].strip(): wallet.name = data['name'].strip()
         if 'capital' in data and data['capital'] is not None and str(data['capital']).strip() != '':
@@ -571,6 +836,7 @@ def admin_wallet_manage_api(request, wallet_id=None):
         if 'account_type' in data: wallet.account_type = data['account_type']
         if 'mt5_login' in data and data['mt5_login'].strip(): wallet.mt5_login = data['mt5_login'].strip()
         if 'mt5_password' in data and data['mt5_password'].strip(): wallet.mt5_password = data['mt5_password'].strip()
+        if 'default_lot_size' in data: wallet.default_lot_size = float(data['default_lot_size'])
         if 'risk_percent' in data: wallet.risk_percent = float(data['risk_percent'])
         if 'max_daily_loss_percent' in data: wallet.max_daily_loss_percent = float(data['max_daily_loss_percent'])
         if 'max_open_trades' in data: wallet.max_open_trades = int(data['max_open_trades'])
@@ -656,7 +922,7 @@ def admin_symbols_api(request, symbol_id=None):
                 'current_spread_pips': s.current_spread_pips,
                 'max_allowed_spread': s.max_allowed_spread,
                 'is_active': s.is_active,
-                'last_scanned': s.last_scanned_at.strftime('%H:%M:%S')
+                'last_scanned': format_vn_time(s.last_scanned_at, '%H:%M:%S')
             })
         return Response(result)
 
@@ -687,23 +953,7 @@ def admin_symbols_api(request, symbol_id=None):
             return Response({'error': 'Không tìm thấy cặp'}, status=status.HTTP_404_NOT_FOUND)
 
 
-@api_view(['POST'])
-def run_backtest_api(request):
-    """API chạy Backtest dữ liệu lịch sử cho các cặp Exness."""
-    from apps.backtest.engine import BacktestEngine
-    data = request.data
-    symbol = data.get('symbol', 'XAUUSD')
-    strategy = data.get('strategy', 'SMC_TREND')
-    balance = float(data.get('initial_balance', 10000.0))
-    days = int(data.get('days', 30))
 
-    result = BacktestEngine.run_backtest(
-        symbol=symbol,
-        strategy=strategy,
-        initial_balance=balance,
-        days=days
-    )
-    return Response(result)
 
 
 # ==================== BOT LOGS & ERROR MONITOR APIS ====================
@@ -733,7 +983,7 @@ def admin_logs_api(request):
             'message': l.message,
             'traceback': l.traceback,
             'is_resolved': l.is_resolved,
-            'created_at': l.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            'created_at': format_vn_time(l.created_at)
         })
 
     return Response({
@@ -799,12 +1049,16 @@ def admin_master_data_api(request):
     })
 
 
-@api_view(['POST', 'PUT', 'DELETE'])
+@api_view(['GET', 'POST', 'PUT', 'DELETE'])
 def admin_servers_api(request, server_id=None):
-    """Thêm / Sửa / Xóa Server Exness Master Data."""
+    """Lấy danh sách / Thêm / Sửa / Xóa Server Exness Master Data."""
     from apps.accounts.models import ExnessServerMaster
 
-    if request.method == 'POST':
+    if request.method == 'GET':
+        servers = list(ExnessServerMaster.objects.values('id', 'server_name', 'server_type', 'description', 'is_active', 'order'))
+        return Response({'success': True, 'servers': servers})
+
+    elif request.method == 'POST':
         data = request.data
         name = data.get('server_name', '').strip()
         if not name:
@@ -919,7 +1173,7 @@ def admin_code_logs_api(request):
             'request_path': l.request_path,
             'request_method': l.request_method,
             'is_resolved': l.is_resolved,
-            'created_at': l.created_at.strftime('%H:%M:%S %d/%m/%Y')
+            'created_at': format_vn_time(l.created_at)
         })
 
     return Response({
@@ -958,6 +1212,55 @@ def admin_code_logs_clear_api(request):
     count = CodeLog.objects.count()
     CodeLog.objects.all().delete()
     return Response({'success': True, 'message': f'Đã xóa sạch {count} bản ghi nhật ký lỗi code trong Database'})
+
+
+# ==================== TRADING PLANS APIS ====================
+
+@api_view(['POST', 'DELETE'])
+def clear_trading_plans_api(request):
+    """Xóa tất cả các kế hoạch giao dịch AI (Trading Plans)."""
+    count = TradingPlan.objects.count()
+    TradingPlan.objects.all().delete()
+    return Response({'success': True, 'message': f'Đã xóa sạch toàn bộ {count} kế hoạch giao dịch AI.'})
+
+
+@api_view(['POST', 'DELETE'])
+def delete_trading_plan_api(request, plan_id):
+    """Xóa 1 kế hoạch giao dịch AI cụ thể."""
+    try:
+        plan = TradingPlan.objects.get(pk=plan_id)
+        plan.delete()
+        return Response({'success': True, 'message': f'Đã xóa kế hoạch AI #{plan_id} thành công.'})
+    except TradingPlan.DoesNotExist:
+        return Response({'success': False, 'error': 'Không tìm thấy kế hoạch AI'}, status=status.HTTP_404_NOT_FOUND)
+
+
+# ==================== PER-WALLET DATA MANAGEMENT ====================
+
+@api_view(['POST', 'DELETE'])
+def clear_wallet_plans_api(request, wallet_id):
+    """Xóa tất cả các kế hoạch AI của 1 ví cụ thể."""
+    try:
+        wallet = WalletAccount.objects.get(pk=wallet_id)
+        count = wallet.trading_plans.count()
+        wallet.trading_plans.all().delete()
+        return Response({'success': True, 'message': f"Đã xóa toàn bộ {count} kế hoạch AI của ví '{wallet.name}'!"})
+    except WalletAccount.DoesNotExist:
+        return Response({'success': False, 'error': 'Không tìm thấy ví Exness'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['POST', 'DELETE'])
+def clear_wallet_history_api(request, wallet_id):
+    """Xóa toàn bộ lịch sử lệnh đã đóng của 1 ví cụ thể."""
+    try:
+        wallet = WalletAccount.objects.get(pk=wallet_id)
+        count = wallet.trade_history.count()
+        wallet.trade_history.all().delete()
+        return Response({'success': True, 'message': f"Đã xóa toàn bộ {count} bản ghi lịch sử lệnh của ví '{wallet.name}'!"})
+    except WalletAccount.DoesNotExist:
+        return Response({'success': False, 'error': 'Không tìm thấy ví Exness'}, status=status.HTTP_404_NOT_FOUND)
+
+
 
 
 

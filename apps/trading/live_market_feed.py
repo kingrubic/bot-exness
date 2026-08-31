@@ -126,29 +126,57 @@ class LiveMarketFeedService:
 
     _last_network_time = 0
     _network_feed_cache = {}
+    _bg_thread_started = False
+
+    @classmethod
+    def _start_bg_feed_updater(cls):
+        """Khởi động luồng nền cập nhật giá Broker Institutional ngầm để không bao giờ nghẽn WebSocket."""
+        if cls._bg_thread_started:
+            return
+        cls._bg_thread_started = True
+        import threading
+        def _bg_loop():
+            while True:
+                try:
+                    active_names = list(SymbolConfig.objects.filter(is_active=True).values_list('symbol', flat=True))
+                    if active_names:
+                        fresh_feed = cls.fetch_tradingview_broker_feed(active_names)
+                        if fresh_feed:
+                            cls._network_feed_cache.update(fresh_feed)
+                except Exception:
+                    pass
+                time.sleep(0.15)
+        t = threading.Thread(target=_bg_loop, daemon=True)
+        t.start()
 
     @classmethod
     def sync_all_symbols(cls) -> dict:
         """
         Đồng bộ giá trực tiếp cho các cặp đang active (is_active=True).
-        Liên tục tạo nhịp nhảy tick thời gian thực mỗi 500ms-1s.
+        Liên tục tạo nhịp nhảy tick thời gian thực siêu tốc (<0.5ms).
         """
-        now = time.time()
+        cls._start_bg_feed_updater()
+
         active_symbols = list(SymbolConfig.objects.filter(is_active=True))
         if not active_symbols:
             return {}
 
-        active_names = [s.symbol for s in active_symbols]
-
-        # 1. Nếu có MT5 Terminal chạy trên Windows -> Lấy trực tiếp từ Exness MT5
-        if MT5_AVAILABLE:
+        # 1. Lấy trực tiếp từ Exness MT5 Terminal nếu Bridge online
+        from apps.trading.mt5_connector import ExnessMT5Connector, BRIDGE_URL
+        if ExnessMT5Connector.is_bridge_reachable():
             try:
-                from apps.trading.mt5_connector import ExnessMT5Connector
-                connector = ExnessMT5Connector()
-                if connector.connect():
+                import requests
+                resp = requests.get(f"{BRIDGE_URL}/all_prices", timeout=0.5)
+                if resp.status_code == 200 and resp.json().get('success'):
+                    mt5_prices = resp.json().get('prices', {})
                     mt5_updated = {}
                     for sym in active_symbols:
-                        price_info = connector.get_symbol_price(sym.symbol)
+                        price_info = (
+                            mt5_prices.get(sym.symbol) or 
+                            mt5_prices.get(f"{sym.symbol}m") or 
+                            mt5_prices.get(f"{sym.symbol}_i") or 
+                            mt5_prices.get(f"{sym.symbol}c")
+                        )
                         if price_info:
                             sym.current_price = Decimal(str(price_info['last'] or price_info['bid']))
                             sym.current_bid = Decimal(str(price_info['bid']))
@@ -160,14 +188,7 @@ class LiveMarketFeedService:
                     if mt5_updated:
                         return mt5_updated
             except Exception as me:
-                logger.debug(f"MT5 tick fetch error: {me}")
-
-        # 2. Cập nhật giá từ luồng Broker Institutional Feed (100% giá gốc thời gian thực từ sàn)
-        if (now - cls._last_network_time) >= 0.8 or not cls._network_feed_cache:
-            fresh_feed = cls.fetch_tradingview_broker_feed(active_names)
-            if fresh_feed:
-                cls._network_feed_cache.update(fresh_feed)
-                cls._last_network_time = now
+                logger.debug(f"MT5 all_prices fetch error: {me}")
 
         broker_feed = cls._network_feed_cache
 

@@ -102,19 +102,16 @@ python3 run_bot.py
 
 ## 🌐 Đường Dẫn Truy Cập Hệ Thống:
 
-- 📊 **Trang Chủ Công Khai (Public Portal)**: 👉 [http://localhost:8000/](http://localhost:8000/)
-- 🔍 **Chi Tiết Ví & Dự Báo Tiếp Theo**: 👉 [http://localhost:8000/wallet/1/](http://localhost:8000/wallet/1/)
-- 🔒 **Đăng Nhập Quản Trị (Admin Login)**: 👉 [http://localhost:8000/login/](http://localhost:8000/login/)
+- 📊 **Trang Chủ Công Khai (Public Portal)**: 👉 [http://localhost:8888/](http://localhost:8888/)
+- 🔍 **Chi Tiết Ví & Dự Báo Tiếp Theo**: 👉 [http://localhost:8888/wallet/1/](http://localhost:8888/wallet/1/)
+- 🔒 **Đăng Nhập Quản Trị (Admin Login)**: 👉 [http://localhost:8888/login/](http://localhost:8888/login/)
   - Tài khoản mặc định: Username: `admin` | Password: `123456`
 - ⚙️ **Bảng Điều Khiển Quản Trị (Admin Control Panel)**:
-  - 📈 **Tổng Quan Hệ Thống**: 👉 [http://localhost:8000/admin-panel/overview/](http://localhost:8000/admin-panel/overview/)
-  - 💼 **Quản Lý Đa Ví Exness**: 👉 [http://localhost:8000/admin-panel/wallets/](http://localhost:8000/admin-panel/wallets/)
-  - 🪙 **Cặp Giao Dịch & Chiến Thuật**: 👉 [http://localhost:8000/admin-panel/master-data/symbols/](http://localhost:8000/admin-panel/master-data/symbols/)
-  - 🛡️ **Quản Trị Rủi Ro & Lot Calculator**: 👉 [http://localhost:8000/admin-panel/risk/](http://localhost:8000/admin-panel/risk/)
-  - 📊 **Kiểm Thử & Backtest Chiến Lược**: 👉 [http://localhost:8000/admin-panel/backtest/](http://localhost:8000/admin-panel/backtest/)
-  - 🌐 **Master Data Máy Chủ Exness**: 👉 [http://localhost:8000/admin-panel/master-data/servers/](http://localhost:8000/admin-panel/master-data/servers/)
-  - 📑 **Master Data Loại Tài Khoản**: 👉 [http://localhost:8000/admin-panel/master-data/account-types/](http://localhost:8000/admin-panel/master-data/account-types/)
-  - 🚨 **Trung Tâm Giám Sát & Báo Lỗi Bot**: 👉 [http://localhost:8000/admin-panel/logs/](http://localhost:8000/admin-panel/logs/)
+  - 📈 **Tổng Quan Hệ Thống**: 👉 [http://localhost:8888/admin-panel/overview/](http://localhost:8888/admin-panel/overview/)
+  - 💼 **Quản Lý Đa Ví Exness**: 👉 [http://localhost:8888/admin-panel/wallets/](http://localhost:8888/admin-panel/wallets/)
+  - 🪙 **Cặp Giao Dịch & Chiến Thuật**: 👉 [http://localhost:8888/admin-panel/master-data/symbols/](http://localhost:8888/admin-panel/master-data/symbols/)
+  - 🌐 **Master Data Máy Chủ Exness**: 👉 [http://localhost:8888/admin-panel/master-data/servers/](http://localhost:8888/admin-panel/master-data/servers/)
+  - 🚨 **Trung Tâm Giám Sát & Báo Lỗi Bot**: 👉 [http://localhost:8888/admin-panel/logs/](http://localhost:8888/admin-panel/logs/)
 
 ---
 
@@ -131,7 +128,6 @@ templates/
 │   ├── wallets.html                   # Quản lý đa ví (Real, Demo, Sim) + Modal Add/Edit
 │   ├── master_symbols.html            # Cấu hình cặp giao dịch (Metals, Forex, Crypto, Indices)
 │   ├── risk.html                      # Quản trị rủi ro, Lot Size Calculator & Circuit Breaker
-│   ├── backtest.html                  # Kiểm thử định lượng, biểu đồ Equity Curve Chart.js
 │   ├── master_servers.html            # Master Data 50+ máy chủ Exness MT5/MT4
 │   ├── master_accounts.html           # Master Data loại tài khoản Exness
 │   └── logs.html                      # Trung tâm báo lỗi & Traceback viewer cho Bot

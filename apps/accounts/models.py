@@ -1,5 +1,6 @@
 from django.db import models
 from django.utils import timezone
+from decimal import Decimal
 import json
 
 class WalletAccount(models.Model):
@@ -24,7 +25,12 @@ class WalletAccount(models.Model):
     
     # Financial Capital & Metrics (Chỉ lưu vốn khi connect, số dư và equity lấy động)
     capital = models.DecimalField(max_digits=15, decimal_places=2, default=1000.00, verbose_name="Vốn Khi Kết Nối (Capital USD)")
+    balance_db = models.DecimalField(max_digits=15, decimal_places=2, default=1000.00, verbose_name="Số Dư Thực Tế (Balance USD)")
+    equity_db = models.DecimalField(max_digits=15, decimal_places=2, default=1000.00, verbose_name="Vốn Khả Dụng (Equity USD)")
     floating_pnl = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Lãi/Lỗ Tạm Tính (Floating PnL)")
+    margin = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Ký Quỹ Đã Dùng (Margin USD)")
+    margin_free = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Ký Quỹ Khả Dụng (Free Margin USD)")
+    margin_level = models.FloatField(default=0.0, verbose_name="Mức Ký Quỹ % (Margin Level %)")
     today_pnl = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Lãi/Lỗ Hôm Nay")
     total_profit = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Tổng Lợi Nhuận Đã Chốt")
     
@@ -37,9 +43,10 @@ class WalletAccount(models.Model):
     max_drawdown = models.FloatField(default=0.0, verbose_name="Max Drawdown (%)")
     
     # Risk Management Per Wallet
+    default_lot_size = models.FloatField(default=0.01, verbose_name="Khối Lượng Đánh Mặc Định (Lot)")
     risk_percent = models.FloatField(default=1.5, verbose_name="% Rủi Ro Mỗi Lệnh")
     max_daily_loss_percent = models.FloatField(default=4.0, verbose_name="% Giới Hạn Lỗ Tối Đa Trong Ngày")
-    max_open_trades = models.IntegerField(default=5, verbose_name="Số Lệnh Mở Tối Đa")
+    max_open_trades = models.IntegerField(default=100, verbose_name="Số Lệnh Mở Tối Đa")
     
     # Active Pairs configuration for this wallet
     # JSON list of allowed symbols e.g. ["XAUUSD", "EURUSD"]
@@ -70,27 +77,31 @@ class WalletAccount(models.Model):
 
     @property
     def balance(self):
-        """Số dư tính động theo sàn hoặc theo Vốn + Tổng lãi đã chốt."""
+        """Số dư thực tế 100% từ Exness MT5."""
         if hasattr(self, '_live_balance') and self._live_balance is not None:
             return self._live_balance
-        from decimal import Decimal
+        if self.balance_db is not None and self.balance_db > 0 and self.balance_db != Decimal('1000.00'):
+            return self.balance_db
         return Decimal(str(self.capital)) + Decimal(str(self.total_profit))
 
     @balance.setter
     def balance(self, val):
         self._live_balance = val
+        self.balance_db = val
 
     @property
     def equity(self):
-        """Vốn khả dụng tính động theo Số dư + Lãi/lỗ thả nổi."""
+        """Vốn khả dụng thực tế 100% từ Exness MT5."""
         if hasattr(self, '_live_equity') and self._live_equity is not None:
             return self._live_equity
-        from decimal import Decimal
+        if self.equity_db is not None and self.equity_db > 0 and self.equity_db != Decimal('1000.00'):
+            return self.equity_db
         return Decimal(str(self.balance)) + Decimal(str(self.floating_pnl))
 
     @equity.setter
     def equity(self, val):
         self._live_equity = val
+        self.equity_db = val
 
     @property
     def allowed_symbols(self):
@@ -99,15 +110,81 @@ class WalletAccount(models.Model):
         except Exception:
             return ["XAUUSD"]
 
+    @property
+    def leverage_display(self):
+        return f"1:{self.leverage}"
+
     def set_allowed_symbols(self, symbols_list):
         self.allowed_symbols_json = json.dumps(symbols_list)
 
+    def get_today_pnl(self):
+        """Tính tổng lãi/lỗ của các lệnh đã đóng trong ngày hôm nay."""
+        from decimal import Decimal
+        from django.db.models import Sum
+        today = timezone.localdate()
+        agg = self.trade_history.filter(closed_at__date=today).aggregate(tot=Sum('pnl'))
+        return Decimal(str(round(agg['tot'], 2))) if agg['tot'] is not None else Decimal('0.00')
+
     def calculate_metrics(self):
-        """Tính toán lại winrate và số liệu hiệu suất."""
-        if self.total_trades > 0:
-            self.win_rate = round((self.winning_trades / self.total_trades) * 100, 1)
-        else:
-            self.win_rate = 0.0
+        """Tính toán lại winrate, lãi/lỗ hôm nay và số liệu hiệu suất 100% từ lịch sử Exness MT5."""
+        from decimal import Decimal
+        from django.db.models import Sum
+        if self.pk:
+            all_hist = self.trade_history.all()
+            tot = all_hist.count()
+            wins = all_hist.filter(pnl__gt=0).count()
+            losses = all_hist.filter(pnl__lt=0).count()
+            self.total_trades = tot
+            self.winning_trades = wins
+            self.losing_trades = losses
+            self.win_rate = round((wins / tot) * 100, 1) if tot > 0 else 0.0
+            
+            tot_pnl = all_hist.aggregate(s=Sum('pnl'))['s']
+            self.total_profit = Decimal(str(round(tot_pnl, 2))) if tot_pnl is not None else Decimal('0.00')
+            self.today_pnl = self.get_today_pnl()
+
+    def get_performance_breakdown(self):
+        """Tính toán tách bạch toàn bộ chỉ số hiệu suất giữa Lệnh BOT và Lệnh USER."""
+        from django.db.models import Sum
+        
+        def _calc_stats(qs):
+            total = qs.count()
+            wins = qs.filter(pnl__gt=0).count()
+            losses = qs.filter(pnl__lt=0).count()
+            winrate = round((wins / total) * 100, 1) if total > 0 else 0.0
+            
+            tot_pnl = float(qs.aggregate(s=Sum('pnl'))['s'] or 0.0)
+            gross_win = float(qs.filter(pnl__gt=0).aggregate(s=Sum('pnl'))['s'] or 0.0)
+            gross_loss = abs(float(qs.filter(pnl__lt=0).aggregate(s=Sum('pnl'))['s'] or 0.0))
+            
+            pf = round(gross_win / gross_loss, 2) if gross_loss > 0 else (round(gross_win, 2) if gross_win > 0 else 1.0)
+            tot_vol = round(float(qs.aggregate(v=Sum('lot_size'))['v'] or 0.0), 2)
+            
+            today = timezone.localdate()
+            today_pnl = float(qs.filter(closed_at__date=today).aggregate(s=Sum('pnl'))['s'] or 0.0)
+            
+            return {
+                'total_trades': total,
+                'winning_trades': wins,
+                'losing_trades': losses,
+                'win_rate': winrate,
+                'total_profit': round(tot_pnl, 2),
+                'gross_profit': round(gross_win, 2),
+                'gross_loss': round(gross_loss, 2),
+                'profit_factor': pf,
+                'total_volume': tot_vol,
+                'today_pnl': round(today_pnl, 2),
+            }
+
+        all_history = self.trade_history.all()
+        bot_history = all_history.filter(source='BOT')
+        user_history = all_history.filter(source='USER')
+
+        return {
+            'all': _calc_stats(all_history),
+            'bot': _calc_stats(bot_history),
+            'user': _calc_stats(user_history),
+        }
 
 
 class ExnessServerMaster(models.Model):

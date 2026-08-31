@@ -76,9 +76,6 @@
                                         </div>
                                         <div class="account-dropdown__body p-2">
                                             <div class="account-dropdown__item">
-                                                <a href="{% url 'admin_risk' %}" class="dropdown-item py-2 px-3 rounded"><i class="fa-solid fa-shield-halved me-2 text-primary"></i>Cài Đặt Rủi Ro</a>
-                                            </div>
-                                            <div class="account-dropdown__item">
                                                 <a href="{% url 'admin_logs' %}" class="dropdown-item py-2 px-3 rounded"><i class="fa-solid fa-file-lines me-2 text-warning"></i>Nhật Ký Hệ Thống</a>
                                             </div>
                                             <div class="account-dropdown__item">
@@ -134,16 +131,6 @@
                                 <i class="fa-solid fa-coins"></i><span>Cặp Giao Dịch</span>
                             </a>
                         </li>
-                        <li class="{% if active_page == 'risk' %}active{% endif %}" data-tooltip="Quản Trị Rủi Ro & Vốn">
-                            <a href="{% url 'admin_risk' %}">
-                                <i class="fa-solid fa-shield-halved"></i><span>Quản Trị Rủi Ro & Vốn</span>
-                            </a>
-                        </li>
-                        <li class="{% if active_page == 'backtest' %}active{% endif %}" data-tooltip="Kiểm Thử & Backtest">
-                            <a href="{% url 'admin_backtest' %}">
-                                <i class="fa-solid fa-chart-pie"></i><span>Kiểm Thử & Backtest</span>
-                            </a>
-                        </li>
                         
                         <li class="{% if active_page == 'master_servers' %}active{% endif %}" data-tooltip="Máy Chủ Exness">
                             <a href="{% url 'admin_master_servers' %}">
@@ -184,6 +171,12 @@
                                     <span class="bot-status-dot"></span>
                                     <span>BOT HOẠT ĐỘNG (AUTO)</span>
                                 </div>
+                                <div class="d-none d-md-inline-flex align-items-center ms-2 px-3 py-1 bg-light border rounded-pill small font-monospace text-dark shadow-sm" title="Giờ Việt Nam (GMT+7)">
+                                    <i class="fa-regular fa-clock me-2 text-primary"></i> <span id="vn-live-clock">--:--:--</span>
+                                </div>
+                                <span id="socket-status-badge" class="badge bg-success text-white px-2 py-1 shadow-sm d-inline-flex align-items-center ms-2" title="Socket Realtime (0ms delay)">
+                                    <i class="fa-solid fa-bolt me-1 fa-fade"></i> SOCKET REALTIME
+                                </span>
                             </div>
 
                             <!-- Right Controls -->
@@ -229,9 +222,6 @@
                                                 </div>
                                             </div>
                                             <div class="account-dropdown__body p-2">
-                                                <div class="account-dropdown__item">
-                                                    <a href="{% url 'admin_risk' %}" class="dropdown-item py-2 px-3 rounded"><i class="fa-solid fa-shield-halved me-2 text-primary"></i>Cài Đặt Rủi Ro</a>
-                                                </div>
                                                 <div class="account-dropdown__item">
                                                     <a href="{% url 'admin_logs' %}" class="dropdown-item py-2 px-3 rounded"><i class="fa-solid fa-file-lines me-2 text-warning"></i>Nhật Ký Hệ Thống</a>
                                                 </div>
@@ -321,8 +311,7 @@
     <script src="/static/cooladmin/vendor/bootstrap-5.3.8.bundle.min.js"></script>
     <script src="/static/cooladmin/vendor/chartjs/chart.umd.js-4.5.1.min.js"></script>
     <script src="/static/cooladmin/js/bootstrap5-init.js"></script>
-    <script src="/static/cooladmin/js/main-vanilla.js"></script>
-    <script src="/static/js/admin.js?v=20260828_1721"></script>
+    <script src="/static/js/admin.js?v=20260831_1550"></script>
 
     {% block extra_scripts %}{% endblock %}
 </body>

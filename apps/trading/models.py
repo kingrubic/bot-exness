@@ -1,3 +1,4 @@
+from decimal import Decimal
 from django.db import models
 from django.utils import timezone
 from apps.accounts.models import WalletAccount
@@ -7,6 +8,11 @@ class Position(models.Model):
     POSITION_TYPES = [
         ('BUY', 'BUY (Mua)'),
         ('SELL', 'SELL (Bán)'),
+    ]
+
+    ORDER_SOURCES = [
+        ('BOT', 'Bot (Tự Động)'),
+        ('USER', 'User (Người Dùng)'),
     ]
 
     wallet = models.ForeignKey(WalletAccount, on_delete=models.CASCADE, related_name='positions', verbose_name="Ví")
@@ -19,12 +25,18 @@ class Position(models.Model):
     
     open_price = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Giá Khớp Lệnh (Entry)")
     current_price = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Giá Thị Trường Hiện Tại")
-    stop_loss = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Cắt Lỗ (SL)")
-    take_profit = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Chốt Lời (TP)")
+    stop_loss = models.DecimalField(max_digits=15, decimal_places=5, null=True, blank=True, verbose_name="Cắt Lỗ (SL)")
+    take_profit = models.DecimalField(max_digits=15, decimal_places=5, null=True, blank=True, verbose_name="Chốt Lời (TP)")
     
-    floating_pnl = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Lãi/Lỗ Tạm Tính ($)")
+    floating_pnl = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'), verbose_name="Lãi/Lỗ Tạm Tính ($)")
     floating_pips = models.FloatField(default=0.0, verbose_name="Số Pips Tạm Tính")
+    commission = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'), null=True, blank=True, verbose_name="Phí Hoa Hồng ($)")
+    swap = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'), null=True, blank=True, verbose_name="Phí Qua Đêm ($)")
     
+    source = models.CharField(max_length=10, choices=ORDER_SOURCES, default='BOT', verbose_name="Nguồn Lệnh (Bot/User)")
+    magic = models.IntegerField(default=0, verbose_name="Magic Number")
+    comment = models.CharField(max_length=150, blank=True, default='', verbose_name="Comment / Ghi Chú MT5")
+
     is_trailing = models.BooleanField(default=True, verbose_name="Bật Trailing Stop")
     is_breakeven_set = models.BooleanField(default=False, verbose_name="Đã Dời Về Hòa Vốn (BE)")
     highest_price = models.DecimalField(max_digits=15, decimal_places=5, null=True, blank=True, verbose_name="Đỉnh Giá Cao Nhất Đạt Được")
@@ -32,6 +44,14 @@ class Position(models.Model):
     
     opened_at = models.DateTimeField(default=timezone.now, verbose_name="Thời Điểm Mở")
     updated_at = models.DateTimeField(auto_now=True)
+
+    @property
+    def net_floating_pnl(self) -> Decimal:
+        """Lợi nhuận ròng thực nhận sau khi trừ phí hoa hồng và phí qua đêm."""
+        f_pnl = Decimal(str(self.floating_pnl or 0.0))
+        c_val = Decimal(str(self.commission or 0.0))
+        s_val = Decimal(str(self.swap or 0.0))
+        return f_pnl + c_val + s_val
 
     class Meta:
         verbose_name = "Vị Thế Đang Mở"
@@ -47,8 +67,15 @@ class TradeHistory(models.Model):
         ('TP_HIT', 'Chạm Take Profit (TP Hit)'),
         ('SL_HIT', 'Chạm Stop Loss (SL Hit)'),
         ('TRAILING_STOP', 'Chạm Trailing Stop'),
+        ('TRAILING_TP', 'Chốt Lời Thoái Lui Đỉnh (Trailing TP)'),
+        ('USER_AUTO_TP', 'Bot Chốt Lời Cho User (User Auto TP)'),
         ('MANUAL_CLOSE', 'Đóng Thủ Công (Manual Close)'),
         ('MAX_DAILY_DD', 'Dừng Do Chạm Max Daily Loss'),
+    ]
+
+    ORDER_SOURCES = [
+        ('BOT', 'Bot (Tự Động)'),
+        ('USER', 'User (Người Dùng)'),
     ]
 
     wallet = models.ForeignKey(WalletAccount, on_delete=models.CASCADE, related_name='trade_history', verbose_name="Ví")
@@ -59,14 +86,20 @@ class TradeHistory(models.Model):
     
     open_price = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Giá Vào")
     close_price = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Giá Đóng")
-    stop_loss = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Stop Loss")
-    take_profit = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Take Profit")
+    stop_loss = models.DecimalField(max_digits=15, decimal_places=5, null=True, blank=True, verbose_name="Stop Loss")
+    take_profit = models.DecimalField(max_digits=15, decimal_places=5, null=True, blank=True, verbose_name="Take Profit")
     
     pnl = models.DecimalField(max_digits=15, decimal_places=2, verbose_name="Lãi/Lỗ Thực Tế ($)")
+    commission = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'), null=True, blank=True, verbose_name="Phí Hoa Hồng ($)")
+    swap = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'), null=True, blank=True, verbose_name="Phí Qua Đêm ($)")
     pips = models.FloatField(default=0.0, verbose_name="Số Pips Lời/Lỗ")
     close_reason = models.CharField(max_length=30, choices=CLOSE_REASONS, default='TP_HIT', verbose_name="Lý Do Đóng Lệnh")
     is_win = models.BooleanField(default=True, verbose_name="Lệnh Thắng")
     
+    source = models.CharField(max_length=10, choices=ORDER_SOURCES, default='BOT', verbose_name="Nguồn Lệnh (Bot/User)")
+    magic = models.IntegerField(default=0, verbose_name="Magic Number")
+    comment = models.CharField(max_length=150, blank=True, default='', verbose_name="Comment / Ghi Chú MT5")
+
     opened_at = models.DateTimeField(verbose_name="Thời Điểm Mở")
     closed_at = models.DateTimeField(default=timezone.now, verbose_name="Thời Điểm Đóng")
 
@@ -74,6 +107,7 @@ class TradeHistory(models.Model):
         verbose_name = "Lịch Sử Giao Dịch"
         verbose_name_plural = "Lịch Sử Giao Dịch Đã Đóng"
         ordering = ['-closed_at']
+        unique_together = ('wallet', 'ticket')
 
     def __str__(self):
         return f"History #{self.ticket} [{self.wallet.name}] {self.symbol} {self.position_type} -> PnL: ${self.pnl}"
@@ -115,9 +149,9 @@ class BotLog(models.Model):
     
     @classmethod
     def log(cls, level='INFO', category='SYSTEM', message='', traceback='', wallet=None, symbol=''):
-        """Lưu log Bot vào Database (không lưu file)."""
+        """Lưu log Bot vào Database và phát sóng tức thì qua WebSocket."""
         try:
-            return cls.objects.create(
+            log_obj = cls.objects.create(
                 level=level,
                 category=category,
                 message=str(message),
@@ -125,6 +159,7 @@ class BotLog(models.Model):
                 wallet=wallet,
                 symbol=symbol
             )
+            return log_obj
         except Exception as e:
             print(f"[BOT LOGGER DB ERROR] Không thể lưu log vào DB: {e}")
             return None

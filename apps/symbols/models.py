@@ -49,6 +49,11 @@ class SymbolConfig(models.Model):
     last_scanned_at = models.DateTimeField(default=timezone.now, verbose_name="Thời Điểm Quét Gần Nhất")
     created_at = models.DateTimeField(default=timezone.now)
 
+    @property
+    def price_change_24h(self) -> float:
+        """Tỷ lệ biến động giá 24h (mặc định 0.0 nếu chưa có lịch sử nến ngày)."""
+        return 0.0
+
     class Meta:
         verbose_name = "Cặp Giao Dịch Exness"
         verbose_name_plural = "Danh Sách Cặp Giao Dịch"

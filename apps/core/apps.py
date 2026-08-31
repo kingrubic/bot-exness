@@ -1,20 +1,20 @@
 from django.apps import AppConfig
 from django.db.backends.signals import connection_created
 
-def set_sqlite_pragma(sender, connection, **kwargs):
+def configure_sqlite(sender, connection, **kwargs):
+    """Tự động kích hoạt chế độ WAL (Write-Ahead Logging) và busy_timeout 60s cho SQLite."""
     if connection.vendor == 'sqlite':
         try:
             cursor = connection.cursor()
-            cursor.execute('PRAGMA busy_timeout = 60000;')
             cursor.execute('PRAGMA journal_mode = WAL;')
             cursor.execute('PRAGMA synchronous = NORMAL;')
+            cursor.execute('PRAGMA busy_timeout = 60000;')
         except Exception:
             pass
 
-class TradingConfig(AppConfig):
+class CoreConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
-    name = 'apps.trading'
-    verbose_name = 'Giao Dịch & Quản Lý Vị Thế'
+    name = 'apps.core'
 
     def ready(self):
-        connection_created.connect(set_sqlite_pragma)
+        connection_created.connect(configure_sqlite)

@@ -9,7 +9,10 @@
         <h2 class="font-weight-bold text-dark mb-1">Tổng Quan Hiệu Suất Hệ Thống</h2>
         <p class="text-muted small mb-0">Giám sát tài chính đa ví, trạng thái khớp lệnh và tín hiệu AI theo thời gian thực</p>
     </div>
-    <div>
+    <div class="d-flex align-items-center gap-2">
+        <button class="btn btn-success btn-sm rounded-pill px-3 shadow-sm" data-bs-toggle="modal" data-bs-target="#modal-quick-trade" onclick="openQuickTradeModal()">
+            <i class="fa-solid fa-bolt me-1"></i> Đặt Lệnh Nhanh MT5
+        </button>
         <a href="{% url 'admin_wallets' %}" class="btn btn-primary btn-sm rounded-pill px-3 shadow-sm">
             <i class="fa-solid fa-plus me-1"></i> Thêm Ví Mới
         </a>
@@ -24,8 +27,8 @@
             <div class="d-flex justify-content-between align-items-start">
                 <div>
                     <div class="metric-label">Tổng Số Dư (Balance)</div>
-                    <div class="metric-value text-dark" id="kpi-balance">$0.00</div>
-                    <div class="metric-subtext"><span id="kpi-wallets-count">0</span> ví Exness kết nối</div>
+                    <div class="metric-value text-dark font-weight-bold" id="kpi-balance">${{ tot_bal|floatformat:2 }}</div>
+                    <div class="metric-subtext"><span id="kpi-wallets-count">{{ wallets.count }}</span> ví Exness kết nối</div>
                 </div>
                 <div class="card-icon-wrap icon-bg-blue">
                     <i class="fa-solid fa-vault"></i>
@@ -40,7 +43,7 @@
             <div class="d-flex justify-content-between align-items-start">
                 <div>
                     <div class="metric-label">Vốn Khả Dụng (Equity)</div>
-                    <div class="metric-value text-primary" id="kpi-equity">$0.00</div>
+                    <div class="metric-value text-primary font-weight-bold" id="kpi-equity">${{ tot_eq|floatformat:2 }}</div>
                     <div class="metric-subtext">Đã bao gồm Floating PnL</div>
                 </div>
                 <div class="card-icon-wrap icon-bg-purple">
@@ -56,8 +59,8 @@
             <div class="d-flex justify-content-between align-items-start">
                 <div>
                     <div class="metric-label">Lãi/Lỗ Tạm Tính (Floating)</div>
-                    <div class="metric-value text-success font-weight-bold" id="kpi-floating">$0.00</div>
-                    <div class="metric-subtext"><span id="kpi-positions-count">0</span> vị thế đang mở</div>
+                    <div class="metric-value font-weight-bold {% if tot_fl >= 0 %}text-success{% else %}text-danger{% endif %}" id="kpi-floating">{% if tot_fl >= 0 %}+{% endif %}${{ tot_fl|floatformat:2 }}</div>
+                    <div class="metric-subtext"><span id="kpi-positions-count">{{ all_positions_count }}</span> vị thế đang mở</div>
                 </div>
                 <div class="card-icon-wrap icon-bg-green">
                     <i class="fa-solid fa-hand-holding-dollar"></i>
@@ -72,11 +75,107 @@
             <div class="d-flex justify-content-between align-items-start">
                 <div>
                     <div class="metric-label">Lãi/Lỗ Hôm Nay (Today)</div>
-                    <div class="metric-value text-success font-weight-bold" id="kpi-today">$0.00</div>
+                    <div class="metric-value font-weight-bold {% if tot_today >= 0 %}text-success{% else %}text-danger{% endif %}" id="kpi-today">{% if tot_today >= 0 %}+{% endif %}${{ tot_today|floatformat:2 }}</div>
                     <div class="metric-subtext">Winrate: <span id="kpi-winrate" class="font-weight-bold text-dark">0%</span></div>
                 </div>
                 <div class="card-icon-wrap icon-bg-amber">
                     <i class="fa-solid fa-trophy"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- BOT VS USER SOURCE PERFORMANCE BREAKDOWN -->
+<div class="au-card-clean mb-4 p-3 bg-white">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center gap-2 mb-3 pb-2 border-bottom">
+        <div>
+            <div class="d-flex align-items-center gap-2">
+                <i class="fa-solid fa-chart-pie text-primary fs-5"></i>
+                <h5 class="font-weight-bold text-dark mb-0">Báo Cáo Hiệu Suất: Lệnh BOT vs Lệnh USER</h5>
+            </div>
+            <small class="text-muted">Tách bạch tính toán tỷ lệ thắng, lãi/lỗ và khối lượng theo lệnh tự động của Bot và lệnh đặt tay của User</small>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+            <span class="small font-weight-bold text-secondary text-nowrap"><i class="fa-solid fa-filter me-1"></i> Phạm Vi Báo Cáo:</span>
+            <select id="report-wallet-filter" class="form-select form-select-sm rounded-pill font-monospace fw-bold text-primary border-primary" style="min-width: 250px;" onchange="onReportWalletFilterChanged(this.value)">
+                <option value="ALL">📁 Tất Cả Các Ví (Toàn Hệ Thống)</option>
+                {% for w in wallets %}
+                <option value="{{ w.id }}">💼 {{ w.name }} (#{{ w.mt5_login }})</option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+
+    <div class="row g-3">
+        <!-- 1. BOT CARD -->
+        <div class="col-lg-6">
+            <div class="card border-0 shadow-xs rounded-4 h-100 p-3" style="border-left: 5px solid #10b981 !important; background: #f0fdf4;">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-success text-white rounded-pill px-2.5 py-1.5"><i class="fa-solid fa-robot me-1"></i> BOT AI SCALPING</span>
+                        <span class="fw-bold text-dark">Hiệu Suất Lệnh Tự Động (BOT)</span>
+                    </div>
+                    <span class="small text-muted" id="ov-bot-scope-label"><i class="fa-solid fa-bolt text-success me-1"></i>Toàn hệ thống</span>
+                </div>
+                <div class="row g-2 text-center">
+                    <div class="col-4">
+                        <div class="p-2 bg-white rounded-3 border">
+                            <small class="text-muted d-block">Tổng Lệnh Bot</small>
+                            <strong class="text-dark font-monospace fs-6" id="ov-bot-trades">{{ bot_metrics.total_trades|default:0 }}</strong>
+                            <div class="small text-muted" style="font-size: 0.75rem;"><span class="text-success fw-bold" id="ov-bot-wins">{{ bot_metrics.winning_trades|default:0 }}</span>W / <span class="text-danger fw-bold" id="ov-bot-losses">{{ bot_metrics.losing_trades|default:0 }}</span>L</div>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="p-2 bg-white rounded-3 border">
+                            <small class="text-muted d-block">Winrate Bot</small>
+                            <strong class="text-success font-monospace fs-6" id="ov-bot-winrate">{{ bot_metrics.win_rate|default:0 }}%</strong>
+                            <div class="small text-muted" style="font-size: 0.75rem;"><span id="ov-bot-vol" class="fw-bold">{{ bot_metrics.total_volume|default:0 }} Lot</span></div>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="p-2 bg-white rounded-3 border">
+                            <small class="text-muted d-block">Tổng Lãi/Lỗ Bot</small>
+                            <strong class="font-monospace fs-6 {% if bot_metrics.total_profit > 0 %}text-success{% elif bot_metrics.total_profit < 0 %}text-danger{% else %}text-muted{% endif %}" id="ov-bot-profit">${{ bot_metrics.total_profit|default:0 }}</strong>
+                            <div class="small" style="font-size: 0.75rem;">Hôm nay: <span id="ov-bot-today" class="fw-bold {% if bot_metrics.today_pnl > 0 %}text-success{% elif bot_metrics.today_pnl < 0 %}text-danger{% else %}text-muted{% endif %}">${{ bot_metrics.today_pnl|default:0 }}</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2. USER CARD -->
+        <div class="col-lg-6">
+            <div class="card border-0 shadow-xs rounded-4 h-100 p-3" style="border-left: 5px solid #6f42c1 !important; background: #faf5ff;">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="badge text-white rounded-pill px-2.5 py-1.5" style="background-color: #6f42c1;"><i class="fa-solid fa-user me-1"></i> USER MANUAL</span>
+                        <span class="fw-bold text-dark">Hiệu Suất Lệnh Thủ Công (USER)</span>
+                    </div>
+                    <span class="small text-muted" id="ov-user-scope-label"><i class="fa-solid fa-bolt text-primary me-1"></i>Toàn hệ thống</span>
+                </div>
+                <div class="row g-2 text-center">
+                    <div class="col-4">
+                        <div class="p-2 bg-white rounded-3 border">
+                            <small class="text-muted d-block">Tổng Lệnh User</small>
+                            <strong class="text-dark font-monospace fs-6" id="ov-user-trades">{{ user_metrics.total_trades|default:0 }}</strong>
+                            <div class="small text-muted" style="font-size: 0.75rem;"><span class="text-success fw-bold" id="ov-user-wins">{{ user_metrics.winning_trades|default:0 }}</span>W / <span class="text-danger fw-bold" id="ov-user-losses">{{ user_metrics.losing_trades|default:0 }}</span>L</div>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="p-2 bg-white rounded-3 border">
+                            <small class="text-muted d-block">Winrate User</small>
+                            <strong class="font-monospace fs-6" style="color: #6f42c1;" id="ov-user-winrate">{{ user_metrics.win_rate|default:0 }}%</strong>
+                            <div class="small text-muted" style="font-size: 0.75rem;"><span id="ov-user-vol" class="fw-bold">{{ user_metrics.total_volume|default:0 }} Lot</span></div>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="p-2 bg-white rounded-3 border">
+                            <small class="text-muted d-block">Tổng Lãi/Lỗ User</small>
+                            <strong class="font-monospace fs-6 {% if user_metrics.total_profit > 0 %}text-success{% elif user_metrics.total_profit < 0 %}text-danger{% else %}text-muted{% endif %}" id="ov-user-profit">${{ user_metrics.total_profit|default:0 }}</strong>
+                            <div class="small" style="font-size: 0.75rem;">Hôm nay: <span id="ov-user-today" class="fw-bold {% if user_metrics.today_pnl > 0 %}text-success{% elif user_metrics.today_pnl < 0 %}text-danger{% else %}text-muted{% endif %}">${{ user_metrics.today_pnl|default:0 }}</span></div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -91,8 +190,8 @@
         </div>
         <div class="card-title-right">
             <div class="custom-search-box search-sm">
-                <i class="fa-solid fa-magnifying-glass search-icon"></i>
                 <input type="text" class="search-input" id="search-market-ticker" placeholder="Tìm cặp (XAU, BTC, EUR...)" oninput="filterMarketTicker(this.value)">
+                <i class="fa-solid fa-magnifying-glass search-icon"></i>
             </div>
         </div>
     </div>
@@ -144,6 +243,7 @@
             <thead>
                 <tr>
                     <th>Ticket MT5</th>
+                    <th>Nguồn</th>
                     <th>Ví Giao Dịch</th>
                     <th>Cặp Tiền</th>
                     <th>Loại Lệnh</th>
@@ -158,7 +258,7 @@
             </thead>
             <tbody id="tbody-positions">
                 <tr>
-                    <td colspan="11" class="text-center py-4 text-muted">
+                    <td colspan="12" class="text-center py-4 text-muted">
                         <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải dữ liệu vị thế mở...
                     </td>
                 </tr>
@@ -172,9 +272,14 @@
 <!-- AI TRADING PLANS -->
 <div class="au-card-clean mb-4">
     <div class="card-title-wrap">
-        <div class="d-flex align-items-center gap-2">
-            <i class="fa-solid fa-brain text-warning"></i>
+        <div class="card-title-left d-flex align-items-center gap-2">
+            <i class="fa-solid fa-brain text-warning fs-5"></i>
             <h5 class="font-weight-bold text-dark mb-0">Kế Hoạch Giao Dịch AI Gần Nhất (AI Trading Plans)</h5>
+        </div>
+        <div class="card-title-right d-flex align-items-center gap-2">
+            <button class="btn btn-outline-danger btn-sm rounded-pill px-3 shadow-xs font-weight-bold" onclick="clearAllTradingPlansPrompt()">
+                <i class="fa-solid fa-trash-can me-1"></i> Xóa Tất Cả Kế Hoạch
+            </button>
         </div>
     </div>
 
@@ -193,11 +298,12 @@
                     <th>Lot Dự Tính</th>
                     <th>Trạng Thái Plan</th>
                     <th>Lý Do Phân Tích Kỹ Thuật</th>
+                    <th class="text-end">Thao Tác</th>
                 </tr>
             </thead>
             <tbody id="tbody-plans">
                 <tr>
-                    <td colspan="11" class="text-center py-4 text-muted">
+                    <td colspan="12" class="text-center py-4 text-muted">
                         <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải kế hoạch AI...
                     </td>
                 </tr>
@@ -208,54 +314,213 @@
     <div id="pagination-overview-plans"></div>
 </div>
 
-<!-- CLOSED HISTORY & SYSTEM LOGS SUMMARY -->
-<div class="row g-4">
-    <div class="col-xl-7">
-        <div class="au-card-clean h-100">
-            <div class="card-title-wrap">
-                <div class="d-flex align-items-center gap-2">
-                    <i class="fa-solid fa-clock-rotate-left text-success"></i>
-                    <h5 class="font-weight-bold text-dark mb-0">Lịch Sử Khớp Lệnh Đã Đóng</h5>
-                </div>
+<!-- CLOSED HISTORY FULL WIDTH WITH FILTERS (BỎ NHẬT KÝ KHỎI TỔNG QUAN) -->
+<div class="au-card-clean mb-4">
+    <div class="card-title-wrap">
+        <div class="card-title-left d-flex align-items-center gap-2">
+            <i class="fa-solid fa-clock-rotate-left text-success fs-5"></i>
+            <h5 class="font-weight-bold text-dark mb-0">Lịch Sử Khớp Lệnh Đã Đóng (Closed Trades History)</h5>
+            <span class="badge bg-success rounded-pill ms-2" id="badge-history-count">0</span>
+        </div>
+
+        <!-- BỘ LỌC LỊCH SỬ GIAO DỊCH: NGUỒN, VÍ, CẶP, LOẠI, TÌM KIẾM -->
+        <div class="card-title-right d-flex flex-wrap align-items-center gap-2">
+            <!-- 1. Lọc Nguồn -->
+            <div class="d-flex align-items-center">
+                <select class="form-select form-select-sm font-weight-bold" id="filter-hist-source" onchange="filterOverviewHistory()" style="min-width: 130px;">
+                    <option value="ALL">🌐 Tất Cả Nguồn</option>
+                    <option value="BOT">🤖 BOT (Tự Động)</option>
+                    <option value="USER">👤 USER (Thủ Công)</option>
+                </select>
             </div>
-            <div class="table-responsive">
-                <table class="table-clean">
-                    <thead>
-                        <tr>
-                            <th>Ticket</th>
-                            <th>Ví</th>
-                            <th>Cặp</th>
-                            <th>Loại</th>
-                            <th>Lot</th>
-                            <th>Giá Vào / Đóng</th>
-                            <th>Lãi/Lỗ ($)</th>
-                            <th>Lý Do Đóng</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tbody-history-summary">
-                        <tr>
-                            <td colspan="8" class="text-center py-3 text-muted">Đang tải lịch sử...</td>
-                        </tr>
-                    </tbody>
-                </table>
+
+            <!-- 2. Lọc Ví -->
+            <div class="d-flex align-items-center">
+                <select class="form-select form-select-sm font-weight-bold" id="filter-hist-wallet" onchange="filterOverviewHistory()" style="min-width: 140px;">
+                    <option value="ALL">💼 Tất Cả Ví</option>
+                    {% for w in wallets %}
+                    <option value="{{ w.id }}">Ví #{{ w.mt5_login }} ({{ w.name }})</option>
+                    {% endfor %}
+                </select>
             </div>
-            <!-- PAGINATION 20/PAGE -->
-            <div id="pagination-overview-history"></div>
+
+            <!-- 3. Lọc Cặp Tiền -->
+            <div class="d-flex align-items-center">
+                <select class="form-select form-select-sm font-weight-bold font-monospace" id="filter-hist-symbol" onchange="filterOverviewHistory()" style="min-width: 130px;">
+                    <option value="ALL">📊 Tất Cả Cặp</option>
+                    <option value="XAUUSD">XAUUSD</option>
+                    <option value="BTCUSD">BTCUSD</option>
+                    <option value="EURUSD">EURUSD</option>
+                    <option value="GBPUSD">GBPUSD</option>
+                    <option value="USDJPY">USDJPY</option>
+                    <option value="US30">US30</option>
+                </select>
+            </div>
+
+            <!-- 4. Lọc Loại Lệnh -->
+            <div class="d-flex align-items-center">
+                <select class="form-select form-select-sm font-weight-bold" id="filter-hist-type" onchange="filterOverviewHistory()" style="min-width: 110px;">
+                    <option value="ALL">↕️ Tất Cả Loại</option>
+                    <option value="BUY">🟢 BUY</option>
+                    <option value="SELL">🔴 SELL</option>
+                </select>
+            </div>
+
+            <!-- 5. Tìm kiếm Ticket -->
+            <div class="custom-search-box search-sm" style="max-width: 200px;">
+                <input type="text" class="search-input" id="search-hist-query" placeholder="Tìm Ticket, ghi chú..." oninput="filterOverviewHistory()">
+                <i class="fa-solid fa-magnifying-glass search-icon"></i>
+            </div>
         </div>
     </div>
 
-    <div class="col-xl-5">
-        <div class="au-card-clean h-100">
-            <div class="card-title-wrap">
+    <div class="table-responsive">
+        <table class="table-clean" id="table-overview-history">
+            <thead>
+                <tr>
+                    <th>Ticket MT5</th>
+                    <th>Nguồn</th>
+                    <th>Ví Giao Dịch</th>
+                    <th>Cặp Tiền</th>
+                    <th>Loại Lệnh</th>
+                    <th>Khối Lượng</th>
+                    <th>Giá Vào / Giá Đóng</th>
+                    <th>Thời Điểm Vào Lệnh</th>
+                    <th>Thời Điểm Đóng Lệnh</th>
+                    <th>Lãi/Lỗ ($)</th>
+                    <th>Lý Do Đóng</th>
+                </tr>
+            </thead>
+            <tbody id="tbody-history-summary">
+                <tr>
+                    <td colspan="11" class="text-center py-4 text-muted">
+                        <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải dữ liệu lịch sử...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    <!-- PAGINATION 20/PAGE -->
+    <div id="pagination-overview-history"></div>
+</div>
+{% endblock %}
+
+{% block modals %}
+<!-- QUICK TRADE MODAL (MỞ LỆNH THẬT LÊN MT5) -->
+<div class="modal fade" id="modal-quick-trade" tabindex="-1" aria-labelledby="modalQuickTradeLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" style="max-width: 520px;">
+        <div class="modal-content rounded-4 border-0 shadow-lg overflow-hidden">
+            <!-- Modal Header -->
+            <div class="modal-header border-bottom px-4 py-3 bg-dark text-white rounded-top-4 d-flex align-items-center justify-content-between">
                 <div class="d-flex align-items-center gap-2">
-                    <i class="fa-solid fa-triangle-exclamation text-danger"></i>
-                    <h5 class="font-weight-bold text-dark mb-0">Nhật Ký & Cảnh Báo Bot</h5>
+                    <span class="badge bg-success rounded-circle p-1 d-inline-block" style="width: 10px; height: 10px; box-shadow: 0 0 8px #10b981;"></span>
+                    <h5 class="modal-title font-weight-bold text-white mb-0" id="modalQuickTradeLabel">
+                        <i class="fa-solid fa-bolt text-warning me-2"></i> Đặt Lệnh Trực Tiếp Lên MT5
+                    </h5>
                 </div>
-                <a href="{% url 'admin_logs' %}" class="small text-primary text-decoration-none">Chi tiết &rarr;</a>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
-            <div id="logs-summary-list" class="d-flex flex-column gap-2" style="max-height: 380px; overflow-y: auto;">
-                <div class="text-center py-3 text-muted">Đang kiểm tra nhật ký...</div>
-            </div>
+
+            <form id="form-quick-trade" onsubmit="event.preventDefault();">
+                <div class="modal-body p-4 bg-white">
+                    <div id="quick-trade-alert" class="alert alert-danger d-none align-items-center mb-3 rounded-3 py-2 px-3 small font-weight-bold" role="alert">
+                    </div>
+
+                    <!-- 1. Chọn ví Exness -->
+                    <div class="mb-3">
+                        <label class="form-label font-weight-bold small text-secondary d-flex justify-content-between align-items-center">
+                            <span><i class="fa-solid fa-wallet text-primary me-1"></i> Tài Khoản Ví Exness <span class="text-danger">*</span></span>
+                            <span class="badge bg-light text-primary border small">Live MT5 Sync</span>
+                        </label>
+                        <select class="form-select rounded-3 font-weight-bold py-2 shadow-sm border-secondary-subtle" id="trade-wallet-id" required>
+                            <!-- Auto filled by JS -->
+                        </select>
+                    </div>
+
+                    <!-- 2. Chọn Cặp Giao Dịch -->
+                    <div class="mb-3">
+                        <label class="form-label font-weight-bold small text-secondary">
+                            <i class="fa-solid fa-chart-candlestick text-warning me-1"></i> Cặp Tiền Tệ / Kim Loại <span class="text-danger">*</span>
+                        </label>
+                        <select class="form-select rounded-3 font-monospace font-weight-bold py-2 shadow-sm border-secondary-subtle" id="trade-symbol" onchange="onTradeSymbolChange()" required>
+                            <option value="XAUUSD">XAUUSD (Gold / Vàng)</option>
+                            <option value="BTCUSD">BTCUSD (Bitcoin)</option>
+                            <option value="EURUSD">EURUSD (Euro / Đô La)</option>
+                            <option value="GBPUSD">GBPUSD (Bảng Anh / Đô La)</option>
+                            <option value="USDJPY">USDJPY (Đô La / Yên Nhật)</option>
+                            <option value="US30">US30 (Dow Jones)</option>
+                        </select>
+                    </div>
+
+                    <!-- 3. LIVE MT5 PRICE TICKER BOARD -->
+                    <div class="p-3 mb-3 rounded-3 border bg-light shadow-sm">
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <span class="small font-weight-bold text-muted text-uppercase" style="letter-spacing: 0.5px;">
+                                <i class="fa-solid fa-signal text-success me-1"></i> Giá MT5 Real-time
+                            </span>
+                            <span class="badge bg-secondary-subtle text-secondary font-monospace" id="trade-modal-spread-badge">Spread: -- pips</span>
+                        </div>
+                        <div class="d-flex align-items-baseline justify-content-between">
+                            <div class="font-monospace font-weight-bold fs-3 text-primary" id="trade-modal-live-price" style="transition: color 0.2s;">
+                                $---
+                            </div>
+                            <div class="text-end">
+                                <span class="badge bg-success-subtle text-success border border-success-subtle px-2 py-1 small">
+                                    <i class="fa-solid fa-circle text-success me-1" style="font-size: 6px;"></i> MT5 Live Ticks
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 4. Khối lượng Lot -->
+                    <div class="mb-3">
+                        <label class="form-label font-weight-bold small text-secondary">
+                            <i class="fa-solid fa-layer-group text-info me-1"></i> Khối Lượng Giao Dịch (Volume / Lot) <span class="text-danger">*</span>
+                        </label>
+                        <div class="input-group shadow-sm">
+                            <button type="button" class="btn btn-outline-secondary px-3" onclick="adjustTradeLot(-0.01)"><i class="fa-solid fa-minus"></i></button>
+                            <input type="number" step="0.01" min="0.01" max="100.0" class="form-control text-center font-weight-bold fs-5 font-monospace" id="trade-volume" value="0.01" required>
+                            <button type="button" class="btn btn-outline-secondary px-3" onclick="adjustTradeLot(0.01)"><i class="fa-solid fa-plus"></i></button>
+                        </div>
+                        <div class="d-flex gap-1 mt-2">
+                            <button type="button" class="btn btn-sm btn-outline-secondary flex-fill py-1 small font-monospace font-weight-bold" onclick="setTradeLot(0.01)">0.01</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary flex-fill py-1 small font-monospace font-weight-bold" onclick="setTradeLot(0.02)">0.02</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary flex-fill py-1 small font-monospace font-weight-bold" onclick="setTradeLot(0.05)">0.05</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary flex-fill py-1 small font-monospace font-weight-bold" onclick="setTradeLot(0.10)">0.10</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary flex-fill py-1 small font-monospace font-weight-bold" onclick="setTradeLot(0.50)">0.50</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary flex-fill py-1 small font-monospace font-weight-bold" onclick="setTradeLot(1.00)">1.00</button>
+                        </div>
+                    </div>
+
+                    <!-- 5. SL & TP (Optional) -->
+                    <div class="row g-2 mb-3">
+                        <div class="col-6">
+                            <label class="form-label font-weight-bold small text-secondary">Cắt Lỗ (SL Price)</label>
+                            <input type="number" step="0.00001" class="form-control form-control-sm font-monospace" id="trade-sl" placeholder="Không đặt">
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label font-weight-bold small text-secondary">Chốt Lời (TP Price)</label>
+                            <input type="number" step="0.00001" class="form-control form-control-sm font-monospace" id="trade-tp" placeholder="Không đặt">
+                        </div>
+                    </div>
+
+                    <!-- 6. 2 Nút BUY / SELL -->
+                    <div class="row g-2 pt-2">
+                        <div class="col-6">
+                            <button type="button" class="btn btn-success w-100 py-2 px-1 rounded-3 font-weight-bold d-flex flex-column align-items-center justify-content-center shadow-sm" id="btn-submit-buy" onclick="executeManualTrade('BUY')" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); border: none; min-height: 58px;">
+                                <div class="fs-5 text-uppercase d-flex align-items-center"><i class="fa-solid fa-arrow-trend-up me-1"></i> BUY</div>
+                                <div class="small font-monospace opacity-90 text-truncate w-100 text-center" id="btn-buy-price" style="font-size: 0.78rem;">Ask: $---</div>
+                            </button>
+                        </div>
+                        <div class="col-6">
+                            <button type="button" class="btn btn-danger w-100 py-2 px-1 rounded-3 font-weight-bold d-flex flex-column align-items-center justify-content-center shadow-sm" id="btn-submit-sell" onclick="executeManualTrade('SELL')" style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); border: none; min-height: 58px;">
+                                <div class="fs-5 text-uppercase d-flex align-items-center"><i class="fa-solid fa-arrow-trend-down me-1"></i> SELL</div>
+                                <div class="small font-monospace opacity-90 text-truncate w-100 text-center" id="btn-sell-price" style="font-size: 0.78rem;">Bid: $---</div>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </form>
         </div>
     </div>
 </div>

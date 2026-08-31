@@ -22,24 +22,36 @@ def run_trading_bot_worker():
     print("🚀 [BOT WORKER] Khởi động luồng quét tự động Exness...")
     time.sleep(2) # Wait for server to start
     
-    from django.db import connection
+    from django.db import close_old_connections
     cycle_counter = 0
     while True:
         try:
-            # 1. Update live price from MT5 and position floating PnLs every 1s
+            close_old_connections()
+            # 1. Update live price from MT5 and position floating PnLs every 150ms
             ExecutionEngine.sync_symbol_prices_from_mt5()
             ExecutionEngine.update_positions_and_pnl()
 
-            # 2. Run full strategy & plan check every 3 ticks (~3s)
+            # 2. Run full strategy & plan check every 20 ticks (~3s)
             cycle_counter += 1
-            if cycle_counter >= 3:
-                cycle_counter = 0
+            if cycle_counter % 20 == 0:
                 ExecutionEngine.run_full_trading_cycle()
+
+            # 3. Sync MT5 closed history every 60 cycles (~9s)
+            if cycle_counter >= 60:
+                cycle_counter = 0
+                for w in WalletAccount.objects.filter(is_active=True, mt5_login__isnull=False):
+                    try:
+                        from apps.trading.mt5_connector import ExnessMT5Connector
+                        connector = ExnessMT5Connector(login=w.mt5_login, password=w.mt5_password, server=w.mt5_server)
+                        if connector.connect():
+                            connector.sync_history_from_mt5(w)
+                    except Exception:
+                        pass
         except Exception as e:
             print(f"⚠️ [BOT WORKER ERROR] Lỗi trong chu kỳ giao dịch: {e}")
         finally:
-            connection.close()
-        time.sleep(1) # Fast 1 second background loop
+            close_old_connections()
+        time.sleep(0.15) # Blazing fast 150ms background loop
 
 def main():
     print("=" * 70)
@@ -61,15 +73,8 @@ def main():
     bot_thread = threading.Thread(target=run_trading_bot_worker, daemon=True)
     bot_thread.start()
 
-    # 4. Start Realtime WebSocket Broadcast Server
-    try:
-        from apps.trading.websocket_server import start_websocket_server_thread
-        start_websocket_server_thread(host='0.0.0.0', port=8889)
-    except Exception as e:
-        print(f"ℹ️ WebSocket Server start note: {e}")
-
-    # 5. Start Django Server with CLI port or default 0.0.0.0:8000
-    addrport = sys.argv[1] if len(sys.argv) > 1 else '0.0.0.0:8000'
+    # 5. Start Django Server with CLI port or default 0.0.0.0:8888
+    addrport = sys.argv[1] if len(sys.argv) > 1 else '0.0.0.0:8888'
     if ':' not in addrport and addrport.isdigit():
         addrport = f'0.0.0.0:{addrport}'
     

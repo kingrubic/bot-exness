@@ -26,6 +26,9 @@
             </a>
 
             <div class="d-flex align-items-center gap-3">
+                <div class="d-none d-md-inline-flex align-items-center px-3 py-1 bg-light border rounded-pill small font-monospace text-dark shadow-sm" title="Giờ Việt Nam (GMT+7)">
+                    <i class="fa-regular fa-clock me-2 text-primary"></i> <span id="home-vn-live-clock">--:--:--</span>
+                </div>
                 <div class="bot-status-pill d-none d-sm-inline-flex">
                     <span class="bot-status-dot"></span>
                     <span>HỆ THỐNG ĐANG CHẠY AUTO</span>
@@ -52,8 +55,8 @@
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
                             <div class="metric-label">Tổng Số Dư (Balance)</div>
-                            <div class="metric-value text-dark" id="home-total-balance">$0.00</div>
-                            <div class="metric-subtext"><span id="home-wallets-count">0</span> ví kết nối</div>
+                            <div class="metric-value text-dark font-weight-bold" id="home-total-balance">${{ tot_bal|floatformat:2 }}</div>
+                            <div class="metric-subtext"><span id="home-wallets-count">{{ wallets.count }}</span> ví kết nối</div>
                         </div>
                         <div class="card-icon-wrap icon-bg-blue">
                             <i class="fa-solid fa-vault"></i>
@@ -67,7 +70,7 @@
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
                             <div class="metric-label">Vốn Khả Dụng (Equity)</div>
-                            <div class="metric-value text-primary" id="home-total-equity">$0.00</div>
+                            <div class="metric-value text-primary font-weight-bold" id="home-total-equity">${{ tot_eq|floatformat:2 }}</div>
                             <div class="metric-subtext">Vốn thời gian thực</div>
                         </div>
                         <div class="card-icon-wrap icon-bg-purple">
@@ -82,8 +85,8 @@
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
                             <div class="metric-label">Lãi/Lỗ Tạm Tính (Floating)</div>
-                            <div class="metric-value font-weight-bold" id="home-total-floating">$0.00</div>
-                            <div class="metric-subtext"><span id="home-active-trades">0</span> lệnh đang mở</div>
+                            <div class="metric-value font-weight-bold {% if tot_fl >= 0 %}text-success{% else %}text-danger{% endif %}" id="home-total-floating">{% if tot_fl >= 0 %}+{% endif %}${{ tot_fl|floatformat:2 }}</div>
+                            <div class="metric-subtext"><span id="home-active-trades">{{ all_positions_count }}</span> lệnh đang mở</div>
                         </div>
                         <div class="card-icon-wrap icon-bg-green">
                             <i class="fa-solid fa-hand-holding-dollar"></i>
@@ -96,12 +99,12 @@
                 <div class="metric-card-modern">
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
-                            <div class="metric-label">Tổng Lãi Đã Chốt</div>
-                            <div class="metric-value font-weight-bold" id="home-total-profit">$0.00</div>
-                            <div class="metric-subtext">Winrate: <b id="home-winrate" class="text-dark">0%</b></div>
+                            <div class="metric-label">Tổng Lãi Đã Chốt (Profit)</div>
+                            <div class="metric-value font-weight-bold {% if tot_profit >= 0 %}text-success{% else %}text-danger{% endif %}" id="home-total-profit">{% if tot_profit >= 0 %}+{% endif %}${{ tot_profit|floatformat:2 }}</div>
+                            <div class="metric-subtext">Lợi nhuận ròng tích lũy</div>
                         </div>
                         <div class="card-icon-wrap icon-bg-amber">
-                            <i class="fa-solid fa-trophy"></i>
+                            <i class="fa-solid fa-chart-pie"></i>
                         </div>
                     </div>
                 </div>
@@ -217,48 +220,59 @@
             return `<span class="text-muted font-weight-bold">$${absVal}</span>`;
         }
 
-        document.addEventListener('DOMContentLoaded', () => {
-            streamPublicLiveTicks();
-            setInterval(streamPublicLiveTicks, 800);
-        });
+        function renderHomeData(data) {
+            if (!data) return;
+            const ov = data.overview || data;
+            if (ov) {
+                const balEl = document.getElementById('home-total-balance');
+                const eqEl = document.getElementById('home-total-equity');
+                const flEl = document.getElementById('home-total-floating');
+                const profEl = document.getElementById('home-total-profit');
+                const wcEl = document.getElementById('home-wallets-count');
+                const atEl = document.getElementById('home-active-trades');
+                const wrEl = document.getElementById('home-winrate');
 
-        async function streamPublicLiveTicks() {
-            try {
-                const res = await fetch('/api/live-ticks/');
-                if (!res.ok) return;
-                const data = await res.json();
-                
-                // 1. Overview KPIs
-                const ov = data.overview;
-                if (ov) {
-                    document.getElementById('home-total-balance').innerText = formatMoney(ov.total_balance);
-                    document.getElementById('home-total-equity').innerText = formatMoney(ov.total_equity);
-                    document.getElementById('home-total-floating').innerHTML = formatPnl(ov.total_floating_pnl);
-                    document.getElementById('home-total-profit').innerHTML = formatPnl(ov.total_profit);
+                if (balEl && (ov.total_balance !== undefined)) balEl.innerText = formatMoney(ov.total_balance);
+                if (eqEl && (ov.total_equity !== undefined)) eqEl.innerText = formatMoney(ov.total_equity);
+                if (flEl && (ov.total_floating_pnl !== undefined)) flEl.innerHTML = formatPnl(ov.total_floating_pnl);
+                if (profEl && (ov.total_profit !== undefined)) profEl.innerHTML = formatPnl(ov.total_profit);
+                if (wcEl) wcEl.innerText = ov.active_wallets_count !== undefined ? ov.active_wallets_count : (ov.total_wallets_count || 0);
+                if (atEl) atEl.innerText = (ov.active_positions_count !== undefined) ? ov.active_positions_count : ((data.positions || []).length);
+                if (wrEl && (ov.overall_winrate !== undefined)) wrEl.innerText = `${ov.overall_winrate}%`;
+            }
 
-                    document.getElementById('home-wallets-count').innerText = ov.active_wallets_count || ov.total_wallets_count;
-                    document.getElementById('home-active-trades').innerText = ov.active_positions_count;
-                    document.getElementById('home-winrate').innerText = `${ov.overall_winrate}%`;
-                }
+            if (data.wallets) {
+                data.wallets.forEach(w => {
+                    const eqEl = document.getElementById(`w-equity-${w.id}`);
+                    const flEl = document.getElementById(`w-floating-${w.id}`);
+                    const tdEl = document.getElementById(`w-today-${w.id}`);
+                    const wrEl = document.getElementById(`w-winrate-${w.id}`);
+                    const trEl = document.getElementById(`w-trades-${w.id}`);
 
-                // 2. Wallets list cards live updates
-                if (data.wallets) {
-                    data.wallets.forEach(w => {
-                        const eqEl = document.getElementById(`w-equity-${w.id}`);
-                        const flEl = document.getElementById(`w-floating-${w.id}`);
-                        const tdEl = document.getElementById(`w-today-${w.id}`);
-                        const wrEl = document.getElementById(`w-winrate-${w.id}`);
-                        const trEl = document.getElementById(`w-trades-${w.id}`);
-
-                        if (eqEl) eqEl.innerText = formatMoney(w.equity);
-                        if (flEl) flEl.innerHTML = formatPnl(w.floating_pnl);
-                        if (tdEl) tdEl.innerHTML = formatPnl(w.today_pnl);
-                        if (wrEl) wrEl.innerText = `${w.win_rate}%`;
-                        if (trEl) trEl.innerText = w.active_trades_count || 0;
-                    });
-                }
-            } catch (e) {}
+                    if (eqEl) eqEl.innerText = formatMoney(w.equity);
+                    if (flEl) flEl.innerHTML = formatPnl(w.floating_pnl);
+                    if (tdEl) tdEl.innerHTML = formatPnl(w.today_pnl);
+                    if (wrEl) wrEl.innerText = `${w.win_rate}%`;
+                    if (trEl) trEl.innerText = w.active_trades_count || 0;
+                });
+            }
         }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            let isHomePolling = true;
+            async function continuousHomeLoop() {
+                if (!isHomePolling) return;
+                try {
+                    const res = await fetch('/api/live-ticks/');
+                    if (res.ok) {
+                        const data = await res.json();
+                        renderHomeData(data);
+                    }
+                } catch (e) {}
+                setTimeout(continuousHomeLoop, 120);
+            }
+            continuousHomeLoop();
+        });
     </script>
 </body>
 </html>

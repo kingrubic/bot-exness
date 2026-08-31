@@ -86,11 +86,22 @@ class ExecutionEngine:
             exec_price = Decimal(str(order_res.get('price', plan.entry_price)))
             exec_volume = float(order_res.get('volume', plan.calculated_lot))
         else:
-            # Khớp lệnh Demo Sandbox (chạy thử nghiệm thuật toán trên máy tính/Linux)
-            import random
-            ticket = f"DEMO-{random.randint(1000000, 9999999)}"
-            exec_price = plan.entry_price
-            exec_volume = float(plan.calculated_lot)
+            if wallet.mt5_login:
+                plan.status = 'PENDING'
+                plan.save()
+                BotLog.log(
+                    level='WARNING',
+                    category='EXECUTION',
+                    wallet=wallet,
+                    symbol=plan.symbol,
+                    message=f"Chưa thể gửi lệnh '{plan.symbol}' vì MT5 Terminal chưa sẵn sàng kết nối. Hệ thống không tạo lệnh ảo và sẽ đồng bộ khi MT5 kết nối.",
+                )
+                return None
+            else:
+                # Chỉ khi ví hoàn toàn không cấu hình MT5 (ví mô phỏng nội bộ)
+                ticket = f"LOCAL-{int(timezone.now().timestamp())}"
+                exec_price = plan.entry_price
+                exec_volume = float(plan.calculated_lot)
 
         position = Position.objects.create(
             wallet=wallet,
@@ -105,6 +116,9 @@ class ExecutionEngine:
             take_profit=plan.take_profit_1,
             floating_pnl=Decimal("0.00"),
             floating_pips=0.0,
+            source='BOT',
+            magic=8882026,
+            comment=f"AI-{plan.symbol}",
             is_trailing=True,
             opened_at=timezone.now()
         )
@@ -113,138 +127,332 @@ class ExecutionEngine:
         plan.save()
 
         # Ghi log thành công
-        mode_str = "THẬT TRÊN EXNESS MT5" if connected_mt5 else "DEMO SANDBOX"
         BotLog.log(
             level='INFO',
             category='EXECUTION',
-            message=f"ĐÃ MỞ LỆNH {mode_str} #{ticket}: {position.position_type} {position.symbol} {position.lot_size} Lot tại giá {position.open_price} cho ví '{wallet.name}'",
             wallet=wallet,
-            symbol=plan.symbol
+            symbol=plan.symbol,
+            message=f"Đã mở vị thế [{position.source}] #{position.ticket} ({plan.direction} {position.lot_size} Lot {plan.symbol}) tại giá {position.open_price}"
         )
+
         return position
 
     @classmethod
-    def update_positions_and_pnl(cls):
-        """Cập nhật Lãi/Lỗ tạm tính cho tất cả các vị thế đang mở và kiểm tra TP/SL."""
+    def get_max_allowed_positions_for_wallet(cls, wallet: WalletAccount) -> int:
+        """
+        Xác định số lệnh tối đa được phép mở đồng thời dựa trên quy mô vốn thực (Equity / Balance)
+        và mức ký quỹ an toàn của ví để chống cháy tài khoản:
+        - Vốn siêu nhỏ (< $50): Tối đa 1 lệnh (Tuyệt đối không nhồi thêm lệnh).
+        - Vốn nhỏ ($50 - $150): Tối đa 2 lệnh.
+        - Vốn vừa ($150 - $500): Tối đa 3 lệnh.
+        - Vốn khá ($500 - $1,500): Tối đa 5 lệnh.
+        - Vốn lớn (>= $1,500): Tối đa 8 lệnh.
+        """
+        eq = float(wallet.equity if (wallet.equity and wallet.equity > 0) else (wallet.balance or 0.0))
+        if eq < 50.0:
+            return 1
+        elif eq < 150.0:
+            return 2
+        elif eq < 500.0:
+            return 3
+        elif eq < 1500.0:
+            return 5
+        else:
+            return 8
+
+    @classmethod
+    def can_wallet_open_or_pyramid(cls, wallet: WalletAccount, sym_name: str, forecast_dir: str) -> tuple[bool, bool, str]:
+        """
+        Kiểm tra toàn diện xem ví có đủ điều kiện mở lệnh mới hoặc nhồi thêm lệnh hay không:
+        Trả về (can_enter: bool, is_pyramiding: bool, reason: str).
+        """
+        # 1. Kiểm tra mức Ký quỹ an toàn (Margin Safety Floor)
+        margin_level = float(wallet.margin_level or 0.0)
+        margin_free = float(wallet.margin_free or 0.0)
+        
+        # Nếu margin level quá thấp (< 300%) hoặc free margin cạn kiệt (< $5) -> Dừng ngay không nhồi
+        if margin_level > 0 and margin_level < 300.0:
+            return False, False, f"Mức ký quỹ (Margin Level {margin_level:.1f}%) dưới 300% an toàn. Dừng nhồi lệnh chống cháy ví."
+        
+        if wallet.margin and wallet.margin > 0 and margin_free < 5.0:
+            return False, False, f"Ký quỹ khả dụng (Free Margin ${margin_free:.2f}) quá thấp. Không thể mở thêm lệnh."
+
+        # 2. Kiểm tra tổng số lệnh đang mở so với hạn mức vốn
+        all_open_positions = wallet.positions.all()
+        total_open_count = all_open_positions.count()
+        max_allowed = cls.get_max_allowed_positions_for_wallet(wallet)
+        
+        if total_open_count >= max_allowed:
+            return False, False, f"Đã đạt giới hạn an toàn {total_open_count}/{max_allowed} lệnh theo quy mô vốn (${float(wallet.equity or wallet.balance):.2f})."
+
+        # 3. Kiểm tra vị thế của cặp giao dịch cụ thể
+        sym_positions = all_open_positions.filter(symbol=sym_name)
+        if not sym_positions.exists():
+            # Chưa có lệnh của cặp này -> Được phép mở lệnh đầu tiên
+            return True, False, "Mở lệnh đầu tiên theo Trend"
+
+        # Đã có lệnh của cặp này -> Đây là tình huống NHỒI LỆNH (Pyramiding)
+        # Kiểm tra số lệnh tối đa trên 1 cặp: không quá 2-3 lệnh/cặp
+        max_per_symbol = 1 if max_allowed <= 1 else (2 if max_allowed <= 3 else 3)
+        if sym_positions.count() >= max_per_symbol:
+            return False, False, f"Đã đạt số lệnh tối đa cho cặp {sym_name} ({sym_positions.count()}/{max_per_symbol} lệnh)."
+
+        # Kiểm tra hướng Trend: Bắt buộc phải đồng thuận cùng chiều với lệnh cũ
+        first_pos = sym_positions.first()
+        if not forecast_dir or forecast_dir != first_pos.position_type:
+            return False, False, f"Trend hiện tại ({forecast_dir}) không đồng thuận với vị thế đang mở ({first_pos.position_type}). Không nhồi lệnh."
+
+        # Kiểm tra trạng thái vị thế đang mở:
+        # Nếu vị thế trước đó đang bị âm sâu (> 15 pips hoặc > $2), KHÔNG được nhồi thêm (chống gồng lỗ)
+        for pos in sym_positions:
+            pos_pnl = float(pos.floating_pnl or 0.0)
+            pos_pips = float(pos.floating_pips or 0.0)
+            if pos_pnl < -2.0 or pos_pips < -15.0:
+                return False, False, f"Vị thế trước đó đang âm (${pos_pnl:.2f}, {pos_pips:.1f} pips). Không nhồi thêm để bảo toàn vốn."
+
+        return True, True, f"Nhồi thêm lệnh {forecast_dir} {sym_name} theo Trend mạnh"
+
+    @classmethod
+    def update_positions_and_pnl(cls, sync_mt5: bool = False):
+        """
+        Đồng bộ chính xác 100% vị thế thực tế từ MT5 Terminal.
+        Cập nhật PnL, Pips thả nổi và kích hoạt Chốt Lời Lướt Sóng Siêu Tốc (Micro-Scalping).
+        """
         try:
-            for position in Position.objects.all():
+            # 1. Đồng bộ trực tiếp danh sách vị thế thực tế từ MT5 Terminal khi được yêu cầu (chu kỳ background)
+            if sync_mt5:
+                for wallet in WalletAccount.objects.filter(is_active=True, mt5_login__isnull=False):
+                    try:
+                        connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
+                        if connector.connect():
+                            connector.sync_account_info(wallet)
+                            connector.sync_positions(wallet)
+                    except Exception:
+                        pass
+
+            positions_to_save = []
+            for position in Position.objects.select_related('wallet').all():
+                wallet = position.wallet
                 sym = SymbolConfig.objects.filter(symbol=position.symbol).first()
                 if not sym:
                     continue
 
-                curr_price = sym.current_price
+                curr_price = sym.current_price or Decimal("0.0")
+                if curr_price <= 0:
+                    continue
+
                 position.current_price = curr_price
-                open_p = float(position.open_price)
+                open_p = float(position.open_price or 0.0)
                 curr_p = float(curr_price)
-                lot = position.lot_size
-                contract_size = sym.contract_size
+                lot = float(position.lot_size or 0.01)
+                contract_size = float(sym.contract_size or 100.0)
+                point_size = float(sym.point_size or 0.0001)
+                if point_size <= 0:
+                    point_size = 0.0001
+
+                # Chuẩn hóa 1 Pip tiêu chuẩn (1 Pip = 10 Points trên Forex/Vàng)
+                cat = getattr(sym, 'category', 'FOREX')
+                digits = sym.digits
+                if digits in [3, 5]:
+                    pip_size = point_size * 10.0 # 0.00010 trên EURUSD, 0.010 trên USDJPY
+                elif 'XAU' in sym.symbol or 'GOLD' in sym.symbol or cat == 'METALS':
+                    pip_size = 0.10 # $0.10 biến động = 1 Pip
+                elif 'BTC' in sym.symbol or cat == 'CRYPTO':
+                    pip_size = 1.00 # $1.00 biến động = 1 Pip
+                elif 'US30' in sym.symbol or cat == 'INDICES':
+                    pip_size = 1.00
+                else:
+                    pip_size = max(point_size * 10.0, 0.0001)
 
                 # Tính PnL & Pips
                 if position.position_type == 'BUY':
                     diff = curr_p - open_p
-                    pips = round(diff / sym.point_size, 1)
+                    pips = round(diff / pip_size, 1)
                     pnl = round(diff * contract_size * lot, 2)
                     
                     if position.highest_price is None or curr_price > position.highest_price:
                         position.highest_price = curr_price
                 else: # SELL
                     diff = open_p - curr_p
-                    pips = round(diff / sym.point_size, 1)
+                    pips = round(diff / pip_size, 1)
                     pnl = round(diff * contract_size * lot, 2)
                     
                     if position.lowest_price is None or curr_price < position.lowest_price:
                         position.lowest_price = curr_price
 
-                position.floating_pips = pips
-                position.floating_pnl = Decimal(str(pnl))
+                # =========================================================================
+                # 1. TÍNH TOÁN LỢI NHUẬN RÒNG SAU TRỪ CHI PHÍ SÀN (COMMISSION, SPREAD, SWAP)
+                # =========================================================================
+                actual_comm = float(position.commission or 0.0)
+                est_comm = abs(actual_comm) if actual_comm != 0.0 else round(lot * 3.0, 2)
+                swap_fee = abs(float(position.swap or 0.0))
+                
+                # Lợi nhuận RÒNG thực tế hiện tại
+                net_pnl = round(pnl - est_comm - swap_fee, 2)
 
-                # Kiểm tra chạm TP/SL
-                if position.position_type == 'BUY':
-                    if position.take_profit and curr_price >= position.take_profit:
-                        cls.close_position(position, reason='TP_HIT')
-                        continue
-                    elif position.stop_loss and curr_price <= position.stop_loss:
-                        cls.close_position(position, reason='SL_HIT')
-                        continue
-                else: # SELL
-                    if position.take_profit and curr_price <= position.take_profit:
-                        cls.close_position(position, reason='TP_HIT')
-                        continue
-                    elif position.stop_loss and curr_price >= position.stop_loss:
-                        cls.close_position(position, reason='SL_HIT')
-                        continue
+                # =========================================================================
+                # 2. TỰ ĐỘNG CHỐT LỜI SIÊU TỐC (ULTRA-FAST MICRO SCALPING - LƯỚT SÓNG RÚT GỌN)
+                # =========================================================================
+                # Lướt sóng nhanh: Lãi ròng chỉ cần đạt từ $0.15 hoặc 1.0 pip là kích hoạt chốt
+                min_profit_threshold = max(round(lot * 1.2, 2), 0.15)
+                
+                should_take_profit = False
+                close_reason = 'PROFIT_TAKE'
 
-                position.save()
+                if net_pnl >= min_profit_threshold or pips >= 1.0:
+                    if position.position_type == 'BUY':
+                        # Chốt khi nến hạ nhiệt thoái lui 25% từ đỉnh
+                        if position.highest_price and position.highest_price > position.open_price:
+                            peak_gain = float(position.highest_price) - open_p
+                            curr_gain = curr_p - open_p
+                            if curr_gain <= peak_gain * 0.75:
+                                should_take_profit = True
+                                close_reason = 'TRAILING_TP'
+                        # Lãi đạt từ 2.0 pips hoặc $0.30+ -> Chốt lời dứt khoát thu tiền về
+                        if net_pnl >= max(lot * 2.5, 0.30) or pips >= 2.0:
+                            should_take_profit = True
+                            close_reason = 'TP_HIT'
+                    else: # SELL
+                        # Chốt khi nến bật lên thoái lui 25% từ đáy
+                        if position.lowest_price and position.lowest_price < position.open_price:
+                            peak_gain = open_p - float(position.lowest_price)
+                            curr_gain = open_p - curr_p
+                            if curr_gain <= peak_gain * 0.75:
+                                should_take_profit = True
+                                close_reason = 'TRAILING_TP'
+                        # Lãi đạt từ 2.0 pips hoặc $0.30+ -> Chốt lời dứt khoát thu tiền về
+                        if net_pnl >= max(lot * 2.5, 0.30) or pips >= 2.0:
+                            should_take_profit = True
+                            close_reason = 'TP_HIT'
+
+                if should_take_profit:
+                    cls.close_position(position, reason=close_reason)
+                    continue
+
+                positions_to_save.append(position)
+
+            if positions_to_save:
+                Position.objects.bulk_update(positions_to_save, [
+                    'current_price', 'floating_pnl', 'floating_pips',
+                    'highest_price', 'lowest_price', 'stop_loss', 'take_profit'
+                ])
 
             cls.recalculate_all_wallets()
         except Exception as e:
             BotLog.log(level='ERROR', category='EXECUTION', message=f'Lỗi khi cập nhật vị thế: {e}', traceback=traceback.format_exc())
 
     @classmethod
-    def close_position(cls, position: Position, close_price: Decimal = None, reason: str = 'TP_HIT'):
-        """Đóng vị thế THẬT trên sàn Exness MT5 và lưu vào lịch sử."""
+    def close_position(cls, position: Position, close_price: Decimal = None, reason: str = 'TP_HIT') -> tuple[bool, str]:
+        """Đóng vị thế THẬT trên sàn Exness MT5 và lưu vào lịch sử (Tính toán Net PnL sau phí)."""
         wallet = position.wallet
-        connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
-        
-        # Gửi yêu cầu đóng lệnh lên Exness MT5
-        closed_on_broker = connector.close_order(
-            ticket=int(position.ticket) if str(position.ticket).isdigit() else 0,
-            symbol=position.symbol,
-            order_type=position.position_type,
-            volume=position.lot_size
-        )
-        
-        if not closed_on_broker:
-            logger.warning(f"Đóng lệnh #{position.ticket} trên Exness MT5: Trả về False (hoặc lệnh đã tự đóng tại sàn do SL/TP).")
+        ticket_str = str(position.ticket)
+        is_local_sim = ticket_str.startswith('LOCAL-')
+        connector = None
+
+        if not is_local_sim and wallet and wallet.mt5_login:
+            if ExnessMT5Connector.is_bridge_reachable():
+                connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
+                res_close = connector.close_order(
+                    ticket=ticket_str,
+                    symbol=position.symbol,
+                    order_type=position.position_type,
+                    volume=float(position.lot_size)
+                )
+            if isinstance(res_close, tuple):
+                ok = res_close[0]
+                msg = res_close[1]
+                res_data = res_close[2] if len(res_close) > 2 else {}
+            else:
+                ok = bool(res_close)
+                msg = f"Đã đóng thành công lệnh #{ticket_str}" if ok else "Lỗi đóng lệnh trên MT5"
+                res_data = {}
+
+            if not ok:
+                BotLog.log(
+                    level='ERROR',
+                    category='EXECUTION',
+                    message=f"Sàn Exness MT5 từ chối đóng lệnh #{position.ticket}: {msg}",
+                    wallet=wallet,
+                    symbol=position.symbol
+                )
+                return False, f"Sàn Exness MT5 từ chối đóng lệnh: {msg}"
+        else:
+            msg = f"Đã đóng thành công lệnh #{ticket_str} trên Exness MT5"
 
         if close_price is not None:
             position.current_price = close_price
-        pnl = position.floating_pnl
-        is_win = pnl > 0
 
-        TradeHistory.objects.create(
+        # Tính toán Lợi Nhuận Ròng Thực Tế sau khi trừ Phí Hoa Hồng và Swap
+        comm_val = position.commission or Decimal('0.00')
+        swap_val = position.swap or Decimal('0.00')
+        gross_pnl = position.floating_pnl
+        net_pnl = gross_pnl + comm_val + swap_val
+        is_win = net_pnl > Decimal('0.00')
+
+        pos_source = getattr(position, 'source', 'BOT') or ('BOT' if position.plan else 'USER')
+        pos_magic = getattr(position, 'magic', 0) or (8882026 if pos_source == 'BOT' else 0)
+        pos_comment = getattr(position, 'comment', '') or ('AutoBot' if pos_source == 'BOT' else 'Manual Trade')
+
+        TradeHistory.objects.update_or_create(
             wallet=wallet,
             ticket=position.ticket,
-            symbol=position.symbol,
-            position_type=position.position_type,
-            lot_size=position.lot_size,
-            open_price=position.open_price,
-            close_price=position.current_price,
-            stop_loss=position.stop_loss,
-            take_profit=position.take_profit,
-            pnl=pnl,
-            pips=position.floating_pips,
-            close_reason=reason,
-            is_win=is_win,
-            opened_at=position.opened_at,
-            closed_at=timezone.now()
+            defaults={
+                'symbol': position.symbol,
+                'position_type': position.position_type,
+                'lot_size': position.lot_size,
+                'open_price': position.open_price,
+                'close_price': position.current_price,
+                'stop_loss': position.stop_loss,
+                'take_profit': position.take_profit,
+                'pnl': net_pnl,
+                'commission': comm_val,
+                'swap': swap_val,
+                'pips': position.floating_pips,
+                'close_reason': reason,
+                'is_win': is_win,
+                'source': pos_source,
+                'magic': pos_magic,
+                'comment': pos_comment,
+                'opened_at': position.opened_at,
+                'closed_at': timezone.now()
+            }
         )
 
-        # Cập nhật số dư ví, thống kê và winrate
-        wallet.balance = Decimal(str(wallet.balance)) + pnl
-        wallet.today_pnl = Decimal(str(wallet.today_pnl)) + pnl
-        wallet.total_profit = Decimal(str(wallet.total_profit)) + pnl
-        wallet.total_trades += 1
-        if is_win:
-            wallet.winning_trades += 1
-        else:
-            wallet.losing_trades += 1
-        wallet.calculate_metrics()
-        wallet.save()
+        # Cập nhật số dư ví, thống kê và winrate theo Lợi Nhuận Ròng Thực Nhận
+        if wallet:
+            wallet.total_profit = Decimal(str(wallet.total_profit)) + net_pnl
+            wallet.balance = Decimal(str(wallet.capital)) + Decimal(str(wallet.total_profit))
+            wallet.total_trades += 1
+            if is_win:
+                wallet.winning_trades += 1
+            else:
+                wallet.losing_trades += 1
+            wallet.calculate_metrics()
+            wallet.today_pnl = wallet.get_today_pnl()
+            wallet.save()
+
+            if not is_local_sim and wallet.mt5_login:
+                try:
+                    connector.sync_account_info(wallet)
+                    connector.sync_history_from_mt5(wallet)
+                except Exception:
+                    pass
 
         BotLog.log(
             level='INFO',
             category='EXECUTION',
-            message=f"ĐÃ ĐÓNG LỆNH THẬT TRÊN EXNESS MT5 #{position.ticket}: {position.position_type} {position.symbol} (PnL: {pnl:+} USD, Lý do: {reason})",
+            message=f"ĐÃ ĐÓNG LỆNH #{position.ticket}: {position.position_type} {position.symbol} (Net PnL: {net_pnl:+} USD, Phí: {comm_val} USD, Lý do: {reason})",
             wallet=wallet,
             symbol=position.symbol
         )
+        
         # Cập nhật trạng thái Plan nếu có
         if position.plan:
             position.plan.status = 'COMPLETED'
             position.plan.save()
 
         position.delete()
+        return True, f"Đã đóng thành công lệnh #{ticket_str}"
 
     @classmethod
     def recalculate_all_wallets(cls):
@@ -261,60 +469,39 @@ class ExecutionEngine:
     def run_full_trading_cycle(cls):
         """
         Chạy 1 chu kỳ giao dịch hoàn chỉnh:
-        Tự động đồng bộ số dư & lệnh từ Exness MT5 và ghi nhật ký lỗi chi tiết nếu có sự cố.
+        Tự động đồng bộ số dư, vị thế & 100% lịch sử khớp lệnh từ Exness MT5.
         """
         try:
-            # Step 0: Đồng bộ số dư và vị thế realtime từ Exness MT5
+            # Step 0: Đồng bộ số dư, vị thế realtime và toàn bộ lịch sử khớp lệnh trực tiếp từ Exness MT5
             for wallet in WalletAccount.objects.filter(is_active=True):
-                if wallet.account_type == 'REAL' and wallet.mt5_login:
+                if wallet.mt5_login:
                     try:
                         connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
                         if connector.connect():
                             connector.sync_account_info(wallet)
                             connector.sync_positions(wallet)
-                        else:
-                            # Không thể kết nối tới máy chủ Exness: Tự động vô hiệu hóa ví Real để tránh spam log
-                            wallet.is_active = False
-                            wallet.bot_status = 'STOPPED'
-                            wallet.save(update_fields=['is_active', 'bot_status'])
-                            BotLog.log(
-                                level='ERROR',
-                                category='SYSTEM',
-                                wallet=wallet,
-                                message=f"Đã tự động ngắt kết nối và tạm dừng ví Real '{wallet.name}' (#{wallet.mt5_login}) do mất kết nối tới máy chủ Exness ({wallet.mt5_server}).",
-                                traceback=f"Auto-disabled wallet #{wallet.mt5_login} on server {wallet.mt5_server} to prevent spam."
-                            )
+                            connector.sync_history_from_mt5(wallet)
                     except Exception as me:
-                        logger.warning(f"Không thể đồng bộ MT5 #{wallet.mt5_login}: {me}")
-                        wallet.is_active = False
-                        wallet.bot_status = 'STOPPED'
-                        wallet.save(update_fields=['is_active', 'bot_status'])
-                        BotLog.log(
-                            level='ERROR',
-                            category='SYSTEM',
-                            wallet=wallet,
-                            message=f"Đã tự động tắt ví '{wallet.name}' (#{wallet.mt5_login}) do lỗi ngoại lệ kết nối: {str(me)}",
-                            traceback=traceback.format_exc()
-                        )
-                elif wallet.account_type == 'DEMO' and wallet.mt5_login:
-                    # Với ví Demo: Nếu có MT5 Live thì sync từ MT5, nếu trên Sandbox thì duy trì hoạt động
-                    try:
-                        connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
-                        if connector.connect():
-                            connector.sync_account_info(wallet)
-                            connector.sync_positions(wallet)
-                    except Exception:
-                        pass
+                        logger.debug(f"MT5 sync notice #{wallet.mt5_login}: {me}")
 
             # Step 1: Đồng bộ giá thị trường thực tế từ MT5
             cls.sync_symbol_prices_from_mt5()
 
-            # Step 2: Generate technical forecasts for all active symbols
+            # Step 2: Generate technical forecasts for symbols required by active wallets
+            active_wallets = list(WalletAccount.objects.filter(is_active=True, bot_status='RUNNING'))
+            needed_symbols = set()
+            for w in active_wallets:
+                needed_symbols.update(w.allowed_symbols)
+            
+            if not needed_symbols:
+                needed_symbols = set(SymbolConfig.objects.filter(is_active=True).values_list('symbol', flat=True)[:5])
+
             forecasts = {}
-            for sym_config in SymbolConfig.objects.filter(is_active=True):
+            for sym_config in SymbolConfig.objects.filter(symbol__in=needed_symbols, is_active=True):
                 try:
                     forecast = TechnicalAnalyzer.generate_market_analysis(sym_config)
-                    forecasts[sym_config.symbol] = (sym_config, forecast)
+                    if forecast:
+                        forecasts[sym_config.symbol] = (sym_config, forecast)
                 except Exception as fe:
                     BotLog.log(
                         level='ERROR',
@@ -324,50 +511,40 @@ class ExecutionEngine:
                         symbol=sym_config.symbol
                     )
 
-            # Step 3 & 4: Plans and Orders per active wallet
-            for wallet in WalletAccount.objects.filter(is_active=True, bot_status='RUNNING'):
-                # Kiểm tra giới hạn số lệnh
-                current_open = wallet.positions.count()
-                if current_open >= wallet.max_open_trades:
-                    continue
-
+            # Step 3 & 4: Tự Động Vào Lệnh & Nhồi Lệnh Theo Trend Có Kiểm Soát Vốn Chống Cháy Ví
+            for wallet in active_wallets:
                 for sym_name in wallet.allowed_symbols:
                     if sym_name in forecasts:
                         sym_config, forecast = forecasts[sym_name]
+                        forecast_dir = 'BUY' if (forecast.trend_bias == 'BULLISH' or 'BUY' in str(forecast.recommended_action)) else ('SELL' if (forecast.trend_bias == 'BEARISH' or 'SELL' in str(forecast.recommended_action)) else None)
 
-                        # Kiểm tra lọc Spread
-                        if sym_config.current_spread_pips > sym_config.max_allowed_spread:
-                            BotLog.log(
-                                level='WARNING',
-                                category='RISK',
-                                message=f"Cặp {sym_name} bị giãn Spread ({sym_config.current_spread_pips} pips > Max {sym_config.max_allowed_spread} pips). Bot tạm dừng vào lệnh để bảo vệ vốn.",
-                                wallet=wallet,
-                                symbol=sym_name
-                            )
-                            continue
+                        can_enter, is_pyramiding, reason = cls.can_wallet_open_or_pyramid(wallet, sym_name, forecast_dir)
 
-                        # Avoid duplicate active plans for same symbol on same wallet
-                        existing_plan = TradingPlan.objects.filter(
-                            wallet=wallet, 
-                            symbol=sym_name, 
-                            status__in=['PENDING_TRIGGER', 'EXECUTING']
-                        ).first()
-
-                        if not existing_plan:
+                        if can_enter:
+                            # CẬP NHẬT KẾ HOẠCH & VÀO LỆNH THEO TREND:
                             try:
-                                plan = AutoPlanGenerator.generate_plan_for_wallet(wallet, sym_config, forecast)
+                                plan = AutoPlanGenerator.update_or_create_plan_for_wallet(
+                                    wallet, sym_config, forecast, is_pyramiding=is_pyramiding
+                                )
                                 if plan and plan.status == 'PENDING_TRIGGER':
-                                    if forecast.confidence_score >= 82.0:
-                                        cls.trigger_plan_to_position(plan)
+                                    cls.trigger_plan_to_position(plan)
                             except Exception as pe:
                                 BotLog.log(
                                     level='ERROR',
                                     category='PLAN',
-                                    message=f"Lỗi sinh kế hoạch giao dịch cho ví '{wallet.name}' ({sym_name}): {pe}",
+                                    message=f"Lỗi cập nhật kế hoạch giao dịch cho ví '{wallet.name}' ({sym_name}): {pe}",
                                     traceback=traceback.format_exc(),
                                     wallet=wallet,
                                     symbol=sym_name
                                 )
+                        else:
+                            # Không đủ điều kiện an toàn vốn hoặc đã đạt ngưỡng lệnh -> Giữ Plan ở trạng thái chờ kích hoạt
+                            try:
+                                AutoPlanGenerator.update_or_create_plan_for_wallet(
+                                    wallet, sym_config, forecast, is_pyramiding=False
+                                )
+                            except Exception:
+                                pass
 
             # Step 5: Update all positions & trailing stops
             cls.update_positions_and_pnl()

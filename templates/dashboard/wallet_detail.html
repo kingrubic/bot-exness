@@ -55,7 +55,7 @@
                     </span>
                 </div>
                 <h2 class="font-weight-bold text-dark mb-0">{{ wallet.name }}</h2>
-                <small class="text-muted font-monospace">MT5 Login: #{{ wallet.mt5_login }} &bull; Server: {{ wallet.mt5_server }} &bull; Đòn bẩy: 1:{{ wallet.leverage }}</small>
+                <small class="text-muted font-monospace">MT5 Login: #{{ wallet.mt5_login }} &bull; Server: {{ wallet.mt5_server }} &bull; Khối lượng đánh: <strong class="text-primary">{{ wallet.default_lot_size }} Lot</strong> &bull; Đòn bẩy: 1:{{ wallet.leverage }}</small>
             </div>
             <div class="d-flex gap-2 mt-3 mt-md-0">
                 <button class="btn btn-outline-success btn-sm rounded-pill px-3 shadow-sm" onclick="exportTradeHistoryCSV()">
@@ -98,6 +98,117 @@
             </div>
         </div>
 
+        <!-- BOT VS USER SEPARATED PERFORMANCE REPORT -->
+        <div class="row g-4 mb-4">
+            <!-- 1. BOT PERFORMANCE CARD -->
+            <div class="col-lg-6">
+                <div class="card border-0 shadow-sm rounded-4 h-100 overflow-hidden" style="border-top: 4px solid #10b981 !important; background: linear-gradient(180deg, #ffffff 0%, #f0fdf4 100%);">
+                    <div class="card-body p-4">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="rounded-circle d-flex align-items-center justify-content-center bg-success text-white" style="width: 38px; height: 38px;">
+                                    <i class="fa-solid fa-robot fs-5"></i>
+                                </div>
+                                <div>
+                                    <h5 class="fw-bold text-dark mb-0">Hiệu Suất Lệnh BOT (AI Trading)</h5>
+                                    <small class="text-muted">Các lệnh vào tự động theo tín hiệu AI/SMC</small>
+                                </div>
+                            </div>
+                            <span class="badge bg-success-subtle text-success border border-success-subtle px-3 py-2 rounded-pill font-monospace fw-bold">
+                                BOT SOURCE
+                            </span>
+                        </div>
+
+                        <div class="row g-3">
+                            <div class="col-6 col-md-4">
+                                <div class="p-3 bg-white rounded-3 border">
+                                    <div class="small text-muted mb-1">Tổng Lệnh BOT</div>
+                                    <div class="fs-5 fw-bold text-dark font-monospace" id="w-bot-trades">{{ bot_metrics.total_trades }}</div>
+                                    <div class="small text-muted">Thắng: <span class="text-success fw-bold" id="w-bot-wins">{{ bot_metrics.winning_trades }}</span> | Thua: <span class="text-danger fw-bold" id="w-bot-losses">{{ bot_metrics.losing_trades }}</span></div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-4">
+                                <div class="p-3 bg-white rounded-3 border">
+                                    <div class="small text-muted mb-1">Tỷ Lệ Thắng Bot</div>
+                                    <div class="fs-5 fw-bold text-success font-monospace" id="w-bot-winrate">{{ bot_metrics.win_rate }}%</div>
+                                    <div class="small text-muted">PF: <span class="fw-bold text-dark" id="w-bot-pf">{{ bot_metrics.profit_factor }}</span></div>
+                                </div>
+                            </div>
+                            <div class="col-12 col-md-4">
+                                <div class="p-3 bg-white rounded-3 border">
+                                    <div class="small text-muted mb-1">Tổng Lãi/Lỗ Bot</div>
+                                    <div class="fs-5 fw-bold font-monospace {% if bot_metrics.total_profit >= 0 %}text-success{% else %}text-danger{% endif %}" id="w-bot-profit">
+                                        {% if bot_metrics.total_profit >= 0 %}+{% endif %}${{ bot_metrics.total_profit }}
+                                    </div>
+                                    <div class="small text-muted">Hôm nay: <span class="fw-bold {% if bot_metrics.today_pnl >= 0 %}text-success{% else %}text-danger{% endif %}" id="w-bot-today">{% if bot_metrics.today_pnl >= 0 %}+{% endif %}${{ bot_metrics.today_pnl }}</span></div>
+                                </div>
+                            </div>
+                            <div class="col-12">
+                                <div class="d-flex justify-content-between align-items-center px-3 py-2 bg-white rounded-3 border small text-muted">
+                                    <span><i class="fa-solid fa-layer-group text-success me-1"></i> Khối Lượng Bot: <strong class="text-dark font-monospace" id="w-bot-vol">{{ bot_metrics.total_volume }} Lot</strong></span>
+                                    <span>Lãi: <strong class="text-success font-monospace">+${{ bot_metrics.gross_profit }}</strong> | Lỗ: <strong class="text-danger font-monospace">-${{ bot_metrics.gross_loss }}</strong></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2. USER PERFORMANCE CARD -->
+            <div class="col-lg-6">
+                <div class="card border-0 shadow-sm rounded-4 h-100 overflow-hidden" style="border-top: 4px solid #6f42c1 !important; background: linear-gradient(180deg, #ffffff 0%, #faf5ff 100%);">
+                    <div class="card-body p-4">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="rounded-circle d-flex align-items-center justify-content-center text-white" style="width: 38px; height: 38px; background-color: #6f42c1;">
+                                    <i class="fa-solid fa-user-tie fs-5"></i>
+                                </div>
+                                <div>
+                                    <h5 class="fw-bold text-dark mb-0">Hiệu Suất Lệnh USER (Thủ Công)</h5>
+                                    <small class="text-muted">Các lệnh do người dùng tự đặt tay qua Web hoặc App MT5</small>
+                                </div>
+                            </div>
+                            <span class="badge text-white px-3 py-2 rounded-pill font-monospace fw-bold" style="background-color: #6f42c1;">
+                                USER SOURCE
+                            </span>
+                        </div>
+
+                        <div class="row g-3">
+                            <div class="col-6 col-md-4">
+                                <div class="p-3 bg-white rounded-3 border">
+                                    <div class="small text-muted mb-1">Tổng Lệnh User</div>
+                                    <div class="fs-5 fw-bold text-dark font-monospace" id="w-user-trades">{{ user_metrics.total_trades }}</div>
+                                    <div class="small text-muted">Thắng: <span class="text-success fw-bold" id="w-user-wins">{{ user_metrics.winning_trades }}</span> | Thua: <span class="text-danger fw-bold" id="w-user-losses">{{ user_metrics.losing_trades }}</span></div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-4">
+                                <div class="p-3 bg-white rounded-3 border">
+                                    <div class="small text-muted mb-1">Tỷ Lệ Thắng User</div>
+                                    <div class="fs-5 fw-bold font-monospace" style="color: #6f42c1;" id="w-user-winrate">{{ user_metrics.win_rate }}%</div>
+                                    <div class="small text-muted">PF: <span class="fw-bold text-dark" id="w-user-pf">{{ user_metrics.profit_factor }}</span></div>
+                                </div>
+                            </div>
+                            <div class="col-12 col-md-4">
+                                <div class="p-3 bg-white rounded-3 border">
+                                    <div class="small text-muted mb-1">Tổng Lãi/Lỗ User</div>
+                                    <div class="fs-5 fw-bold font-monospace {% if user_metrics.total_profit >= 0 %}text-success{% else %}text-danger{% endif %}" id="w-user-profit">
+                                        {% if user_metrics.total_profit >= 0 %}+{% endif %}${{ user_metrics.total_profit }}
+                                    </div>
+                                    <div class="small text-muted">Hôm nay: <span class="fw-bold {% if user_metrics.today_pnl >= 0 %}text-success{% else %}text-danger{% endif %}" id="w-user-today">{% if user_metrics.today_pnl >= 0 %}+{% endif %}${{ user_metrics.today_pnl }}</span></div>
+                                </div>
+                            </div>
+                            <div class="col-12">
+                                <div class="d-flex justify-content-between align-items-center px-3 py-2 bg-white rounded-3 border small text-muted">
+                                    <span><i class="fa-solid fa-hand-pointer me-1" style="color: #6f42c1;"></i> Khối Lượng User: <strong class="text-dark font-monospace" id="w-user-vol">{{ user_metrics.total_volume }} Lot</strong></span>
+                                    <span>Lãi: <strong class="text-success font-monospace">+${{ user_metrics.gross_profit }}</strong> | Lỗ: <strong class="text-danger font-monospace">-${{ user_metrics.gross_loss }}</strong></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- AI FORWARD MARKET FORECAST CARDS -->
         <div class="au-card-clean mb-4">
             <div class="card-title-wrap">
@@ -128,6 +239,7 @@
                     <thead>
                         <tr>
                             <th>Ticket</th>
+                            <th>Nguồn</th>
                             <th>Cặp Tiền</th>
                             <th>Loại Lệnh</th>
                             <th>Khối Lượng</th>
@@ -141,7 +253,7 @@
                     </thead>
                     <tbody id="tbody-wallet-positions">
                         <tr>
-                            <td colspan="10" class="text-center py-3 text-muted">Đang tải vị thế mở...</td>
+                            <td colspan="11" class="text-center py-3 text-muted">Đang tải vị thế mở...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -200,6 +312,7 @@
                     <thead>
                         <tr>
                             <th>Ticket</th>
+                            <th>Nguồn</th>
                             <th>Cặp Tiền</th>
                             <th>Loại Lệnh</th>
                             <th>Khối Lượng</th>
@@ -211,7 +324,7 @@
                     </thead>
                     <tbody id="tbody-wallet-history">
                         <tr>
-                            <td colspan="8" class="text-center py-3 text-muted">Đang tải lịch sử giao dịch...</td>
+                            <td colspan="9" class="text-center py-3 text-muted">Đang tải lịch sử giao dịch...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -228,7 +341,6 @@
         </div>
     </footer>
 
-    <!-- Scripts -->
     <script src="/static/cooladmin/vendor/bootstrap-5.3.8.bundle.min.js"></script>
     <script src="/static/cooladmin/js/vanilla-utils.js"></script>
     <script>
@@ -265,42 +377,24 @@
         function formatPnl(amount, asBadge = false) {
             if (amount === undefined || amount === null || isNaN(amount)) return '$0.00';
             const num = Number(amount);
-            const isPos = num > 0;
-            const isNeg = num < 0;
-            const absVal = Math.abs(num).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            
-            let sign = '';
-            let arrow = '';
-            let colorClass = 'text-muted font-weight-bold';
-            let badgeClass = 'bg-light text-secondary border';
-
-            if (isPos) {
-                sign = '+';
-                arrow = '<i class="fa-solid fa-arrow-trend-up me-1"></i>';
-                colorClass = 'text-success font-weight-bold';
-                badgeClass = 'badge-profit';
-            } else if (isNeg) {
-                sign = '-';
-                arrow = '<i class="fa-solid fa-arrow-trend-down me-1"></i>';
-                colorClass = 'text-danger font-weight-bold';
-                badgeClass = 'badge-loss';
+            const formatted = num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            if (num > 0) {
+                return asBadge ? `<span class="badge bg-success text-white">+$${formatted}</span>` : `<span class="text-success font-weight-bold">+$${formatted}</span>`;
+            } else if (num < 0) {
+                return asBadge ? `<span class="badge bg-danger text-white">-$${Math.abs(num).toFixed(2)}</span>` : `<span class="text-danger font-weight-bold">-$${Math.abs(num).toFixed(2)}</span>`;
             }
-
-            if (asBadge) {
-                return `<span class="badge ${badgeClass} px-2 py-1">${arrow}${sign}$${absVal}</span>`;
-            }
-            return `<span class="${colorClass}">${arrow}${sign}$${absVal}</span>`;
+            return asBadge ? `<span class="badge bg-secondary text-white">$0.00</span>` : `<span class="text-secondary">$0.00</span>`;
         }
 
-        function renderLivePrice(symbolKey, currentPrice) {
-            const prev = prevPriceStore[symbolKey];
-            const curr = Number(currentPrice);
-            prevPriceStore[symbolKey] = curr;
+        function renderLivePrice(symbol, currentPrice) {
+            const curr = parseFloat(currentPrice);
+            const prev = prevPriceStore[symbol];
+            prevPriceStore[symbol] = curr;
 
             let flashClass = '';
             let trendIcon = '';
 
-            if (prev !== undefined && prev !== 0) {
+            if (prev !== undefined && prev !== null) {
                 if (curr > prev) {
                     flashClass = 'flash-price-up price-trend-up';
                     trendIcon = '<i class="fa-solid fa-caret-up text-success ms-1"></i>';
@@ -313,38 +407,103 @@
             const formatted = curr.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
             return `<span class="${flashClass}">$${formatted}${trendIcon}</span>`;
         }
+        const renderFlashPrice = renderLivePrice;
 
         document.addEventListener('DOMContentLoaded', () => {
-            loadWalletDetails();
-            setInterval(loadWalletDetails, 800);
+            let isDetailPolling = true;
+            async function continuousWalletLoop() {
+                if (!isDetailPolling) return;
+                try {
+                    const res = await fetch(`/api/wallets/${walletId}/`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        renderWalletDetailData(data);
+                    }
+                } catch (e) {}
+                setTimeout(continuousWalletLoop, 120);
+            }
+            continuousWalletLoop();
         });
+
+        function renderWalletDetailData(data) {
+            if (!data) return;
+            const rep = data.wallet || data.report;
+            if (!rep) return;
+
+            // 1. Report KPIs
+            const balEl = document.getElementById('w-balance');
+            const eqEl = document.getElementById('w-equity');
+            const flEl = document.getElementById('w-floating');
+            const wrEl = document.getElementById('w-winrate');
+            const posCountEl = document.getElementById('w-pos-count');
+
+            if (balEl) balEl.innerText = formatMoney(rep.balance);
+            if (eqEl) eqEl.innerText = formatMoney(rep.equity);
+            if (flEl) flEl.innerHTML = formatPnl(rep.floating_pnl);
+            if (wrEl) wrEl.innerText = `${rep.win_rate}%`;
+            if (posCountEl) posCountEl.innerText = (data.positions || []).length;
+
+            // 1.1 Bot & User breakdown
+            if (rep.bot_metrics) {
+                const bm = rep.bot_metrics;
+                const bTrades = document.getElementById('w-bot-trades');
+                if (bTrades) bTrades.innerText = bm.total_trades;
+                const bWins = document.getElementById('w-bot-wins');
+                if (bWins) bWins.innerText = bm.winning_trades;
+                const bLosses = document.getElementById('w-bot-losses');
+                if (bLosses) bLosses.innerText = bm.losing_trades;
+                const bWinrate = document.getElementById('w-bot-winrate');
+                if (bWinrate) bWinrate.innerText = `${bm.win_rate}%`;
+                const bPf = document.getElementById('w-bot-pf');
+                if (bPf) bPf.innerText = bm.profit_factor;
+                const bProfit = document.getElementById('w-bot-profit');
+                if (bProfit) bProfit.innerHTML = formatPnl(bm.total_profit);
+                const bToday = document.getElementById('w-bot-today');
+                if (bToday) bToday.innerHTML = formatPnl(bm.today_pnl);
+                const bVol = document.getElementById('w-bot-vol');
+                if (bVol) bVol.innerText = `${bm.total_volume} Lot`;
+            }
+
+            if (rep.user_metrics) {
+                const um = rep.user_metrics;
+                const uTrades = document.getElementById('w-user-trades');
+                if (uTrades) uTrades.innerText = um.total_trades;
+                const uWins = document.getElementById('w-user-wins');
+                if (uWins) uWins.innerText = um.winning_trades;
+                const uLosses = document.getElementById('w-user-losses');
+                if (uLosses) uLosses.innerText = um.losing_trades;
+                const uWinrate = document.getElementById('w-user-winrate');
+                if (uWinrate) uWinrate.innerText = `${um.win_rate}%`;
+                const uPf = document.getElementById('w-user-pf');
+                if (uPf) uPf.innerText = um.profit_factor;
+                const uProfit = document.getElementById('w-user-profit');
+                if (uProfit) uProfit.innerHTML = formatPnl(um.total_profit);
+                const uToday = document.getElementById('w-user-today');
+                if (uToday) uToday.innerHTML = formatPnl(um.today_pnl);
+                const uVol = document.getElementById('w-user-vol');
+                if (uVol) uVol.innerText = `${um.total_volume} Lot`;
+            }
+
+            // 2. Forecasts
+            renderForecasts(data.forecasts || []);
+
+            // 3. Positions
+            renderPositions(data.positions || []);
+
+            // 4. Plans
+            renderPlans(data.plans || []);
+
+            // 5. History
+            cachedHistory = data.history || [];
+            renderHistory(cachedHistory);
+        }
 
         async function loadWalletDetails() {
             try {
                 const res = await fetch(`/api/wallets/${walletId}/`);
+                if (!res.ok) return;
                 const data = await res.json();
-                
-                // 1. Report KPIs
-                const rep = data.report;
-                document.getElementById('w-balance').innerText = formatMoney(rep.balance);
-                document.getElementById('w-equity').innerText = formatMoney(rep.equity);
-                document.getElementById('w-floating').innerHTML = formatPnl(rep.floating_pnl);
-                document.getElementById('w-winrate').innerText = `${rep.win_rate}%`;
-                document.getElementById('w-pos-count').innerText = (data.positions || []).length;
-
-                // 2. Forecasts
-                renderForecasts(data.forecasts || []);
-
-                // 3. Positions
-                renderPositions(data.positions || []);
-
-                // 4. Plans
-                renderPlans(data.plans || []);
-
-                // 5. History
-                cachedHistory = data.history || [];
-                renderHistory(cachedHistory);
-
+                renderWalletDetailData(data);
             } catch (e) {
                 console.error(e);
             }
@@ -432,9 +591,16 @@
             const startIndex = (currentWposPage - 1) * DETAIL_PAGE_SIZE;
             const paged = cachedPositions.slice(startIndex, startIndex + DETAIL_PAGE_SIZE);
 
-            tbody.innerHTML = paged.map(p => `
+            tbody.innerHTML = paged.map(p => {
+                const isBot = (p.source === 'BOT');
+                const tagBadge = isBot 
+                    ? `<span class="badge bg-primary text-white font-monospace shadow-sm" style="font-size: 0.72rem; letter-spacing: 0.5px;"><i class="fa-solid fa-robot me-1"></i>BOT</span>` 
+                    : `<span class="badge text-white font-monospace shadow-sm" style="background-color: #6f42c1; font-size: 0.72rem; letter-spacing: 0.5px;"><i class="fa-solid fa-user me-1"></i>USER</span>`;
+
+                return `
                 <tr>
                     <td class="font-monospace font-weight-bold">#${p.ticket}</td>
+                    <td>${tagBadge}</td>
                     <td><b>${p.symbol}</b></td>
                     <td><span class="badge ${p.position_type === 'BUY' ? 'badge-buy' : 'badge-sell'}">${p.position_type}</span></td>
                     <td class="font-weight-bold">${p.lot_size} Lot</td>
@@ -454,7 +620,8 @@
                         </button>
                     </td>
                 </tr>
-            `).join('');
+                `;
+            }).join('');
 
             renderPaginationComponent('pagination-wallet-positions', cachedPositions.length, currentWposPage, DETAIL_PAGE_SIZE, 'changeWposPage');
         }
@@ -497,7 +664,7 @@
             cachedHistory = history || [];
             const tbody = document.getElementById('tbody-wallet-history');
             if (cachedHistory.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" class="text-center py-3 text-muted">Chưa có lịch sử giao dịch</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="9" class="text-center py-3 text-muted">Chưa có lịch sử giao dịch</td></tr>`;
                 renderPaginationComponent('pagination-wallet-history', 0, 1, DETAIL_PAGE_SIZE, 'changeWhistoryPage');
                 return;
             }
@@ -509,18 +676,29 @@
             const startIndex = (currentWhistoryPage - 1) * DETAIL_PAGE_SIZE;
             const paged = cachedHistory.slice(startIndex, startIndex + DETAIL_PAGE_SIZE);
 
-            tbody.innerHTML = paged.map(h => `
+            tbody.innerHTML = paged.map(h => {
+                const isBot = (h.source === 'BOT');
+                const tagBadge = isBot 
+                    ? `<span class="badge bg-primary text-white font-monospace shadow-sm" style="font-size: 0.72rem; letter-spacing: 0.5px;"><i class="fa-solid fa-robot me-1"></i>BOT</span>` 
+                    : `<span class="badge text-white font-monospace shadow-sm" style="background-color: #6f42c1; font-size: 0.72rem; letter-spacing: 0.5px;"><i class="fa-solid fa-user me-1"></i>USER</span>`;
+
+                return `
                 <tr>
                     <td class="font-monospace">#${h.ticket}</td>
+                    <td>${tagBadge}</td>
                     <td><b>${h.symbol}</b></td>
                     <td><span class="badge ${h.position_type === 'BUY' ? 'badge-buy' : 'badge-sell'}">${h.position_type}</span></td>
-                    <td>${h.lot_size}</td>
+                    <td>${h.lot_size} Lot</td>
                     <td><small>$${h.open_price} &rarr; $${h.close_price}</small></td>
-                    <td>${formatPnl(h.pnl, true)}</td>
-                    <td><span class="badge bg-light text-secondary border">${h.close_reason_display}</span></td>
+                    <td>
+                        ${formatPnl(h.pnl, true)}
+                        ${(h.commission || h.swap) ? `<div class="small text-muted font-monospace" style="font-size:0.7rem;">Phí: ${(h.commission || 0) + (h.swap || 0)} USD</div>` : ''}
+                    </td>
+                    <td><span class="badge bg-light text-secondary border">${h.close_reason_display || h.close_reason}</span></td>
                     <td class="small text-muted font-monospace">${h.closed_at}</td>
                 </tr>
-            `).join('');
+                `;
+            }).join('');
 
             renderPaginationComponent('pagination-wallet-history', cachedHistory.length, currentWhistoryPage, DETAIL_PAGE_SIZE, 'changeWhistoryPage');
         }

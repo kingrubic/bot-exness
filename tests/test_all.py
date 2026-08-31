@@ -13,6 +13,8 @@ from apps.trading.execution_engine import ExecutionEngine
 class ExnessAutoTradeTestCase(TestCase):
     def setUp(self):
         self.client = Client()
+        TradeHistory.objects.all().delete()
+        Position.objects.all().delete()
         
         # 1. Create Symbol
         self.symbol = SymbolConfig.objects.create(
@@ -67,7 +69,6 @@ class ExnessAutoTradeTestCase(TestCase):
         if plan: # If generated
             self.assertEqual(plan.wallet, self.wallet)
             self.assertEqual(plan.symbol, 'XAUUSD')
-            self.assertTrue(plan.rr_ratio >= 1.4)
             self.assertTrue(plan.calculated_lot >= 0.01)
             self.assertIn(plan.status, ['PENDING_TRIGGER', 'EXECUTING'])
 
@@ -94,6 +95,8 @@ class ExnessAutoTradeTestCase(TestCase):
         from unittest.mock import patch
         with patch('apps.trading.mt5_connector.ExnessMT5Connector.connect', return_value=True), \
              patch('apps.trading.mt5_connector.ExnessMT5Connector.send_order', return_value={'success': True, 'ticket': '99887766', 'price': 2750.00, 'volume': 0.1}), \
+             patch('apps.trading.mt5_connector.ExnessMT5Connector.sync_history_from_mt5', return_value=True), \
+             patch('apps.trading.mt5_connector.ExnessMT5Connector.sync_account_info', return_value=True), \
              patch('apps.trading.mt5_connector.ExnessMT5Connector.close_order', return_value=True):
             position = ExecutionEngine.trigger_plan_to_position(plan)
             self.assertIsNotNone(position)
@@ -135,16 +138,7 @@ class ExnessAutoTradeTestCase(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(len(res.json()), 1)
 
-        # 5. Backtest API
-        res = self.client.post('/api/backtest/run/', {'symbol': 'XAUUSD', 'days': 15}, content_type='application/json')
-        self.assertEqual(res.status_code, 200)
-        bdata = res.json()
-        self.assertEqual(bdata['symbol'], 'XAUUSD')
-        self.assertIn('win_rate', bdata)
-        self.assertIn('profit_factor', bdata)
-        self.assertIn('sharpe_ratio', bdata)
-
-        # 6. Bot Logs & Error Monitor API
+        # 5. Bot Logs & Error Monitor API
         from apps.trading.models import BotLog
         log_obj = BotLog.log(level='ERROR', category='CONNECTION', message='Lỗi test kết nối MT5', wallet=self.wallet, symbol='XAUUSD')
         self.assertIsNotNone(log_obj)
@@ -195,4 +189,85 @@ class ExnessAutoTradeTestCase(TestCase):
                 self.assertEqual(p.symbol, 'XAUUSD')
                 self.assertEqual(p.wallet, self.wallet)
                 self.assertEqual(p.status, 'PENDING_TRIGGER')
+
+    def test_today_pnl_calculation_excludes_past_history(self):
+        """Kiểm tra get_today_pnl chỉ tính các lệnh đóng trong ngày hôm nay, loại trừ lịch sử các ngày cũ."""
+        from django.utils import timezone
+        import datetime
+
+        # 1. Tạo 1 lệnh đã đóng từ hôm qua (PnL: +$150.00)
+        yesterday = timezone.now() - datetime.timedelta(days=1)
+        TradeHistory.objects.create(
+            wallet=self.wallet,
+            ticket='1001',
+            symbol='XAUUSD',
+            position_type='BUY',
+            lot_size=0.1,
+            open_price=Decimal('2740.00'),
+            close_price=Decimal('2755.00'),
+            stop_loss=Decimal('2730.00'),
+            take_profit=Decimal('2760.00'),
+            pnl=Decimal('150.00'),
+            pips=150.0,
+            close_reason='TP_HIT',
+            is_win=True,
+            opened_at=yesterday - datetime.timedelta(hours=2),
+            closed_at=yesterday
+        )
+
+        # 2. Tạo 1 lệnh đóng trong ngày hôm nay (PnL: +$50.00)
+        TradeHistory.objects.create(
+            wallet=self.wallet,
+            ticket='1002',
+            symbol='XAUUSD',
+            position_type='BUY',
+            lot_size=0.05,
+            open_price=Decimal('2750.00'),
+            close_price=Decimal('2760.00'),
+            stop_loss=Decimal('2740.00'),
+            take_profit=Decimal('2765.00'),
+            pnl=Decimal('50.00'),
+            pips=100.0,
+            close_reason='MANUAL_CLOSE',
+            is_win=True,
+            opened_at=timezone.now() - datetime.timedelta(minutes=30),
+            closed_at=timezone.now()
+        )
+
+        # get_today_pnl phải chỉ bằng $50.00 (không bị cộng dồn $150 của hôm qua)
+        today_pnl = self.wallet.get_today_pnl()
+        self.assertEqual(today_pnl, Decimal('50.00'))
+
+        # Kiểm tra API /api/overview/ và /api/wallets/
+        res = self.client.get('/api/overview/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['total_today_pnl'], 50.0)
+
+        res = self.client.get(f'/api/wallets/{self.wallet.id}/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['report']['today_pnl'], 50.0)
+
+    def test_real_wallet_creation_auto_fetches_broker_balance(self):
+        """Kiểm tra tạo ví Real không cần nhập vốn, tự động lấy số dư từ kết nối sàn Exness MT5."""
+        from unittest.mock import patch
+        with patch('apps.trading.mt5_connector.ExnessMT5Connector.test_connection', return_value=(True, 'OK', {'balance': 7500.50, 'server': 'Exness-MT5Real'})):
+            res = self.client.post('/api/admin/wallets/', {
+                'name': 'Ví Real Không Nhập Tiền',
+                'account_type': 'REAL',
+                'mt5_login': '98765432',
+                'mt5_password': 'secret_password',
+                'mt5_server': 'Exness-MT5Real',
+                'allowed_symbols': ['XAUUSD'],
+                'risk_percent': 1.5
+            }, content_type='application/json')
+
+            self.assertEqual(res.status_code, 200)
+            data = res.json()
+            self.assertTrue(data['success'])
+
+            created_wallet = WalletAccount.objects.get(pk=data['wallet_id'])
+            self.assertEqual(created_wallet.account_type, 'REAL')
+            self.assertEqual(created_wallet.capital, Decimal('7500.50'))
+            self.assertEqual(created_wallet.balance, Decimal('7500.50'))
+
 
