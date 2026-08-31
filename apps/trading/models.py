@@ -65,9 +65,13 @@ class Position(models.Model):
 class TradeHistory(models.Model):
     CLOSE_REASONS = [
         ('TP_HIT', 'Chạm Take Profit (TP Hit)'),
-        ('SL_HIT', 'Chạm Stop Loss (SL Hit)'),
+        ('SL_HIT', 'Cắt Lỗ Tự Động (SL Hit)'),
         ('TRAILING_STOP', 'Chạm Trailing Stop'),
         ('TRAILING_TP', 'Chốt Lời Thoái Lui Đỉnh (Trailing TP)'),
+        ('TREND_REVERSAL_SL', 'Cắt Lỗ Khi Đảo Chiều Trend'),
+        ('MAX_DRAWDOWN_SL', 'Cắt Lỗ Ngưỡng An Toàn Tối Đa'),
+        ('MARGIN_SAFETY_SL', 'Cắt Lỗ Cứu Ký Quỹ Ví (Margin Safety)'),
+        ('TREND_REVERSAL', 'Chốt Lời Khi Đảo Chiều Trend'),
         ('USER_AUTO_TP', 'Bot Chốt Lời Cho User (User Auto TP)'),
         ('MANUAL_CLOSE', 'Đóng Thủ Công (Manual Close)'),
         ('MAX_DAILY_DD', 'Dừng Do Chạm Max Daily Loss'),

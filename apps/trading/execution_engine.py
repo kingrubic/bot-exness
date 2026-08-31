@@ -348,6 +348,45 @@ class ExecutionEngine:
                     cls.close_position(position, reason=close_reason)
                     continue
 
+                # =========================================================================
+                # 3. ĐIỀU KIỆN CẮT LỖ THÔNG MINH (DYNAMIC STOP LOSS & CAPITAL PROTECTION)
+                # =========================================================================
+                should_stop_loss = False
+                sl_reason = 'SL_HIT'
+
+                if net_pnl < 0:
+                    forecast = MarketForecast.objects.filter(symbol=position.symbol).first()
+                    margin_level = float(wallet.margin_level or 0.0)
+
+                    # LOGIC SL 1: Cắt lỗ khi Xu Hướng Đảo Chiều Ngược Vị Thế (Trend Reversal Stop Loss)
+                    # Khi lệnh đang âm (pips <= -5.0 hoặc net_pnl <= -$0.80) VÀ xu hướng đã đảo chiều ngược lại
+                    if pips <= -5.0 or net_pnl <= -max(0.80, round(lot * 15.0, 2)):
+                        if position.position_type == 'BUY':
+                            if forecast and (forecast.trend_bias == 'BEARISH' or 'SELL' in str(forecast.recommended_action)):
+                                should_stop_loss = True
+                                sl_reason = 'TREND_REVERSAL_SL'
+                        else: # SELL
+                            if forecast and (forecast.trend_bias == 'BULLISH' or 'BUY' in str(forecast.recommended_action)):
+                                should_stop_loss = True
+                                sl_reason = 'TREND_REVERSAL_SL'
+
+                    # LOGIC SL 2: Cắt lỗ khẩn cấp bảo vệ số dư (Max Adverse Excursion Floor)
+                    # Chống gồng lỗ sâu vô hạn: ngắt lỗ tối đa khi âm vượt quá 25 pips hoặc ngưỡng an toàn
+                    max_sl_usd = -max(2.50, round(lot * 50.0, 2))
+                    if net_pnl <= max_sl_usd or pips <= -25.0:
+                        should_stop_loss = True
+                        sl_reason = 'MAX_DRAWDOWN_SL'
+
+                    # LOGIC SL 3: Cắt lỗ bảo vệ mức ký quỹ ví (Margin Safety Floor)
+                    # Khi Margin Level < 150% (nguy cơ cháy ví) -> Tự động cắt các lệnh âm để giải phóng Margin
+                    if margin_level > 0 and margin_level < 150.0:
+                        should_stop_loss = True
+                        sl_reason = 'MARGIN_SAFETY_SL'
+
+                if should_stop_loss:
+                    cls.close_position(position, reason=sl_reason)
+                    continue
+
                 positions_to_save.append(position)
 
             if positions_to_save:

@@ -263,4 +263,64 @@ def test_fee_aware_profit_closing_and_breakeven():
     assert hist.is_win is True
 
 
+@pytest.mark.django_db
+def test_dynamic_stop_loss_trend_reversal_and_max_drawdown():
+    """Kiểm tra cơ chế cắt lỗ thông minh: Cắt lỗ khi xu hướng đảo chiều & ngắt lỗ tối đa bảo vệ ví."""
+    wallet = WalletAccount.objects.create(
+        name="SL Wallet",
+        account_type="DEMO",
+        mt5_login="",
+        balance_db=Decimal("1000.00"),
+        capital=Decimal("1000.00"),
+        is_active=True,
+        allowed_symbols_json='["XAUUSD"]'
+    )
+
+    sym = SymbolConfig.objects.create(
+        symbol="XAUUSD",
+        display_name="Gold Spot",
+        category="METALS",
+        digits=2,
+        point_size=0.01,
+        contract_size=100.0,
+        current_price=Decimal("2750.00"),
+        is_active=True
+    )
+
+    # 1. Tạo vị thế BUY
+    pos = Position.objects.create(
+        wallet=wallet,
+        ticket="LOCAL-SL-1",
+        symbol="XAUUSD",
+        position_type="BUY",
+        lot_size=0.01,
+        open_price=Decimal("2750.00"),
+        current_price=Decimal("2748.00"), # Giá giảm -$2.00 (-20 pips)
+        opened_at=timezone.now()
+    )
+
+    # Xu hướng đảo chiều sang BEARISH
+    MarketForecast.objects.create(
+        symbol="XAUUSD",
+        timeframe="M5",
+        trend_bias="BEARISH",
+        recommended_action="READY_TO_SELL",
+        confidence_score=90.0,
+        current_price=Decimal("2748.00")
+    )
+
+    sym.current_price = Decimal("2748.00")
+    sym.save()
+
+    ExecutionEngine.update_positions_and_pnl()
+
+    # Vị thế bị cắt lỗ do xu hướng đảo chiều
+    assert not Position.objects.filter(ticket="LOCAL-SL-1").exists()
+    hist = TradeHistory.objects.filter(ticket="LOCAL-SL-1").first()
+    assert hist is not None
+    assert hist.close_reason == 'TREND_REVERSAL_SL'
+    assert hist.is_win is False
+
+
+
 
