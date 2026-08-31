@@ -295,7 +295,7 @@ def test_dynamic_stop_loss_trend_reversal_and_max_drawdown():
         position_type="BUY",
         lot_size=0.01,
         open_price=Decimal("2750.00"),
-        current_price=Decimal("2748.00"), # Giá giảm -$2.00 (-20 pips)
+        current_price=Decimal("2748.00"), # Giá giảm -$2.00 (-20 pips -> Âm < 5U -> Chưa cắt lỗ)
         opened_at=timezone.now()
     )
 
@@ -314,7 +314,16 @@ def test_dynamic_stop_loss_trend_reversal_and_max_drawdown():
 
     ExecutionEngine.update_positions_and_pnl()
 
-    # Vị thế bị cắt lỗ do xu hướng đảo chiều
+    # Âm $2.00 (< 5U) -> Vẫn giữ lệnh
+    assert Position.objects.filter(ticket="LOCAL-SL-1").exists()
+
+    # Giá tiếp tục giảm xuống 2744.00 (Âm -$6.00 >= 5U + Trend đảo chiều sang BEARISH -> Kích hoạt cắt lỗ)
+    sym.current_price = Decimal("2744.00")
+    sym.save()
+
+    ExecutionEngine.update_positions_and_pnl()
+
+    # Vị thế bị cắt lỗ do âm >= 5U và xu hướng đảo chiều
     assert not Position.objects.filter(ticket="LOCAL-SL-1").exists()
     hist = TradeHistory.objects.filter(ticket="LOCAL-SL-1").first()
     assert hist is not None

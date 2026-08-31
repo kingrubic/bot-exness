@@ -349,39 +349,43 @@ class ExecutionEngine:
                     continue
 
                 # =========================================================================
-                # 3. ĐIỀU KIỆN CẮT LỖ THÔNG MINH (DYNAMIC STOP LOSS & CAPITAL PROTECTION)
+                # 3. ĐIỀU KIỆN CẮT LỖ: BẮT BUỘC ÂM TỪ 5.00 USD TRỞ LÊN (<= -5U) + THỎA MÃN ĐIỀU KIỆN
                 # =========================================================================
+                min_sl_threshold = -max(5.00, round(lot * 100.0, 2)) # Chỉ xem xét cắt lỗ khi âm >= 5.00 USD
+                
                 should_stop_loss = False
                 sl_reason = 'SL_HIT'
 
-                if net_pnl < 0:
+                # Chỉ cắt lỗ khi lệnh đã âm từ 5.00 USD trở lên (>= 5U) và thỏa mãn điều kiện kỹ thuật
+                if net_pnl <= min_sl_threshold:
                     forecast = MarketForecast.objects.filter(symbol=position.symbol).first()
                     margin_level = float(wallet.margin_level or 0.0)
 
                     # LOGIC SL 1: Cắt lỗ khi Xu Hướng Đảo Chiều Ngược Vị Thế (Trend Reversal Stop Loss)
-                    # Khi lệnh đang âm (pips <= -5.0 hoặc net_pnl <= -$0.80) VÀ xu hướng đã đảo chiều ngược lại
-                    if pips <= -5.0 or net_pnl <= -max(0.80, round(lot * 15.0, 2)):
-                        if position.position_type == 'BUY':
-                            if forecast and (forecast.trend_bias == 'BEARISH' or 'SELL' in str(forecast.recommended_action)):
-                                should_stop_loss = True
-                                sl_reason = 'TREND_REVERSAL_SL'
-                        else: # SELL
-                            if forecast and (forecast.trend_bias == 'BULLISH' or 'BUY' in str(forecast.recommended_action)):
-                                should_stop_loss = True
-                                sl_reason = 'TREND_REVERSAL_SL'
+                    # Khi lệnh âm >= 5.00 USD VÀ xu hướng kỹ thuật xác nhận đã gãy trend và đảo chiều ngược lại
+                    if position.position_type == 'BUY':
+                        if forecast and (forecast.trend_bias == 'BEARISH' or 'SELL' in str(forecast.recommended_action)):
+                            should_stop_loss = True
+                            sl_reason = 'TREND_REVERSAL_SL'
+                    else: # SELL
+                        if forecast and (forecast.trend_bias == 'BULLISH' or 'BUY' in str(forecast.recommended_action)):
+                            should_stop_loss = True
+                            sl_reason = 'TREND_REVERSAL_SL'
 
-                    # LOGIC SL 2: Cắt lỗ khẩn cấp bảo vệ số dư (Max Adverse Excursion Floor)
-                    # Chống gồng lỗ sâu vô hạn: ngắt lỗ tối đa khi âm vượt quá 25 pips hoặc ngưỡng an toàn
-                    max_sl_usd = -max(2.50, round(lot * 50.0, 2))
-                    if net_pnl <= max_sl_usd or pips <= -25.0:
-                        should_stop_loss = True
-                        sl_reason = 'MAX_DRAWDOWN_SL'
+                    # LOGIC SL 2: Cắt lỗ khẩn cấp bảo vệ số dư khi biến động cực đại (Max Adverse Excursion Floor)
+                    # Chống gồng lỗ vô hạn khi có tin sốc giật giá cực mạnh: ngắt lỗ tối đa khi âm từ $10.00 trở lên hoặc âm > 80 pips
+                    if not should_stop_loss:
+                        max_sl_usd = -max(10.00, round(lot * 200.0, 2))
+                        if net_pnl <= max_sl_usd or pips <= -80.0:
+                            should_stop_loss = True
+                            sl_reason = 'MAX_DRAWDOWN_SL'
 
                     # LOGIC SL 3: Cắt lỗ bảo vệ mức ký quỹ ví (Margin Safety Floor)
-                    # Khi Margin Level < 150% (nguy cơ cháy ví) -> Tự động cắt các lệnh âm để giải phóng Margin
-                    if margin_level > 0 and margin_level < 150.0:
-                        should_stop_loss = True
-                        sl_reason = 'MARGIN_SAFETY_SL'
+                    # Khi Margin Level < 150% (nguy cơ cháy ví) VÀ lệnh đang âm >= 5.00 USD -> Tự động cắt để giải phóng Margin cứu ví
+                    if not should_stop_loss:
+                        if margin_level > 0 and margin_level < 150.0:
+                            should_stop_loss = True
+                            sl_reason = 'MARGIN_SAFETY_SL'
 
                 if should_stop_loss:
                     cls.close_position(position, reason=sl_reason)
