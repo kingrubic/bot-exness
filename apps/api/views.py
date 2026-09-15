@@ -1223,7 +1223,6 @@ def admin_wallet_manage_api(request, wallet_id=None):
             else:
                 payload['algo_required'] = False
         else:
-            from apps.plans.planner import AutoPlanGenerator
             purged = AutoPlanGenerator.purge_all_plans_for_wallet(wallet)
             payload = {
                 'success': True,
