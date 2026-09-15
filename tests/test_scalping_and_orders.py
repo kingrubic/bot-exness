@@ -448,6 +448,44 @@ def test_min_take_profit_usd_per_wallet():
 
 
 @pytest.mark.django_db
+def test_user_winner_also_closes_at_min_take_profit():
+    """Lệnh USER lãi cũng chốt khi đạt min_take_profit_usd (không chỉ BOT)."""
+    wallet = WalletAccount.objects.create(
+        name="User TP Wallet",
+        account_type="DEMO",
+        mt5_login="",
+        balance_db=Decimal("2000.00"),
+        capital=Decimal("2000.00"),
+        is_active=True,
+        min_take_profit_usd=Decimal("0.50"),
+        allowed_symbols_json='["XAUUSD"]'
+    )
+    SymbolConfig.objects.create(
+        symbol="XAUUSD",
+        display_name="Gold",
+        category="METALS",
+        digits=2,
+        point_size=0.01,
+        contract_size=100.0,
+        current_price=Decimal("2740.00"),
+        is_active=True
+    )
+    Position.objects.create(
+        wallet=wallet,
+        ticket="LOCAL-USER-TP-1",
+        symbol="XAUUSD",
+        position_type="SELL",
+        lot_size=0.01,
+        open_price=Decimal("2750.00"),
+        current_price=Decimal("2740.00"),
+        source="USER",
+        opened_at=timezone.now()
+    )
+    ExecutionEngine.update_positions_and_pnl()
+    assert not Position.objects.filter(ticket="LOCAL-USER-TP-1").exists()
+
+
+@pytest.mark.django_db
 def test_plan_uses_live_market_ask_bid():
     wallet = WalletAccount.objects.create(
         name="Mkt Wallet",
@@ -639,6 +677,8 @@ def test_mt5_session_helpers_without_terminal():
     assert RET_DONE in SUCCESS_RETCODES
     assert RET_INVALID_FILL not in SUCCESS_RETCODES
     assert 10004 in RETRY_RETCODES
+    assert MT5NativeSession.deal_int(type('D', (), {'type': 0})(), 'type', -1) == 0
+    assert MT5NativeSession.deal_int(type('D', (), {'type': 1})(), 'type', -1) == 1
     first = MT5NativeSession.history_from_for_wallet(1)
     MT5NativeSession.mark_history_synced(1)
     nxt = MT5NativeSession.history_from_for_wallet(1)
@@ -651,6 +691,64 @@ def test_mt5_algo_off_status_code():
     assert MT5Launcher.status_code_from_flags(True, True, True, False) == 'algo_off'
     assert MT5Launcher.status_code_from_flags(True, True, True, True) == 'ready'
     assert MT5Launcher.status_code_from_flags(True, True, False, False) == 'not_logged_in'
+
+
+@pytest.mark.django_db
+def test_quick_order_returns_json_without_syncing_positions(client):
+    from unittest.mock import patch
+    import json
+    wallet = WalletAccount.objects.create(
+        name="Quick Trade Wallet",
+        account_type="DEMO",
+        mt5_login="434232731",
+        mt5_password="x",
+        mt5_server="Exness-MT5Trial7",
+        is_active=True,
+    )
+    payload = {
+        'wallet_id': wallet.id,
+        'symbol': 'XAUUSD',
+        'order_type': 'BUY',
+        'volume': 0.01,
+        'comment': 'Web Direct Trade',
+    }
+    with patch('apps.trading.mt5_connector.ExnessMT5Connector.connect', return_value=True), \
+         patch('apps.trading.mt5_connector.ExnessMT5Connector.send_order', return_value={
+             'success': True, 'ticket': '555', 'deal': '1', 'price': 4270.5,
+         }) as send_mock, \
+         patch('apps.trading.mt5_connector.ExnessMT5Connector.sync_account_info') as sync_acc, \
+         patch('apps.trading.mt5_connector.ExnessMT5Connector.sync_positions') as sync_pos:
+        res = client.post('/api/orders/send/', data=json.dumps(payload), content_type='application/json')
+    assert res.status_code == 200
+    body = res.json()
+    assert body['success'] is True
+    assert body['ticket'] == '555'
+    send_mock.assert_called_once()
+    sync_acc.assert_not_called()
+    sync_pos.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_quick_order_db_lock_returns_json_not_html(client):
+    from unittest.mock import patch
+    from django.db import OperationalError
+    import json
+    wallet = WalletAccount.objects.create(
+        name="Lock Wallet",
+        account_type="DEMO",
+        mt5_login="1",
+        is_active=True,
+    )
+    with patch('apps.accounts.models.WalletAccount.objects.get', side_effect=OperationalError('database is locked')):
+        res = client.post(
+            '/api/orders/send/',
+            data=json.dumps({'wallet_id': wallet.id, 'symbol': 'XAUUSD', 'order_type': 'BUY', 'volume': 0.01}),
+            content_type='application/json',
+        )
+    assert res.status_code == 503
+    assert 'json' in res['Content-Type']
+    assert 'DOCTYPE' not in res.content.decode('utf-8', errors='ignore')
+    assert res.json()['success'] is False
 
 
 

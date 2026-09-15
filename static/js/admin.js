@@ -47,13 +47,25 @@ function unwrapApiList(payload) {
     return [];
 }
 
+function humanizeApiError(text, status) {
+    const raw = String(text || '');
+    if (/^\s*</.test(raw) || /OperationalError|database is locked|DOCTYPE html/i.test(raw)) {
+        return 'Database đang bận. Lệnh có thể đã vào MT5 — kiểm tra bảng vị thế rồi thử lại nếu chưa thấy.';
+    }
+    return raw.slice(0, 180) || `HTTP ${status}`;
+}
+
 async function parseApiJson(res) {
     const text = await res.text();
     if (!text) return {};
     try {
-        return JSON.parse(text);
+        const data = JSON.parse(text);
+        if (data && typeof data.error === 'string' && /DOCTYPE html|OperationalError/i.test(data.error)) {
+            data.error = humanizeApiError(data.error, res.status);
+        }
+        return data;
     } catch (e) {
-        return { success: false, error: text.slice(0, 180) || `HTTP ${res.status}` };
+        return { success: false, error: humanizeApiError(text, res.status) };
     }
 }
 
@@ -2256,6 +2268,8 @@ async function updateTradeModalPrice() {
     }
 }
 
+let quickTradeChain = Promise.resolve();
+
 async function executeManualTrade(orderType) {
     const walletId = parseInt(document.getElementById('trade-wallet-id')?.value || '0', 10);
     const symbol = document.getElementById('trade-symbol')?.value;
@@ -2276,26 +2290,28 @@ async function executeManualTrade(orderType) {
         return;
     }
 
-    const btnBuy = document.getElementById('btn-submit-buy');
-    const btnSell = document.getElementById('btn-submit-sell');
-    if (btnBuy) btnBuy.disabled = true;
-    if (btnSell) btnSell.disabled = true;
+    const payload = {
+        wallet_id: walletId,
+        symbol: symbol,
+        order_type: orderType,
+        volume: volume,
+        sl: sl,
+        tp: tp,
+        comment: 'Web Direct Trade'
+    };
+    const job = quickTradeChain.then(() => sendManualTrade(payload, orderType));
+    quickTradeChain = job.catch(() => {});
+    return job;
+}
 
+async function sendManualTrade(payload, orderType) {
+    showQuickTradeAlert(true, `Đang gửi lệnh ${orderType} ${payload.volume} ${payload.symbol}...`);
     try {
         const res = await apiFetch('/api/orders/send/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                wallet_id: walletId,
-                symbol: symbol,
-                order_type: orderType,
-                volume: volume,
-                sl: sl,
-                tp: tp,
-                comment: 'Web Direct Trade'
-            })
+            body: JSON.stringify(payload)
         });
-
         const data = await parseApiJson(res);
         if (data.success) {
             const msg = data.message || `Đã gửi lệnh ${orderType} thành công`;
@@ -2305,14 +2321,10 @@ async function executeManualTrade(orderType) {
                 refreshAllData();
             } catch (e) {}
         } else {
-            const err = data.error || 'Lỗi khi gửi lệnh lên MT5';
-            showQuickTradeAlert(false, err);
+            showQuickTradeAlert(false, data.error || 'Lỗi khi gửi lệnh lên MT5');
         }
     } catch (e) {
         showQuickTradeAlert(false, 'Lỗi kết nối tới máy chủ MT5');
-    } finally {
-        if (btnBuy) btnBuy.disabled = false;
-        if (btnSell) btnSell.disabled = false;
     }
 }
 

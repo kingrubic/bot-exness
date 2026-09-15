@@ -448,7 +448,8 @@ class ExecutionEngine:
                 if min_tp <= 0:
                     min_tp = 0.01
 
-                if net_pnl >= min_tp and (is_local or getattr(position, 'source', 'BOT') == 'BOT'):
+                # Chốt khi lãi MT5 (đúng số trên bảng vị thế) >= min_tp — BOT và USER
+                if pnl >= min_tp or net_pnl >= min_tp:
                     should_close = True
                     close_reason = 'TP_HIT'
                     forecast = MarketForecast.objects.filter(symbol=position.symbol).first()

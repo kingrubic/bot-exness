@@ -391,6 +391,17 @@ class MT5NativeSession:
         with _LOCK:
             return mt5.history_deals_get(date_from, date_to)
 
+    @staticmethod
+    def deal_int(deal, field: str, default: int = -1) -> int:
+        """MT5 DEAL_TYPE_BUY = 0; không dùng `or default` vì 0 bị thành default."""
+        val = getattr(deal, field, None)
+        if val is None:
+            return default
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return default
+
     @classmethod
     def group_closed_deals(cls, deals) -> list[dict]:
         """Gom deal MT5 theo position_id thành lệnh đã đóng. DB chỉ dùng để gắn BOT/USER."""
@@ -403,16 +414,16 @@ class MT5NativeSession:
 
         by_pos: dict[str, dict] = {}
         for d in deals:
-            deal_type = int(getattr(d, 'type', -1) or -1)
+            deal_type = cls.deal_int(d, 'type', -1)
             if deal_type not in (0, 1):
                 continue
-            pos_id_raw = int(getattr(d, 'position_id', 0) or 0)
+            pos_id_raw = cls.deal_int(d, 'position_id', 0)
             if pos_id_raw <= 0:
                 continue
             pos_id = str(pos_id_raw)
             grp = by_pos.setdefault(pos_id, {'in': None, 'outs': [], 'all': []})
             grp['all'].append(d)
-            entry = int(getattr(d, 'entry', 0) or 0)
+            entry = cls.deal_int(d, 'entry', 0)
             if entry == 0:
                 if grp['in'] is None:
                     grp['in'] = d
@@ -529,7 +540,9 @@ class MT5NativeSession:
         if cached.get('data') and cached.get('day') == day and (now - cached.get('ts', 0)) < 3.0:
             return cached['data']
         date_from = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        deals = cls.history_deals(date_from, now_dt)
+        start_ts = date_from.timestamp()
+        # Lấy rộng hơn 12h rồi lọc theo unix local midnight — khớp History Today, không lệch timezone API.
+        deals = cls.history_deals(date_from - timedelta(hours=12), now_dt)
         if deals is None:
             return empty
         bot = 0.0
@@ -539,8 +552,10 @@ class MT5NativeSession:
         except Exception:
             classify_order_source = None
         for d in deals:
-            deal_type = int(getattr(d, 'type', -1) or -1)
+            deal_type = cls.deal_int(d, 'type', -1)
             if deal_type not in (0, 1):
+                continue
+            if int(getattr(d, 'time', 0) or 0) < start_ts:
                 continue
             net = (
                 float(getattr(d, 'profit', 0) or 0)

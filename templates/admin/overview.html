@@ -74,9 +74,9 @@
         <div class="metric-card-modern">
             <div class="d-flex justify-content-between align-items-start">
                 <div>
-                    <div class="metric-label">Lãi/Lỗ Hôm Nay (Today)</div>
+                    <div class="metric-label">Đã đóng hôm nay (Closed today)</div>
                     <div class="metric-value font-weight-bold {% if tot_today >= 0 %}text-success{% else %}text-danger{% endif %}" id="kpi-today">{% if tot_today >= 0 %}+{% endif %}${{ tot_today|floatformat:2 }}</div>
-                    <div class="metric-subtext">Winrate: <span id="kpi-winrate" class="font-weight-bold text-dark">0%</span></div>
+                    <div class="metric-subtext">Lịch sử MT5, không gồm lãi nổi — Winrate: <span id="kpi-winrate" class="font-weight-bold text-dark">0%</span></div>
                 </div>
                 <div class="card-icon-wrap icon-bg-amber">
                     <i class="fa-solid fa-trophy"></i>

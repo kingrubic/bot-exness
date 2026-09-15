@@ -36,7 +36,7 @@ INSTALLED_APPS = [
     'corsheaders',
     
     # Local apps
-    'apps.core',
+    'apps.core.apps.CoreConfig',
     'apps.accounts',
     'apps.symbols',
     'apps.analysis',
@@ -86,7 +86,8 @@ DATABASES = {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
         'OPTIONS': {
-            'timeout': 60, # 60 seconds busy timeout for SQLite locks
+            'timeout': 30,
+            'transaction_mode': 'IMMEDIATE',
         },
         'CONN_MAX_AGE': 0,
     }

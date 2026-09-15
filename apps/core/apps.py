@@ -8,7 +8,7 @@ def configure_sqlite(sender, connection, **kwargs):
             cursor = connection.cursor()
             cursor.execute('PRAGMA journal_mode = WAL;')
             cursor.execute('PRAGMA synchronous = NORMAL;')
-            cursor.execute('PRAGMA busy_timeout = 60000;')
+            cursor.execute('PRAGMA busy_timeout = 30000;')
         except Exception:
             pass
 

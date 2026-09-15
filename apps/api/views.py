@@ -740,7 +740,9 @@ def trigger_trading_cycle_api(request):
 
 @api_view(['POST'])
 def manual_order_send_api(request):
-    """Mở lệnh trực tiếp từ Web lên sàn Exness MT5."""
+    """Mở lệnh trực tiếp từ Web lên sàn Exness MT5. Không sync DB nặng sau lệnh (tránh SQLite lock khi đặt liên tục)."""
+    from django.db import OperationalError, close_old_connections
+
     data = request.data
     wallet_id = data.get('wallet_id')
     symbol = str(data.get('symbol', 'XAUUSD')).strip().upper()
@@ -754,13 +756,27 @@ def manual_order_send_api(request):
     tp = float(data['tp']) if data.get('tp') else 0.0
     comment = str(data.get('comment', 'Web Manual Trade'))
 
-    try:
-        if wallet_id:
-            wallet = WalletAccount.objects.get(pk=wallet_id)
-        else:
-            wallet = WalletAccount.objects.filter(is_active=True, mt5_login__isnull=False).first()
-    except WalletAccount.DoesNotExist:
-        return Response({'success': False, 'error': 'Không tìm thấy ví Exness'}, status=status.HTTP_404_NOT_FOUND)
+    wallet = None
+    last_db_err = None
+    for attempt in range(5):
+        try:
+            close_old_connections()
+            if wallet_id:
+                wallet = WalletAccount.objects.get(pk=wallet_id)
+            else:
+                wallet = WalletAccount.objects.filter(is_active=True, mt5_login__isnull=False).first()
+            last_db_err = None
+            break
+        except WalletAccount.DoesNotExist:
+            return Response({'success': False, 'error': 'Không tìm thấy ví Exness'}, status=status.HTTP_404_NOT_FOUND)
+        except OperationalError as e:
+            last_db_err = e
+            time.sleep(0.05 * (attempt + 1))
+    if last_db_err and wallet is None:
+        return Response({
+            'success': False,
+            'error': 'Database đang bận. Thử đặt lại lệnh sau 1 giây.',
+        }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     if not wallet:
         return Response({'success': False, 'error': 'Chưa có ví Exness nào được kích hoạt'}, status=status.HTTP_400_BAD_REQUEST)
@@ -784,14 +800,16 @@ def manual_order_send_api(request):
     )
 
     if res and res.get('success'):
-        connector.sync_account_info(wallet)
-        connector.sync_positions(wallet)
         ticket = str(res.get('ticket') or '')
         deal = res.get('deal', '')
         price = res.get('price', 0.0)
-        from apps.trading.order_source import remember_order_source
-        remember_order_source(ticket, 'USER', 0)
-
+        try:
+            from apps.trading.order_source import remember_order_source
+            remember_order_source(ticket, 'USER', 0)
+        except OperationalError:
+            pass
+        except Exception:
+            pass
         BotLog.log(
             level='INFO',
             category='EXECUTION',
@@ -799,7 +817,6 @@ def manual_order_send_api(request):
             symbol=symbol,
             message=f"Đã mở lệnh THẬT từ Web lên Exness MT5: {order_type} {volume} Lot {symbol} tại giá {price} (Ticket: #{ticket})"
         )
-
         return Response({
             'success': True,
             'message': f"Đã gửi lệnh thành công lên Exness MT5! Ticket #{ticket}",
@@ -808,9 +825,8 @@ def manual_order_send_api(request):
             'price': price,
             'volume': volume
         })
-    else:
-        err_msg = res.get('error', 'Lỗi không xác định khi gửi lệnh lên MT5') if res else 'Lỗi kết nối MT5'
-        return Response({'success': False, 'error': f"Exness MT5 từ chối lệnh: {err_msg}"}, status=status.HTTP_400_BAD_REQUEST)
+    err_msg = res.get('error', 'Lỗi không xác định khi gửi lệnh lên MT5') if res else 'Lỗi kết nối MT5'
+    return Response({'success': False, 'error': f"Exness MT5 từ chối lệnh: {err_msg}"}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ==================== ADMIN CRUD APIS ====================
