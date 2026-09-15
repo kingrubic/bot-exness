@@ -74,6 +74,33 @@ class WalletAccount(models.Model):
     def __str__(self):
         return f"{self.name} ({self.account_type}) - #{self.mt5_login}"
 
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.is_active and self.pk:
+            type(self).objects.filter(is_active=True).exclude(pk=self.pk).update(is_active=False)
+
+    @classmethod
+    def get_current(cls):
+        """Ví đang kích hoạt — tối đa 1. Nếu DB còn nhiều, giữ ví khớp login MT5 hoặc id mới nhất."""
+        active = list(cls.objects.filter(is_active=True).order_by('-id')[:8])
+        if not active:
+            return None
+        keep = active[0]
+        if len(active) > 1:
+            try:
+                from apps.trading.mt5_session import MT5NativeSession
+                if MT5NativeSession.available():
+                    acc = MT5NativeSession.account()
+                    login = str(acc.login) if acc else ''
+                    if login:
+                        matched = next((w for w in active if str(w.mt5_login or '') == login), None)
+                        if matched:
+                            keep = matched
+            except Exception:
+                pass
+            cls.objects.filter(is_active=True).exclude(pk=keep.pk).update(is_active=False)
+        return keep
+
     @property
     def initial_balance(self):
         return self.capital

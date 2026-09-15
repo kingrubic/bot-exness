@@ -7,7 +7,7 @@
 <div class="d-flex flex-wrap justify-content-between align-items-center mb-4">
     <div>
         <h2 class="font-weight-bold text-dark mb-1">Tổng Quan Hiệu Suất Hệ Thống</h2>
-        <p class="text-muted small mb-0">Giám sát tài chính đa ví, trạng thái khớp lệnh và tín hiệu AI theo thời gian thực</p>
+        <p class="text-muted small mb-0">Giám sát ví đang kích hoạt, trạng thái khớp lệnh và tín hiệu AI theo thời gian thực</p>
     </div>
     <div class="d-flex align-items-center gap-2">
         <button class="btn btn-success btn-sm rounded-pill px-3 shadow-sm" data-bs-toggle="modal" data-bs-target="#modal-quick-trade" onclick="openQuickTradeModal()">
@@ -28,7 +28,7 @@
                 <div>
                     <div class="metric-label">Tổng Số Dư (Balance)</div>
                     <div class="metric-value text-dark font-weight-bold" id="kpi-balance">${{ tot_bal|floatformat:2 }}</div>
-                    <div class="metric-subtext"><span id="kpi-wallets-count">{{ wallets.count }}</span> ví Exness kết nối</div>
+                    <div class="metric-subtext"><span id="kpi-wallets-count">{% if current_wallet %}{{ current_wallet.name }}{% else %}—{% endif %}</span> · ví đang kích hoạt</div>
                 </div>
                 <div class="card-icon-wrap icon-bg-blue">
                     <i class="fa-solid fa-vault"></i>
@@ -94,15 +94,16 @@
                 <i class="fa-solid fa-chart-pie text-primary fs-5"></i>
                 <h5 class="font-weight-bold text-dark mb-0">Báo Cáo Hiệu Suất: Lệnh BOT vs Lệnh USER</h5>
             </div>
-            <small class="text-muted">Tách bạch tính toán tỷ lệ thắng, lãi/lỗ và khối lượng theo lệnh tự động của Bot và lệnh đặt tay của User</small>
+            <small class="text-muted">Chỉ số của ví đang kích hoạt — không cộng tổng các ví khác</small>
         </div>
         <div class="d-flex align-items-center gap-2">
-            <span class="small font-weight-bold text-secondary text-nowrap"><i class="fa-solid fa-filter me-1"></i> Phạm Vi Báo Cáo:</span>
-            <select id="report-wallet-filter" class="form-select form-select-sm rounded-pill font-monospace fw-bold text-primary border-primary" style="min-width: 250px;" onchange="onReportWalletFilterChanged(this.value)">
-                <option value="ALL">📁 Tất Cả Các Ví (Toàn Hệ Thống)</option>
-                {% for w in wallets %}
-                <option value="{{ w.id }}">💼 {{ w.name }} (#{{ w.mt5_login }})</option>
-                {% endfor %}
+            <span class="small font-weight-bold text-secondary text-nowrap"><i class="fa-solid fa-wallet me-1"></i> Ví hiện tại:</span>
+            <select id="report-wallet-filter" class="form-select form-select-sm rounded-pill font-monospace fw-bold text-primary border-primary" style="min-width: 250px;" disabled>
+                {% if current_wallet %}
+                <option value="{{ current_wallet.id }}" selected>💼 {{ current_wallet.name }} (#{{ current_wallet.mt5_login }})</option>
+                {% else %}
+                <option value="">Chưa có ví kích hoạt</option>
+                {% endif %}
             </select>
         </div>
     </div>
@@ -116,7 +117,7 @@
                         <span class="badge bg-success text-white rounded-pill px-2.5 py-1.5"><i class="fa-solid fa-robot me-1"></i> BOT AI SCALPING</span>
                         <span class="fw-bold text-dark">Hiệu Suất Lệnh Tự Động (BOT)</span>
                     </div>
-                    <span class="small text-muted" id="ov-bot-scope-label"><i class="fa-solid fa-bolt text-success me-1"></i>Toàn hệ thống</span>
+                    <span class="small text-muted" id="ov-bot-scope-label"><i class="fa-solid fa-bolt text-success me-1"></i>{% if current_wallet %}{{ current_wallet.name }}{% else %}Chưa có ví{% endif %}</span>
                 </div>
                 <div class="row g-2 text-center">
                     <div class="col-4">
@@ -152,7 +153,7 @@
                         <span class="badge text-white rounded-pill px-2.5 py-1.5" style="background-color: #6f42c1;"><i class="fa-solid fa-user me-1"></i> USER MANUAL</span>
                         <span class="fw-bold text-dark">Hiệu Suất Lệnh Thủ Công (USER)</span>
                     </div>
-                    <span class="small text-muted" id="ov-user-scope-label"><i class="fa-solid fa-bolt text-primary me-1"></i>Toàn hệ thống</span>
+                    <span class="small text-muted" id="ov-user-scope-label"><i class="fa-solid fa-bolt text-primary me-1"></i>{% if current_wallet %}{{ current_wallet.name }}{% else %}Chưa có ví{% endif %}</span>
                 </div>
                 <div class="row g-2 text-center">
                     <div class="col-4">
@@ -345,11 +346,12 @@
 
             <!-- 2. Lọc Ví -->
             <div class="d-flex align-items-center">
-                <select class="form-select form-select-sm font-weight-bold" id="filter-hist-wallet" onchange="filterOverviewHistory()" style="min-width: 140px;">
-                    <option value="ALL">💼 Tất Cả Ví</option>
-                    {% for w in wallets %}
-                    <option value="{{ w.id }}">Ví #{{ w.mt5_login }} ({{ w.name }})</option>
-                    {% endfor %}
+                <select class="form-select form-select-sm font-weight-bold" id="filter-hist-wallet" onchange="filterOverviewHistory()" style="min-width: 140px;" disabled>
+                    {% if current_wallet %}
+                    <option value="{{ current_wallet.id }}" selected>Ví #{{ current_wallet.mt5_login }} ({{ current_wallet.name }})</option>
+                    {% else %}
+                    <option value="">Chưa có ví kích hoạt</option>
+                    {% endif %}
                 </select>
             </div>
 

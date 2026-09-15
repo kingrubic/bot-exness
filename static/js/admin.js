@@ -321,128 +321,77 @@ function renderLivePriceWithTick(symbolKey, currentPrice, originalSymbol = '') {
     return `<span class="font-weight-bold ${flashClass}">$${currFormatted}</span>`;
 }
 
-/* ==================== BOT VS USER REPORT BY WALLET SCOPE ==================== */
-let currentReportScope = 'ALL';
+/* ==================== BOT VS USER REPORT — ví đang kích hoạt ==================== */
+let currentReportScope = '';
 let lastLiveOverviewData = null;
 let cachedGlobalOverview = null;
 
+function syncActiveWalletScope(data) {
+    const wallets = (data && Array.isArray(data.wallets)) ? data.wallets : (Array.isArray(walletsData) ? walletsData : []);
+    const ov = data && data.overview ? data.overview : {};
+    const active = wallets.find(w => w.is_active) || wallets.find(w => String(w.id) === String(ov.active_wallet_id));
+    const id = ov.active_wallet_id || (active && active.id) || '';
+    const name = ov.active_wallet_name || (active && active.name) || '';
+    const login = active ? (active.mt5_login || '') : '';
+    currentReportScope = id ? String(id) : '';
+
+    const label = active
+        ? `💼 ${name} (#${login})`
+        : 'Chưa có ví kích hoạt';
+    const reportEl = document.getElementById('report-wallet-filter');
+    if (reportEl) {
+        reportEl.innerHTML = active
+            ? `<option value="${active.id}" selected>${label}</option>`
+            : '<option value="">Chưa có ví kích hoạt</option>';
+        reportEl.disabled = true;
+    }
+    const histEl = document.getElementById('filter-hist-wallet');
+    if (histEl) {
+        histEl.innerHTML = active
+            ? `<option value="${active.id}" selected>Ví #${login} (${name})</option>`
+            : '<option value="">Chưa có ví kích hoạt</option>';
+        histEl.disabled = true;
+    }
+    return active;
+}
+
 function onReportWalletFilterChanged(val) {
-    currentReportScope = String(val || 'ALL').trim();
+    currentReportScope = String(val || '').trim();
     updateOverviewReportDisplay();
 }
 
 async function updateOverviewReportDisplay() {
     let bm = null;
     let um = null;
-    let scopeLabel = 'Toàn hệ thống';
+    let scopeLabel = 'Chưa có ví kích hoạt';
 
-    if (currentReportScope === 'ALL') {
-        scopeLabel = 'Toàn hệ thống';
+    const wList = (lastLiveOverviewData && Array.isArray(lastLiveOverviewData.wallets) && lastLiveOverviewData.wallets.length > 0)
+        ? lastLiveOverviewData.wallets
+        : (Array.isArray(walletsData) ? walletsData : []);
+    let targetWallet = wList.find(w => w.is_active)
+        || wList.find(w => String(w.id) === String(currentReportScope));
 
-        // 1. Lấy từ live overview data hiện tại
-        if (lastLiveOverviewData && lastLiveOverviewData.overview && lastLiveOverviewData.overview.bot_metrics) {
-            bm = lastLiveOverviewData.overview.bot_metrics;
-            um = lastLiveOverviewData.overview.user_metrics;
-        } else if (cachedGlobalOverview && cachedGlobalOverview.bot_metrics) {
-            bm = cachedGlobalOverview.bot_metrics;
-            um = cachedGlobalOverview.user_metrics;
-        }
-
-        // 2. Nếu chưa có, cộng dồn tổng từ danh sách tất cả các ví
-        if (!bm || !um) {
-            const wList = (lastLiveOverviewData && Array.isArray(lastLiveOverviewData.wallets) && lastLiveOverviewData.wallets.length > 0)
-                ? lastLiveOverviewData.wallets
-                : (Array.isArray(walletsData) ? walletsData : []);
-
-            if (wList && wList.length > 0) {
-                let bTot = 0, bWins = 0, bLoss = 0, bPnl = 0, bToday = 0, bVol = 0;
-                let uTot = 0, uWins = 0, uLoss = 0, uPnl = 0, uToday = 0, uVol = 0;
-                let hasData = false;
-
-                wList.forEach(w => {
-                    if (w.bot_metrics) {
-                        hasData = true;
-                        bTot += (Number(w.bot_metrics.total_trades) || 0);
-                        bWins += (Number(w.bot_metrics.winning_trades) || 0);
-                        bLoss += (Number(w.bot_metrics.losing_trades) || 0);
-                        bPnl += (Number(w.bot_metrics.total_profit) || 0);
-                        bToday += (Number(w.bot_metrics.today_pnl) || 0);
-                        bVol += (Number(w.bot_metrics.total_volume) || 0);
-                    }
-                    if (w.user_metrics) {
-                        hasData = true;
-                        uTot += (Number(w.user_metrics.total_trades) || 0);
-                        uWins += (Number(w.user_metrics.winning_trades) || 0);
-                        uLoss += (Number(w.user_metrics.losing_trades) || 0);
-                        uPnl += (Number(w.user_metrics.total_profit) || 0);
-                        uToday += (Number(w.user_metrics.today_pnl) || 0);
-                        uVol += (Number(w.user_metrics.total_volume) || 0);
-                    }
-                });
-
-                if (hasData) {
-                    bm = {
-                        total_trades: bTot,
-                        winning_trades: bWins,
-                        losing_trades: bLoss,
-                        win_rate: bTot > 0 ? Math.round((bWins / bTot) * 1000) / 10 : 0.0,
-                        total_profit: Math.round(bPnl * 100) / 100,
-                        today_pnl: Math.round(bToday * 100) / 100,
-                        total_volume: Math.round(bVol * 100) / 100,
-                    };
-                    um = {
-                        total_trades: uTot,
-                        winning_trades: uWins,
-                        losing_trades: uLoss,
-                        win_rate: uTot > 0 ? Math.round((uWins / uTot) * 1000) / 10 : 0.0,
-                        total_profit: Math.round(uPnl * 100) / 100,
-                        today_pnl: Math.round(uToday * 100) / 100,
-                        total_volume: Math.round(uVol * 100) / 100,
-                    };
+    if (targetWallet && targetWallet.bot_metrics && targetWallet.user_metrics) {
+        bm = targetWallet.bot_metrics;
+        um = targetWallet.user_metrics;
+        scopeLabel = targetWallet.name || `Ví #${targetWallet.mt5_login || targetWallet.id}`;
+        currentReportScope = String(targetWallet.id);
+    } else if (lastLiveOverviewData && lastLiveOverviewData.overview) {
+        bm = lastLiveOverviewData.overview.bot_metrics;
+        um = lastLiveOverviewData.overview.user_metrics;
+        scopeLabel = lastLiveOverviewData.overview.active_wallet_name || scopeLabel;
+    } else if (currentReportScope) {
+        try {
+            const res = await fetch(`/api/wallets/${currentReportScope}/`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data && data.report) {
+                    bm = data.report.bot_metrics;
+                    um = data.report.user_metrics;
+                    scopeLabel = data.report.name || scopeLabel;
                 }
             }
-        }
-
-        // 3. Fallback trực tiếp tới /api/overview/
-        if (!bm || !um) {
-            try {
-                const res = await fetch('/api/overview/');
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data && data.bot_metrics) {
-                        cachedGlobalOverview = data;
-                        bm = data.bot_metrics;
-                        um = data.user_metrics;
-                    }
-                }
-            } catch (err) {}
-        }
-    } else {
-        // Chế độ Từng ví riêng biệt
-        const wList = (lastLiveOverviewData && Array.isArray(lastLiveOverviewData.wallets) && lastLiveOverviewData.wallets.length > 0)
-            ? lastLiveOverviewData.wallets
-            : (Array.isArray(walletsData) ? walletsData : []);
-
-        let targetWallet = wList.find(w => String(w.id) === String(currentReportScope));
-
-        if (targetWallet && targetWallet.bot_metrics && targetWallet.user_metrics) {
-            bm = targetWallet.bot_metrics;
-            um = targetWallet.user_metrics;
-            scopeLabel = `Ví #${targetWallet.mt5_login || targetWallet.id} (${targetWallet.name})`;
-        } else {
-            // Fallback fetch trực tiếp từ API cho ví này
-            try {
-                const res = await fetch(`/api/wallets/${currentReportScope}/`);
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data && data.report) {
-                        bm = data.report.bot_metrics;
-                        um = data.report.user_metrics;
-                        scopeLabel = `Ví #${data.report.mt5_login || data.report.id} (${data.report.name})`;
-                    }
-                }
-            } catch (err) {}
-        }
+        } catch (err) {}
     }
 
     const botScopeEl = document.getElementById('ov-bot-scope-label');
@@ -542,7 +491,7 @@ function handleLiveTicksData(data) {
         }
 
         const kpiWallets = document.getElementById('kpi-wallets-count');
-        if (kpiWallets) kpiWallets.innerText = ov.active_wallets_count || ov.total_wallets_count;
+        if (kpiWallets) kpiWallets.innerText = ov.active_wallet_name || '—';
 
         const kpiWr = document.getElementById('kpi-winrate');
         if (kpiWr) kpiWr.innerText = `${ov.overall_winrate}%`;
@@ -550,6 +499,7 @@ function handleLiveTicksData(data) {
 
     // 1.1 Update BOT vs USER Report by Scope (All or per Wallet)
     lastLiveOverviewData = data;
+    syncActiveWalletScope(data);
     if (typeof updateOverviewReportDisplay === 'function') {
         updateOverviewReportDisplay();
     }
@@ -606,21 +556,7 @@ function handleLiveTicksData(data) {
         if (document.getElementById('table-wallets') || document.getElementById('tbody-wallets')) {
             renderWalletsTable(data.wallets);
         }
-
-        // Tự động cập nhật danh sách Ví vào dropdown bộ lọc lịch sử (#filter-hist-wallet)
-        const walletFilterEl = document.getElementById('filter-hist-wallet');
-        if (walletFilterEl) {
-            const curVal = walletFilterEl.value;
-            const currentOptionsCount = walletFilterEl.options.length;
-            if (currentOptionsCount !== (data.wallets.length + 1)) {
-                walletFilterEl.innerHTML = '<option value="ALL">💼 Tất Cả Ví</option>' + data.wallets.map(w => `
-                    <option value="${w.id}">Ví #${w.mt5_login} (${w.name})</option>
-                `).join('');
-                if (curVal) {
-                    walletFilterEl.value = curVal;
-                }
-            }
-        }
+        syncActiveWalletScope(data);
     }
 
     if (data.plans) {
@@ -652,33 +588,25 @@ async function refreshOverviewDeepData() {
     try {
         const walletsRes = await fetch('/api/wallets/');
         const wallets = await walletsRes.json();
-        
-        let allPlans = [];
-        let allHistory = [];
+        const list = Array.isArray(wallets) ? wallets : [];
+        const current = list.find(w => w.is_active) || list[0];
 
-        for (const w of wallets) {
-            try {
-                const detailRes = await fetch(`/api/wallets/${w.id}/`);
-                const detail = await detailRes.json();
-                (detail.plans || []).forEach(pl => allPlans.push({...pl, wallet_name: w.name, wallet_id: w.id}));
-                (detail.history || []).forEach(h => allHistory.push({...h, wallet_name: w.name, wallet_id: w.id}));
-            } catch (e) {}
+        if (!current) {
+            renderOverviewPlans([]);
+            rawOverviewHistory = [];
+            filterOverviewHistory(false);
+            return;
         }
 
-        renderOverviewPlans(allPlans);
+        const detailRes = await fetch(`/api/wallets/${current.id}/`);
+        const detail = await detailRes.json();
+        const plans = (detail.plans || []).map(pl => ({...pl, wallet_name: current.name, wallet_id: current.id}));
+        const history = (detail.history || []).map(h => ({...h, wallet_name: current.name, wallet_id: current.id}));
 
-        rawOverviewHistory = allHistory;
-
-        // Cập nhật options Ví cho bộ lọc lịch sử
-        const walletFilterEl = document.getElementById('filter-hist-wallet');
-        if (walletFilterEl && Array.isArray(wallets) && wallets.length > 0) {
-            const curVal = walletFilterEl.value;
-            walletFilterEl.innerHTML = '<option value="ALL">💼 Tất Cả Ví</option>' + wallets.map(w => `
-                <option value="${w.id}">Ví #${w.mt5_login} (${w.name})</option>
-            `).join('');
-            if (curVal) walletFilterEl.value = curVal;
-        }
-
+        renderOverviewPlans(plans);
+        rawOverviewHistory = history;
+        currentReportScope = String(current.id);
+        syncActiveWalletScope({ wallets: list, overview: { active_wallet_id: current.id, active_wallet_name: current.name } });
         filterOverviewHistory(false);
     } catch (e) {}
 }
@@ -934,14 +862,14 @@ let rawOverviewHistory = [];
 function filterOverviewHistory(resetPage = true) {
     if (resetPage) currentOverviewHistPage = 1;
     const srcFilter = document.getElementById('filter-hist-source')?.value || 'ALL';
-    const walletFilter = document.getElementById('filter-hist-wallet')?.value || 'ALL';
+    const walletFilter = document.getElementById('filter-hist-wallet')?.value || currentReportScope || '';
     const symbolFilter = document.getElementById('filter-hist-symbol')?.value || 'ALL';
     const typeFilter = document.getElementById('filter-hist-type')?.value || 'ALL';
     const query = (document.getElementById('search-hist-query')?.value || '').toLowerCase().trim();
 
     cachedOverviewHistory = (rawOverviewHistory || []).filter(h => {
         const matchSrc = (srcFilter === 'ALL' || h.source === srcFilter);
-        const matchWallet = (walletFilter === 'ALL' || String(h.wallet_id) === String(walletFilter));
+        const matchWallet = (!walletFilter || walletFilter === 'ALL' || String(h.wallet_id) === String(walletFilter));
         const matchSymbol = (symbolFilter === 'ALL' || h.symbol === symbolFilter);
         const matchType = (typeFilter === 'ALL' || h.position_type === typeFilter);
         const matchQuery = !query || String(h.ticket).includes(query) || (h.comment && h.comment.toLowerCase().includes(query)) || (h.symbol && h.symbol.toLowerCase().includes(query));
@@ -2167,13 +2095,14 @@ async function openQuickTradeModal(symbol = 'XAUUSD') {
             const res = await apiFetch('/api/wallets/');
             const wList = unwrapApiList(await parseApiJson(res));
             const fallback = Array.isArray(walletsData) ? walletsData : [];
-            const list = wList.length > 0 ? wList : fallback;
+            const list = (wList.length > 0 ? wList : fallback).filter(w => w.is_active);
             if (list.length > 0) {
-                walletsData = list;
+                walletsData = wList.length > 0 ? wList : fallback;
                 walletSelect.innerHTML = list.map(w => {
                     const bal = (w.balance !== undefined && w.balance !== null) ? Number(w.balance).toFixed(2) : Number(w.balance_db || 0).toFixed(2);
                     return `<option value="${w.id}">Ví #${w.mt5_login} (${w.name}) - Số dư: $${bal}</option>`;
                 }).join('');
+                walletSelect.value = String(list[0].id);
                 walletSelect.disabled = false;
             } else {
                 walletSelect.innerHTML = '<option value="">Chưa có ví Exness nào được kích hoạt</option>';

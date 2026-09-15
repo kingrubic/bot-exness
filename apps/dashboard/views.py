@@ -14,6 +14,7 @@ def admin_view(request):
     from django.utils import timezone
 
     wallets = WalletAccount.objects.all()
+    current_wallet = WalletAccount.get_current()
     symbols = SymbolConfig.objects.filter(is_active=True)
 
     def _calc_stats(qs):
@@ -35,42 +36,41 @@ def admin_view(request):
             'total_volume': vol,
         }
 
-    all_hist = TradeHistory.objects.all()
+    if current_wallet:
+        all_hist = TradeHistory.objects.filter(wallet=current_wallet)
+        tot_today = current_wallet.get_today_pnl()
+        tot_bal = current_wallet.balance
+        tot_eq = current_wallet.equity
+        tot_fl = current_wallet.floating_pnl
+        all_positions_count = Position.objects.filter(wallet=current_wallet).count()
+    else:
+        all_hist = TradeHistory.objects.none()
+        tot_today = 0
+        tot_bal = 0
+        tot_eq = 0
+        tot_fl = 0
+        all_positions_count = 0
     bot_metrics = _calc_stats(all_hist.filter(source='BOT'))
     user_metrics = _calc_stats(all_hist.filter(source='USER'))
-    tot_today = sum(w.get_today_pnl() for w in wallets)
-    tot_bal = sum(w.balance for w in wallets)
-    tot_eq = sum(w.equity for w in wallets)
-    tot_fl = sum(w.floating_pnl for w in wallets)
     try:
         from decimal import Decimal
         from apps.trading.mt5_session import MT5NativeSession
         snap = MT5NativeSession.today_realized_pnl()
         acc = MT5NativeSession.account() if snap.get('ok') else None
         login = str(acc.login) if acc else ''
-        if snap.get('ok') and login and any(str(w.mt5_login or '') == login for w in wallets):
+        if current_wallet and snap.get('ok') and login and str(current_wallet.mt5_login or '') == login:
             bot_metrics['today_pnl'] = snap['BOT']
             user_metrics['today_pnl'] = snap['USER']
             tot_today = snap['all']
-            tot_bal = Decimal('0')
-            tot_eq = Decimal('0')
-            tot_fl = Decimal('0')
-            for w in wallets:
-                if str(w.mt5_login or '') == login:
-                    tot_bal += Decimal(str(round(float(acc.balance or 0), 2)))
-                    tot_eq += Decimal(str(round(float(acc.equity or 0), 2)))
-                    tot_fl += Decimal(str(round(float(getattr(acc, 'profit', 0) or 0), 2)))
-                else:
-                    tot_bal += w.balance
-                    tot_eq += w.equity
-                    tot_fl += w.floating_pnl
+            tot_bal = Decimal(str(round(float(acc.balance or 0), 2)))
+            tot_eq = Decimal(str(round(float(acc.equity or 0), 2)))
+            tot_fl = Decimal(str(round(float(getattr(acc, 'profit', 0) or 0), 2)))
     except Exception:
         pass
 
-    all_positions_count = Position.objects.count()
-
     return render(request, 'admin/overview.html', {
         'wallets': wallets,
+        'current_wallet': current_wallet,
         'symbols': symbols,
         'bot_metrics': bot_metrics,
         'user_metrics': user_metrics,

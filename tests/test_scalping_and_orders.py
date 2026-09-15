@@ -979,5 +979,39 @@ def test_zero_balance_displays_zero_not_capital():
     assert wallet.equity == Decimal("0.00")
 
 
+@pytest.mark.django_db
+def test_only_one_wallet_can_be_active():
+    a = WalletAccount.objects.create(name="A", account_type="DEMO", mt5_login="111", is_active=True)
+    b = WalletAccount.objects.create(name="B", account_type="DEMO", mt5_login="222", is_active=True)
+    a.refresh_from_db()
+    b.refresh_from_db()
+    assert b.is_active is True
+    assert a.is_active is False
+    assert WalletAccount.objects.filter(is_active=True).count() == 1
+    assert WalletAccount.get_current().id == b.id
+
+
+@pytest.mark.django_db
+def test_overview_kpis_use_active_wallet_only():
+    from django.test import Client
+    WalletAccount.objects.create(
+        name="A", account_type="DEMO", mt5_login="111", is_active=True,
+        balance_db=Decimal("100.00"), equity_db=Decimal("100.00"),
+        total_profit=Decimal("10.00"), total_trades=2, winning_trades=1,
+    )
+    b = WalletAccount.objects.create(
+        name="B", account_type="DEMO", mt5_login="222", is_active=True,
+        balance_db=Decimal("50.00"), equity_db=Decimal("50.00"),
+        total_profit=Decimal("5.00"), total_trades=4, winning_trades=2,
+    )
+    res = Client().get('/api/overview/')
+    assert res.status_code == 200
+    data = res.json()
+    assert data['total_balance'] == 50.0
+    assert data['total_profit'] == 5.0
+    assert data['active_wallet_id'] == b.id
+    assert data['active_wallets_count'] == 1
+
+
 
 
