@@ -185,7 +185,8 @@ class MT5NativeSession:
         }
 
     @classmethod
-    def login(cls, login: int, password: str, server: str) -> bool:
+    def login(cls, login: int, password: str, server: str, allow_switch: bool = False) -> bool:
+        """Gắn IPC vào tài khoản đang mở. Không đổi login trên terminal trừ khi allow_switch=True."""
         if not cls.ensure():
             return False
         with _LOCK:
@@ -193,6 +194,12 @@ class MT5NativeSession:
             if acc and int(acc.login) == int(login):
                 cls._login = int(login)
                 return True
+            if acc and int(acc.login) != int(login) and not allow_switch:
+                logger.warning(
+                    "MT5 terminal đang #%s (%s), bỏ qua login #%s — 1 cửa sổ MT5 = 1 tài khoản.",
+                    acc.login, getattr(acc, 'server', ''), login,
+                )
+                return False
             if not password:
                 return bool(acc and int(acc.login) == int(login))
             ok = bool(mt5.login(login=int(login), password=password, server=server or ''))
@@ -201,6 +208,16 @@ class MT5NativeSession:
             else:
                 logger.warning("MT5 login #%s failed: %s", login, mt5.last_error())
             return ok
+
+    @staticmethod
+    def explain_single_account(live_login, live_server, requested_login) -> str:
+        return (
+            f"Một cửa sổ MetaTrader 5 chỉ đăng nhập được 1 tài khoản. "
+            f"Terminal đang mở #{live_login} ({live_server or 'Exness'}). "
+            f"Không thể kết nối ví #{requested_login} cùng lúc trên cùng terminal. "
+            f"Cách làm: (1) Dùng ví #{live_login} trên web, hoặc (2) trong MT5: File → Login to Trade Account "
+            f"sang #{requested_login} (ví kia sẽ ngắt), hoặc (3) cài thêm bản MT5 portable cho tài khoản thứ hai."
+        )
 
     @classmethod
     def account(cls) -> Optional[Any]:
@@ -527,35 +544,40 @@ class MT5NativeSession:
 
     _today_pnl_cache = {'ts': 0.0, 'day': None, 'data': None}
 
-    @classmethod
-    def today_realized_pnl(cls) -> dict:
-        """Lãi/lỗ đã đóng trong ngày (local midnight) từ history_deals MT5, không lấy TradeHistory DB."""
-        empty = {'all': 0.0, 'BOT': 0.0, 'USER': 0.0, 'ok': False}
-        if not cls.available() or not cls.ensure():
+    @staticmethod
+    def summarize_today_deals(deals, start_ts: float) -> dict:
+        """
+        all: lãi/lỗ deal BUY/SELL cả ngày (không gồm nạp/rút).
+        risk: lãi/lỗ giao dịch sau lần nạp/credit dương gần nhất trong ngày
+              (sau thanh lý nạp lại thì risk ≈ 0, bot được đánh tiếp).
+        """
+        empty = {'all': 0.0, 'BOT': 0.0, 'USER': 0.0, 'risk': 0.0, 'ok': True}
+        if not deals:
             return empty
-        now_dt = datetime.now()
-        day = now_dt.date()
-        now = time.time()
-        cached = cls._today_pnl_cache
-        if cached.get('data') and cached.get('day') == day and (now - cached.get('ts', 0)) < 3.0:
-            return cached['data']
-        date_from = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_ts = date_from.timestamp()
-        # Lấy rộng hơn 12h rồi lọc theo unix local midnight — khớp History Today, không lệch timezone API.
-        deals = cls.history_deals(date_from - timedelta(hours=12), now_dt)
-        if deals is None:
-            return empty
-        bot = 0.0
-        user = 0.0
         try:
             from apps.trading.order_source import classify_order_source
         except Exception:
             classify_order_source = None
+
+        last_reset_ts = float(start_ts)
         for d in deals:
-            deal_type = cls.deal_int(d, 'type', -1)
+            ts = int(getattr(d, 'time', 0) or 0)
+            if ts < start_ts:
+                continue
+            deal_type = MT5NativeSession.deal_int(d, 'type', -1)
+            # BALANCE=2, CREDIT=3, CORRECTION=5, BONUS=6
+            if deal_type in (2, 3, 5, 6) and float(getattr(d, 'profit', 0) or 0) > 0:
+                last_reset_ts = max(last_reset_ts, float(ts))
+
+        bot = 0.0
+        user = 0.0
+        risk = 0.0
+        for d in deals:
+            deal_type = MT5NativeSession.deal_int(d, 'type', -1)
             if deal_type not in (0, 1):
                 continue
-            if int(getattr(d, 'time', 0) or 0) < start_ts:
+            ts = int(getattr(d, 'time', 0) or 0)
+            if ts < start_ts:
                 continue
             net = (
                 float(getattr(d, 'profit', 0) or 0)
@@ -577,12 +599,36 @@ class MT5NativeSession:
                 bot += net
             else:
                 user += net
-        data = {
+            if ts > last_reset_ts:
+                risk += net
+        return {
             'all': round(bot + user, 2),
             'BOT': round(bot, 2),
             'USER': round(user, 2),
+            'risk': round(risk, 2),
             'ok': True,
         }
+
+    @classmethod
+    def today_realized_pnl(cls) -> dict:
+        """Lãi/lỗ đã đóng trong ngày (local midnight) từ history_deals MT5, không lấy TradeHistory DB."""
+        empty = {'all': 0.0, 'BOT': 0.0, 'USER': 0.0, 'risk': 0.0, 'ok': False}
+        if not cls.available() or not cls.ensure():
+            return empty
+        now_dt = datetime.now()
+        day = now_dt.date()
+        now = time.time()
+        cached = cls._today_pnl_cache
+        if cached.get('data') and cached.get('day') == day and (now - cached.get('ts', 0)) < 3.0:
+            return cached['data']
+        date_from = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_ts = date_from.timestamp()
+        # Lấy rộng hơn 12h rồi lọc theo unix local midnight — khớp History Today, không lệch timezone API.
+        deals = cls.history_deals(date_from - timedelta(hours=12), now_dt)
+        if deals is None:
+            return empty
+        data = cls.summarize_today_deals(deals, start_ts)
+        data['ok'] = True
         cls._today_pnl_cache = {'ts': now, 'day': day, 'data': data}
         return data
 

@@ -10,6 +10,8 @@ import threading
 import importlib.util
 from pathlib import Path
 
+from bot_process import stop_existing_bot
+
 ROOT = Path(__file__).resolve().parent
 VENV_PY = ROOT / 'venv' / 'Scripts' / 'python.exe'
 os.environ.setdefault('PYTHONUTF8', '1')
@@ -32,7 +34,11 @@ def reexec_in_venv():
     if Path(sys.executable).resolve() == VENV_PY.resolve():
         return
     log('[1/6] Chuyển sang Python trong venv ...')
-    os.execv(str(VENV_PY), [str(VENV_PY), str(ROOT / 'start_windows.py'), *sys.argv[1:]])
+    # Windows os.execv không thay process đúng cách → start.bat bị trả prompt sớm.
+    raise SystemExit(subprocess.call(
+        [str(VENV_PY), str(ROOT / 'start_windows.py'), *sys.argv[1:]],
+        cwd=str(ROOT),
+    ))
 
 
 def ensure_pip_packages():
@@ -68,7 +74,7 @@ def ensure_mt5():
     launcher.ensure_terminal_running()
 
 
-def ensure_admin(username='admin', password='123456'):
+def ensure_admin(username='admin', password='123123123'):
     log(f'[5/6] Tạo / cập nhật tài khoản admin ({username}) ...')
     subprocess.check_call([str(VENV_PY), str(ROOT / 'create_admin.py'), username, password])
 
@@ -84,8 +90,10 @@ def open_browser_later(url, delay=4):
 
 
 def start_app(port):
-    log(f'[6/6] Khởi động Web + Bot Worker tại http://localhost:{port}/')
-    log('     Login: http://localhost:%s/login/   (admin / 123456)' % port)
+    log('[6/6] Tắt bot cũ lần nữa (nếu còn) rồi bật Waitress ...')
+    stop_existing_bot(port, log=log)
+    log(f'     Khởi động Web + Bot Worker tại http://localhost:{port}/')
+    log('     Login: http://localhost:%s/login/   (admin / 123123123)' % port)
     log('     Ctrl+C để dừng.\n')
     open_browser_later(f'http://localhost:{port}/login/')
     raise SystemExit(subprocess.call(
@@ -114,6 +122,8 @@ def main():
 
     ensure_venv()
     reexec_in_venv()
+    log('[0/6] Tắt bot đang chạy (nếu có) rồi start bản mới ...')
+    stop_existing_bot(port, log=log)
     ensure_pip_packages()
     ensure_env()
     ensure_mt5()

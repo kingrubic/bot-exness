@@ -39,6 +39,9 @@ class ExecutionEngine:
         if not wallet or not wallet.is_active:
             AutoPlanGenerator.discard_plan(plan)
             return None
+        if not AutoPlanGenerator.wallet_has_capital(wallet):
+            AutoPlanGenerator.purge_all_plans_for_wallet(wallet)
+            return None
 
         is_demo = (wallet.account_type in ['DEMO', 'SIMULATION']) or ('Trial' in wallet.mt5_server) or ('Demo' in wallet.mt5_server)
         connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
@@ -96,8 +99,6 @@ class ExecutionEngine:
             from apps.core.trading_defaults import BOT_MAGIC
             from apps.trading.order_source import remember_order_source
             remember_order_source(ticket, 'BOT', BOT_MAGIC)
-            connector.sync_account_info(wallet)
-            connector.sync_positions(wallet)
             position = Position.objects.filter(ticket=str(ticket)).first()
             if not position:
                 position = Position.objects.create(
@@ -211,7 +212,24 @@ class ExecutionEngine:
         return max(0.01, round(bal * risk / 100.0, 2))
 
     @classmethod
-    def wallet_daily_loss_limit_usd(cls, wallet: WalletAccount) -> float:
+    def wallet_today_risk_pnl(cls, wallet: WalletAccount) -> float:
+        """Lỗ ngày dùng để chặn mở lệnh: sau lần nạp dương gần nhất (không gồm thanh lý trước khi nạp)."""
+        try:
+            from apps.trading.mt5_session import MT5NativeSession
+            if wallet.mt5_login and MT5NativeSession.available():
+                acc = MT5NativeSession.account()
+                if acc and str(acc.login) == str(wallet.mt5_login):
+                    snap = MT5NativeSession.today_realized_pnl()
+                    if snap.get('ok'):
+                        if 'risk' in snap:
+                            return float(snap['risk'])
+                        return float(snap.get('all') or 0)
+        except Exception:
+            pass
+        return float(wallet.get_today_pnl() or 0)
+
+    @classmethod
+    def wallet_daily_loss_limit_usd(cls, wallet: WalletAccount, balance: float | None = None) -> float:
         """Số USD lỗ tối đa trong ngày = balance * max_daily_loss_percent / 100."""
         try:
             pct = float(wallet.max_daily_loss_percent or 0)
@@ -219,7 +237,10 @@ class ExecutionEngine:
             pct = 0.0
         if pct <= 0:
             return 0.0
-        bal = float(wallet.balance or wallet.capital or 0)
+        if balance is None:
+            bal = float(wallet.balance or wallet.capital or 0)
+        else:
+            bal = float(balance)
         return round(bal * pct / 100.0, 2)
 
     @classmethod
@@ -276,22 +297,48 @@ class ExecutionEngine:
     def can_wallet_open_or_pyramid(cls, wallet: WalletAccount, sym_name: str, forecast_dir: str) -> tuple[bool, bool, str]:
         """
         Cho phép đánh nhiều lệnh cùng lúc đến hạn mức max_open_trades của ví.
-        Dừng mở thêm khi đã chạm % lỗ tối đa trong ngày.
+        Dừng mở thêm khi đã chạm % lỗ tối đa trong ngày (tính từ lần nạp gần nhất).
         """
-        margin_level = float(wallet.margin_level or 0.0)
-        margin_free = float(wallet.margin_free or 0.0)
+        live_acc = None
+        try:
+            from apps.trading.mt5_session import MT5NativeSession
+            if wallet.mt5_login and MT5NativeSession.available():
+                acc = MT5NativeSession.account()
+                if acc and str(acc.login) == str(wallet.mt5_login):
+                    live_acc = acc
+        except Exception:
+            live_acc = None
 
-        daily_limit = cls.wallet_daily_loss_limit_usd(wallet)
+        if live_acc is not None:
+            margin_level = float(getattr(live_acc, 'margin_level', 0) or 0.0)
+            margin_free = float(getattr(live_acc, 'margin_free', 0) or 0.0)
+            live_margin = float(getattr(live_acc, 'margin', 0) or 0.0)
+            live_bal = float(getattr(live_acc, 'balance', 0) or 0.0)
+            live_eq = float(getattr(live_acc, 'equity', 0) or 0.0)
+        else:
+            margin_level = float(wallet.margin_level or 0.0)
+            margin_free = float(wallet.margin_free or 0.0)
+            live_margin = float(wallet.margin or 0.0)
+            live_bal = float(wallet.balance or wallet.capital or 0)
+            live_eq = float(wallet.equity or 0)
+
+        if not AutoPlanGenerator.wallet_has_capital(wallet, live_equity=live_eq, live_balance=live_bal):
+            AutoPlanGenerator.purge_all_plans_for_wallet(wallet)
+            return False, False, "Ví về 0 (đã thanh lý / hết tiền). Không lập kế hoạch, không đặt lệnh."
+
+        daily_limit = cls.wallet_daily_loss_limit_usd(wallet, balance=live_bal)
         if daily_limit > 0:
-            today_pnl = float(wallet.get_today_pnl() or 0)
+            today_pnl = cls.wallet_today_risk_pnl(wallet)
             if today_pnl <= -daily_limit:
-                return False, False, f"Đã đạt giới hạn lỗ ngày (${today_pnl:.2f} / -${daily_limit:.2f}). Tạm dừng mở lệnh."
+                recapped = live_bal > 0 and not wallet.positions.exists() and abs(today_pnl) > live_bal
+                if not recapped:
+                    return False, False, f"Đã đạt giới hạn lỗ ngày (${today_pnl:.2f} / -${daily_limit:.2f}). Tạm dừng mở lệnh."
 
         # Chỉ chặn khi sát ngưỡng stop-out, không giới hạn 300% như trước
         if margin_level > 0 and margin_level < 80.0:
             return False, False, f"Mức ký quỹ quá thấp ({margin_level:.1f}%). Tạm dừng mở thêm lệnh."
 
-        if wallet.margin and wallet.margin > 0 and margin_free < 1.0:
+        if live_margin > 0 and margin_free < 1.0:
             return False, False, f"Free Margin ${margin_free:.2f} không đủ để mở thêm lệnh."
 
         all_open_positions = wallet.positions.all()
@@ -313,6 +360,58 @@ class ExecutionEngine:
             return False, False, f"Đang có lệnh {first_pos.position_type} {sym_name}. Không đảo chiều; chờ chốt lời hoặc cắt lỗ."
 
         return True, True, f"Mở thêm lệnh lướt sóng {forecast_dir} {sym_name} ({total_open_count + 1}/{max_allowed})"
+
+    @classmethod
+    def try_immediate_market_entries(cls, forecasts: dict | None = None):
+        """
+        Nếu ví RUNNING chưa đủ max_open_trades: gửi MARKET BUY/SELL ngay.
+        Không giữ plan 'chờ khớp vùng entry'. Đủ lệnh thì xóa plan pending.
+        """
+        active_wallets = list(WalletAccount.objects.filter(is_active=True, bot_status='RUNNING'))
+        packed = dict(forecasts or {})
+        if not packed:
+            needed = set()
+            for w in active_wallets:
+                needed.update(w.allowed_symbols)
+            for sym_name in needed:
+                fc = MarketForecast.objects.filter(symbol=sym_name).first()
+                sym = SymbolConfig.objects.filter(symbol=sym_name).first()
+                if fc and sym:
+                    packed[sym_name] = (sym, fc)
+
+        for wallet in active_wallets:
+            if not AutoPlanGenerator.wallet_has_capital(wallet):
+                AutoPlanGenerator.purge_all_plans_for_wallet(wallet)
+                continue
+            for sym_name in wallet.allowed_symbols:
+                item = packed.get(sym_name)
+                if not item:
+                    continue
+                sym_config, forecast = item
+                forecast_dir = AutoPlanGenerator.direction_from_forecast(forecast)
+                can_enter, is_pyramiding, _reason = cls.can_wallet_open_or_pyramid(wallet, sym_name, forecast_dir)
+                if not can_enter:
+                    TradingPlan.objects.filter(
+                        wallet=wallet,
+                        symbol=sym_name,
+                        status__in=['PENDING_TRIGGER', 'PENDING', 'ANALYZING'],
+                    ).delete()
+                    continue
+                try:
+                    plan = AutoPlanGenerator.update_or_create_plan_for_wallet(
+                        wallet, sym_config, forecast, is_pyramiding=is_pyramiding
+                    )
+                    if plan and plan.status in ('PENDING_TRIGGER', 'PENDING'):
+                        cls.trigger_plan_to_position(plan)
+                except Exception as pe:
+                    BotLog.log(
+                        level='ERROR',
+                        category='PLAN',
+                        message=f"Lỗi vào lệnh MARKET cho ví '{wallet.name}' ({sym_name}): {pe}",
+                        traceback=traceback.format_exc(),
+                        wallet=wallet,
+                        symbol=sym_name
+                    )
 
     @classmethod
     def persist_mt5_state(cls):
@@ -338,6 +437,8 @@ class ExecutionEngine:
             'balance_db', 'equity_db', 'floating_pnl', 'margin',
             'margin_free', 'margin_level', 'today_pnl',
         ])
+        if not AutoPlanGenerator.wallet_has_capital(wallet, live_equity=float(acc.equity or 0), live_balance=float(acc.balance or 0)):
+            AutoPlanGenerator.purge_all_plans_for_wallet(wallet)
         connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
         connector.is_connected = True
         connector.sync_positions(wallet)
@@ -398,7 +499,13 @@ class ExecutionEngine:
                         position.take_profit = Decimal(str(live_p.tp))
                 else:
                     if not is_local and live_account is not None:
-                        # Ticket đã biến mất trên MT5 — không gửi close (tránh spam từ chối)
+                        live_login = str(getattr(live_account, 'login', '') or '')
+                        if live_login and str(wallet.mt5_login or '') == live_login:
+                            # Stop-out / đóng ngoài web: xóa vị thế ma để không kẹt max_open_trades
+                            try:
+                                position.delete()
+                            except Exception:
+                                pass
                         continue
                     if not sym:
                         continue
@@ -709,40 +816,8 @@ class ExecutionEngine:
                         symbol=sym_config.symbol
                     )
 
-            # Step 3 & 4: Tự Động Vào Lệnh & Nhồi Lệnh Theo Trend Có Kiểm Soát Vốn Chống Cháy Ví
-            for wallet in active_wallets:
-                for sym_name in wallet.allowed_symbols:
-                    if sym_name in forecasts:
-                        sym_config, forecast = forecasts[sym_name]
-                        forecast_dir = 'BUY' if (forecast.trend_bias == 'BULLISH' or 'BUY' in str(forecast.recommended_action)) else ('SELL' if (forecast.trend_bias == 'BEARISH' or 'SELL' in str(forecast.recommended_action)) else None)
-
-                        can_enter, is_pyramiding, reason = cls.can_wallet_open_or_pyramid(wallet, sym_name, forecast_dir)
-
-                        if can_enter:
-                            # CẬP NHẬT KẾ HOẠCH & VÀO LỆNH THEO TREND:
-                            try:
-                                plan = AutoPlanGenerator.update_or_create_plan_for_wallet(
-                                    wallet, sym_config, forecast, is_pyramiding=is_pyramiding
-                                )
-                                if plan and plan.status == 'PENDING_TRIGGER':
-                                    cls.trigger_plan_to_position(plan)
-                            except Exception as pe:
-                                BotLog.log(
-                                    level='ERROR',
-                                    category='PLAN',
-                                    message=f"Lỗi cập nhật kế hoạch giao dịch cho ví '{wallet.name}' ({sym_name}): {pe}",
-                                    traceback=traceback.format_exc(),
-                                    wallet=wallet,
-                                    symbol=sym_name
-                                )
-                        else:
-                            # Không đủ điều kiện an toàn vốn hoặc đã đạt ngưỡng lệnh -> Giữ Plan ở trạng thái chờ kích hoạt
-                            try:
-                                AutoPlanGenerator.update_or_create_plan_for_wallet(
-                                    wallet, sym_config, forecast, is_pyramiding=False
-                                )
-                            except Exception:
-                                pass
+            # Step 3: BUY/SELL MARKET ngay nếu ví chưa đủ lệnh — không chờ vùng entry
+            cls.try_immediate_market_entries(forecasts)
 
             # Step 5: Update all positions & trailing stops
             cls.update_positions_and_pnl()

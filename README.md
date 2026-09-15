@@ -87,9 +87,9 @@ DB_PORT=3306
 ### 4️⃣ Bước 4: Tạo tài khoản Admin Quản Trị
 Chạy lệnh tạo tài khoản Admin nhanh qua CMD:
 ```bash
-python3 create_admin.py admin 123456
+python3 create_admin.py admin 123123123
 ```
-*(Lệnh này tự động tạo Database `sandbox_exness` trên MySQL và khởi tạo tài khoản: User là `admin`, Password là `123456`)*
+*(Lệnh này tự động tạo Database `sandbox_exness` trên MySQL và khởi tạo tài khoản: User là `admin`, Password là `123123123`)*
 
 ### 5️⃣ Bước 5: Khởi động Hệ Thống (Web + Bot Worker)
 Chạy lệnh duy nhất để khởi động toàn bộ Web Dashboard và Bot Worker:
@@ -137,7 +137,7 @@ Kết quả phải có `"status": "OK"` và `"initialized": true`. Sau đó vào
 ## 🌐 Đường Dẫn Truy Cập Hệ Thống:
 
 - 🔒 **Đăng Nhập Quản Trị (Admin Login)**: 👉 [http://localhost:8888/login/](http://localhost:8888/login/)
-  - Tài khoản mặc định: Username: `admin` | Password: `123456`
+  - Tài khoản mặc định: Username: `admin` | Password: `123123123`
 - ⚙️ **Bảng Điều Khiển Quản Trị (Admin Panel)**:
   - 📈 **Tổng Quan & Hiệu Suất Vốn**: 👉 [http://localhost:8888/admin-panel/overview/](http://localhost:8888/admin-panel/overview/)
   - 💼 **Quản Lý Danh Sách Ví & Vào Lệnh**: 👉 [http://localhost:8888/admin-panel/wallets/](http://localhost:8888/admin-panel/wallets/)

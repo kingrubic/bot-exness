@@ -6,7 +6,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('username', nargs='?', default='admin', help='Tên đăng nhập')
-        parser.add_argument('password', nargs='?', default='admin123', help='Mật khẩu')
+        parser.add_argument('password', nargs='?', default='123123123', help='Mật khẩu')
 
     def handle(self, *args, **options):
         username = options['username']

@@ -6,9 +6,9 @@ Chỉ yêu cầu: Username + Password.
 Cách dùng:
     python3 create_admin.py
     hoặc:
-    python3 create_admin.py admin 123456
+    python3 create_admin.py admin 123123123
     hoặc:
-    python3 create_admin.py --username admin --password 123456
+    python3 create_admin.py --username admin --password 123123123
 """
 import os
 import sys
@@ -64,7 +64,7 @@ def create_admin(username, password):
         print("👉 Vui lòng đảm bảo dịch vụ MySQL đang chạy và kiểm tra thông tin trong file .env!\n")
 
 def main():
-    # Support positional arguments: python3 create_admin.py admin admin123
+    # Support positional arguments: python3 create_admin.py admin 123123123
     username = None
     password = None
 
@@ -86,9 +86,9 @@ def main():
     if not password:
         import getpass
         try:
-            password = getpass.getpass("Nhập Mật khẩu (mặc định 'admin123'): ").strip() or "admin123"
+            password = getpass.getpass("Nhập Mật khẩu (mặc định '123123123'): ").strip() or "123123123"
         except Exception:
-            password = input("Nhập Mật khẩu (mặc định 'admin123'): ").strip() or "admin123"
+            password = input("Nhập Mật khẩu (mặc định '123123123'): ").strip() or "123123123"
 
     create_admin(username, password)
 

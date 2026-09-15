@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import random
 import time
@@ -6,6 +7,8 @@ from decimal import Decimal
 from django.utils import timezone
 from apps.symbols.models import SymbolConfig
 from apps.analysis.models import MarketForecast
+
+logger = logging.getLogger(__name__)
 
 class TechnicalAnalyzer:
     """
@@ -78,7 +81,7 @@ class TechnicalAnalyzer:
         if price > ema50 and ema50 > ema200 and rsi > 48:
             trend_bias = 'BULLISH'
             confidence = round(random.uniform(82.0, 94.5), 1)
-            action = 'READY_TO_BUY' if rsi < 62 else 'WAIT_FOR_PULLBACK'
+            action = 'READY_TO_BUY'
             smc_structure = f"{timeframe} Bullish Break of Structure (BOS) + Demand Order Block Retest"
             
             # Forecast calculations
@@ -92,8 +95,8 @@ class TechnicalAnalyzer:
             s2 = round(price - (atr * 1.6), symbol_config.digits)
             
             trigger_condition = (
-                f"Giá giữ vững trên vùng hỗ trợ {s1}. "
-                f"Chờ nến {timeframe} xác nhận đóng nến tăng kèm khối lượng vượt 1.2x MA20."
+                f"Vào MARKET BUY ngay tại Ask. Không chờ hồi hay vùng entry. "
+                f"Hỗ trợ tham chiếu {s1}."
             )
             rationale = (
                 f"Xu hướng tăng mạnh trên {timeframe}: Giá ({price}) nằm trên EMA50 ({ema50}) và EMA200 ({ema200}). "
@@ -103,7 +106,7 @@ class TechnicalAnalyzer:
         elif price < ema50 and ema50 < ema200 and rsi < 52:
             trend_bias = 'BEARISH'
             confidence = round(random.uniform(80.0, 93.0), 1)
-            action = 'READY_TO_SELL' if rsi > 38 else 'WAIT_FOR_PULLBACK'
+            action = 'READY_TO_SELL'
             smc_structure = f"{timeframe} Bearish Market Shift + Supply FVG Rejection"
             
             # Forecast calculations
@@ -117,8 +120,8 @@ class TechnicalAnalyzer:
             s2 = round(price - (atr * 2.2), symbol_config.digits)
             
             trigger_condition = (
-                f"Giá từ chối vùng kháng cự {r1}. "
-                f"Chờ nến {timeframe} đảo chiều giảm phá qua đáy nến trước đó."
+                f"Vào MARKET SELL ngay tại Bid. Không chờ hồi hay vùng entry. "
+                f"Kháng cự tham chiếu {r1}."
             )
             rationale = (
                 f"Cấu trúc giảm áp đảo trên {timeframe}: Giá ({price}) nằm dưới cả EMA50 ({ema50}) và EMA200 ({ema200}). "
@@ -137,7 +140,10 @@ class TechnicalAnalyzer:
             s1 = round(price - (atr * 0.8), symbol_config.digits)
             s2 = round(price - (atr * 1.5), symbol_config.digits)
             
-            trigger_condition = f"Bắt điểm đảo chiều theo dải Bollinger Bands trong biên độ {s1} - {r1}."
+            trigger_condition = (
+                f"Vào MARKET {'BUY' if action == 'READY_TO_BUY' else 'SELL'} ngay. "
+                f"Không chờ phá vỡ hay vùng entry trong dải {s1} - {r1}."
+            )
             rationale = (
                 f"Thị trường tích lũy dải Bollinger Bands trong biên độ {s1} - {r1}. "
                 f"RSI={rsi}. Phù hợp chiến thuật Scalping lướt sóng nhanh trong dải hỗ trợ - kháng cự."

@@ -84,12 +84,12 @@ class WalletAccount(models.Model):
 
     @property
     def balance(self):
-        """Số dư thực tế 100% từ Exness MT5."""
+        """Số dư MT5 đã lưu. $0 sau thanh lý phải hiện 0, không lấy lại capital."""
         if hasattr(self, '_live_balance') and self._live_balance is not None:
             return self._live_balance
-        if self.balance_db is not None and self.balance_db > 0 and self.balance_db != Decimal('1000.00'):
+        if self.balance_db is not None:
             return self.balance_db
-        return Decimal(str(self.capital)) + Decimal(str(self.total_profit))
+        return Decimal('0.00')
 
     @balance.setter
     def balance(self, val):
@@ -98,12 +98,12 @@ class WalletAccount(models.Model):
 
     @property
     def equity(self):
-        """Vốn khả dụng thực tế 100% từ Exness MT5."""
+        """Equity MT5 đã lưu. $0 sau thanh lý phải hiện 0."""
         if hasattr(self, '_live_equity') and self._live_equity is not None:
             return self._live_equity
-        if self.equity_db is not None and self.equity_db > 0 and self.equity_db != Decimal('1000.00'):
+        if self.equity_db is not None:
             return self.equity_db
-        return Decimal(str(self.balance)) + Decimal(str(self.floating_pnl))
+        return Decimal('0.00')
 
     @equity.setter
     def equity(self, val):

@@ -29,6 +29,17 @@ def _mt5_status_with_wallets(use_cache=True):
     return data
 
 
+def _live_wallet_money(w, acc, login):
+    """Số dư/equity hiện trên UI: ví trùng login MT5 lấy từ terminal (kể cả $0)."""
+    if acc is not None and login and str(getattr(w, 'mt5_login', '') or '') == str(login):
+        return (
+            Decimal(str(round(float(acc.balance or 0), 2))),
+            Decimal(str(round(float(acc.equity or 0), 2))),
+            Decimal(str(round(float(getattr(acc, 'profit', 0) or 0), 2))),
+        )
+    return w.balance, w.equity, w.floating_pnl
+
+
 def _mt5_today_snap():
     try:
         from apps.trading.mt5_session import MT5NativeSession
@@ -197,6 +208,13 @@ def build_live_ticks_data():
     tot_wins = 0
 
     mt5_today, mt5_login = _mt5_today_for_wallets(WalletAccount.objects.all())
+    live_acc = None
+    try:
+        from apps.trading.mt5_session import MT5NativeSession
+        if MT5NativeSession.available() and mt5_login:
+            live_acc = MT5NativeSession.account()
+    except Exception:
+        live_acc = None
 
     for w in WalletAccount.objects.all():
         breakdown = w.get_performance_breakdown()
@@ -207,9 +225,10 @@ def build_live_ticks_data():
             breakdown['all']['today_pnl'] = mt5_today['all']
         else:
             w_today_pnl = w.get_today_pnl()
-        tot_bal += w.balance
-        tot_eq += w.equity
-        tot_fl += w.floating_pnl
+        w_bal, w_eq, w_fl = _live_wallet_money(w, live_acc, mt5_login)
+        tot_bal += w_bal
+        tot_eq += w_eq
+        tot_fl += w_fl
         tot_td += w_today_pnl
         tot_prof += w.total_profit
         tot_trades += w.total_trades
@@ -226,9 +245,9 @@ def build_live_ticks_data():
             'mt5_server': w.mt5_server,
             'currency': w.currency,
             'capital': float(w.capital),
-            'balance': float(w.balance),
-            'equity': float(w.equity),
-            'floating_pnl': float(w.floating_pnl),
+            'balance': float(w_bal),
+            'equity': float(w_eq),
+            'floating_pnl': float(w_fl),
             'margin': float(w.margin),
             'margin_free': float(w.margin_free),
             'margin_level': float(w.margin_level),
@@ -289,7 +308,7 @@ def build_live_ticks_data():
             'timeframe': pl.timeframe,
             'direction': pl.direction,
             'entry_price': float(pl.entry_price or 0.0),
-            'entry_zone': f"{pl.entry_zone_low} - {pl.entry_zone_high}",
+            'entry_zone': 'MARKET',
             'stop_loss': float(pl.stop_loss) if pl.stop_loss is not None else None,
             'take_profit_1': float(pl.take_profit_1) if pl.take_profit_1 is not None else None,
             'take_profit_2': float(pl.take_profit_2) if pl.take_profit_2 is not None else None,
@@ -471,6 +490,13 @@ def wallet_list_api(request):
     """Danh sách các ví Exness kèm thông tin tóm tắt."""
     wallets = WalletAccount.objects.all()
     mt5_today, mt5_login = _mt5_today_snap()
+    live_acc = None
+    try:
+        from apps.trading.mt5_session import MT5NativeSession
+        if MT5NativeSession.available() and mt5_login:
+            live_acc = MT5NativeSession.account()
+    except Exception:
+        live_acc = None
     result = []
     for w in wallets:
         breakdown = w.get_performance_breakdown()
@@ -479,6 +505,7 @@ def wallet_list_api(request):
             today_val = Decimal(str(mt5_today['all']))
             breakdown['bot']['today_pnl'] = mt5_today['BOT']
             breakdown['user']['today_pnl'] = mt5_today['USER']
+        w_bal, w_eq, w_fl = _live_wallet_money(w, live_acc, mt5_login)
         result.append({
             'id': w.id,
             'name': w.name,
@@ -490,9 +517,9 @@ def wallet_list_api(request):
             'leverage': w.leverage,
             'leverage_display': w.leverage_display,
             'capital': float(w.capital),
-            'balance': float(w.balance),
-            'equity': float(w.equity),
-            'floating_pnl': float(w.floating_pnl),
+            'balance': float(w_bal),
+            'equity': float(w_eq),
+            'floating_pnl': float(w_fl),
             'margin': float(w.margin),
             'margin_free': float(w.margin_free),
             'margin_level': float(w.margin_level),
@@ -605,7 +632,7 @@ def wallet_detail_api(request, wallet_id):
             'timeframe': p.timeframe,
             'direction': p.direction,
             'entry_price': float(p.entry_price or 0.0),
-            'entry_zone': f"{p.entry_zone_low} - {p.entry_zone_high}",
+            'entry_zone': 'MARKET',
             'stop_loss': float(p.stop_loss) if p.stop_loss is not None else None,
             'take_profit_1': float(p.take_profit_1) if p.take_profit_1 is not None else None,
             'take_profit_2': float(p.take_profit_2) if p.take_profit_2 is not None else None,

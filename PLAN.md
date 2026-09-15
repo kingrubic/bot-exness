@@ -144,7 +144,7 @@ pip install -r requirements.txt
 cp .env.example .env
 
 # 4. Tạo tài khoản Admin (tự động tạo DB sandbox_exness trên MySQL)
-python3 create_admin.py admin 123456
+python3 create_admin.py admin 123123123
 
 # 5. Khởi động Web Dashboard và Bot Worker
 python3 run_bot.py

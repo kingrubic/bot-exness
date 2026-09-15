@@ -231,10 +231,19 @@
 <!-- ACTIVE POSITIONS TABLE -->
 <div class="au-card-clean mb-4">
     <div class="card-title-wrap">
-        <div class="d-flex align-items-center gap-2">
+        <div class="card-title-left d-flex align-items-center gap-2">
             <i class="fa-solid fa-layer-group text-primary"></i>
             <h5 class="font-weight-bold text-dark mb-0">Danh Sách Vị Thế Đang Mở (Active Positions)</h5>
             <span class="badge bg-primary rounded-pill ms-2" id="badge-open-count">0</span>
+        </div>
+        <div class="card-title-right d-flex align-items-center gap-3 flex-wrap">
+            <div class="d-flex align-items-center gap-2">
+                <span class="small text-muted font-weight-bold">Tổng lãi/lỗ:</span>
+                <span id="positions-total-pnl" class="font-weight-bold">$0.00</span>
+            </div>
+            <button type="button" class="btn btn-danger btn-sm rounded-pill px-3 shadow-xs font-weight-bold" id="btn-close-all-positions" onclick="closeAllPositionsPrompt()" disabled>
+                <i class="fa-solid fa-xmark me-1"></i> Đóng toàn bộ
+            </button>
         </div>
     </div>
 
@@ -263,6 +272,13 @@
                     </td>
                 </tr>
             </tbody>
+            <tfoot>
+                <tr class="table-light">
+                    <td colspan="9" class="text-end font-weight-bold">Tổng tất cả lệnh</td>
+                    <td id="positions-total-pnl-cell">$0.00</td>
+                    <td colspan="2"></td>
+                </tr>
+            </tfoot>
         </table>
     </div>
     <!-- PAGINATION 20/PAGE -->
@@ -291,9 +307,9 @@
                     <th>Ví</th>
                     <th>Cặp / Khung</th>
                     <th>Hướng</th>
-                    <th>Vùng Kích Hoạt Entry</th>
+                    <th>Khớp lệnh</th>
                     <th>Stop Loss</th>
-                    <th>Take Profit (TP1 / TP2)</th>
+                    <th>Chốt lời</th>
                     <th>Tỷ lệ R:R</th>
                     <th>Lot Dự Tính</th>
                     <th>Trạng Thái Plan</th>

@@ -209,20 +209,30 @@ function initGlobalEventListeners() {
 }
 
 async function closeAllPositionsPrompt() {
-    if (!confirm('CẢNH BÁO KHẨN CẤP: Bạn có chắc chắn muốn đóng TẤT CẢ các lệnh đang mở trên toàn bộ các ví Exness?')) {
+    const n = (cachedOverviewPositions || []).length;
+    if (!n) {
+        showToast('Không có vị thế mở để đóng', 'error');
         return;
     }
+    if (!confirm(`Đóng TOÀN BỘ ${n} vị thế đang mở trên Exness MT5?`)) {
+        return;
+    }
+    const btn = document.getElementById('btn-close-all-positions');
+    if (btn) btn.disabled = true;
     try {
         const res = await apiFetch('/api/positions/close-all/', { method: 'POST' });
         const data = await parseApiJson(res);
-        if (data.success) {
-            showToast(data.message, 'success');
+        if (data.success || data.message) {
+            showToast(data.message || 'Đã gửi lệnh đóng toàn bộ', data.success ? 'success' : 'error');
             refreshAllData();
+            fetchLiveTicks();
         } else {
             showToast(data.error || 'Lỗi đóng lệnh khẩn cấp', 'error');
         }
     } catch (e) {
         showToast('Lỗi kết nối máy chủ', 'error');
+    } finally {
+        if (btn) btn.disabled = (cachedOverviewPositions || []).length === 0;
     }
 }
 
@@ -697,6 +707,18 @@ function changeOverviewHistPage(page) {
     renderOverviewHistory(cachedOverviewHistory);
 }
 
+function updatePositionsTotals(positions) {
+    const rows = positions || [];
+    const total = rows.reduce((sum, p) => sum + (Number(p.floating_pnl) || 0), 0);
+    const html = formatPnl(total, { asBadge: true });
+    const headerEl = document.getElementById('positions-total-pnl');
+    const cellEl = document.getElementById('positions-total-pnl-cell');
+    if (headerEl) headerEl.innerHTML = html;
+    if (cellEl) cellEl.innerHTML = html;
+    const btn = document.getElementById('btn-close-all-positions');
+    if (btn) btn.disabled = rows.length === 0;
+}
+
 function renderOverviewPositions(positions) {
     cachedOverviewPositions = positions || [];
     const tbody = document.getElementById('tbody-positions');
@@ -704,6 +726,7 @@ function renderOverviewPositions(positions) {
     if (!tbody) return;
 
     if (badgeCount) badgeCount.innerText = cachedOverviewPositions.length;
+    updatePositionsTotals(cachedOverviewPositions);
 
     if (cachedOverviewPositions.length === 0) {
         tbody.innerHTML = `<tr><td colspan="12" class="text-center py-4 text-muted"><i class="fa-solid fa-circle-check text-success me-2"></i> Không có vị thế mở nào đang chạy</td></tr>`;
@@ -724,6 +747,7 @@ function renderOverviewPositions(positions) {
 
     if (skipRebuild) {
         patchOverviewPositionRows(paged);
+        updatePositionsTotals(cachedOverviewPositions);
         return;
     }
 
@@ -827,7 +851,7 @@ function renderOverviewPlans(plans) {
             if (!row) return;
             const priceEl = row.querySelector('.plan-entry');
             if (priceEl) {
-                const shown = '$' + pl.entry_price;
+                const shown = 'MARKET ' + pl.direction + ' @ $' + pl.entry_price;
                 if (priceEl.dataset.val !== shown) {
                     priceEl.dataset.val = shown;
                     priceEl.textContent = shown;
@@ -856,10 +880,10 @@ function renderOverviewPlans(plans) {
                 <td><small class="font-weight-bold">${pl.wallet_name}</small></td>
                 <td><b>${pl.symbol}</b> <small class="text-muted">[${pl.timeframe}]</small></td>
                 <td><span class="badge ${pl.direction === 'BUY' ? 'badge-buy' : 'badge-sell'}">${pl.direction}</span></td>
-                <td class="font-weight-bold text-primary font-monospace plan-entry" data-val="$${pl.entry_price}">$${pl.entry_price}</td>
-                <td class="text-danger small font-monospace">$${pl.stop_loss}</td>
-                <td class="text-success small font-monospace">$${pl.take_profit_1} / $${pl.take_profit_2}</td>
-                <td><span class="badge bg-light text-dark border font-monospace">1:${pl.rr_ratio}</span></td>
+                <td class="font-weight-bold text-primary font-monospace plan-entry" data-val="MARKET ${pl.direction} @ $${pl.entry_price}">MARKET ${pl.direction} @ $${pl.entry_price}</td>
+                <td class="text-muted small">—</td>
+                <td class="text-success small">Khi lãi ≥ min TP</td>
+                <td><span class="badge bg-light text-dark border font-monospace">MARKET</span></td>
                 <td><b>${pl.calculated_lot} Lot</b></td>
                 <td><span class="badge ${statusBadge} plan-status" data-st="${pl.status}">${pl.status_display || pl.status}</span></td>
                 <td><small class="text-muted text-truncate d-inline-block" style="max-width: 230px;" title="${pl.rationale}">${pl.rationale}</small></td>
@@ -2325,23 +2349,6 @@ async function sendManualTrade(payload, orderType) {
         }
     } catch (e) {
         showQuickTradeAlert(false, 'Lỗi kết nối tới máy chủ MT5');
-    }
-}
-
-async function closeAllPositionsPrompt() {
-    if (!confirm('CẢNH BÁO: Bạn có chắc chắn muốn đóng TOÀN BỘ các vị thế đang mở trên Exness MT5?')) return;
-    try {
-        const res = await apiFetch('/api/positions/close-all/', { method: 'POST' });
-        const data = await parseApiJson(res);
-        if (data.success) {
-            showToast(data.message, 'success');
-            refreshAllData();
-            fetchLiveTicks();
-        } else {
-            showToast(data.error || 'Lỗi khi đóng tất cả vị thế', 'error');
-        }
-    } catch (e) {
-        showToast('Lỗi kết nối máy chủ', 'error');
     }
 }
 

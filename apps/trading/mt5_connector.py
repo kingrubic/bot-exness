@@ -123,6 +123,14 @@ class ExnessMT5Connector:
         if MT5_AVAILABLE:
             try:
                 from apps.trading.mt5_session import MT5NativeSession
+                acc_now = MT5NativeSession.account()
+                if acc_now and int(acc_now.login) != int(login_str):
+                    return False, MT5NativeSession.explain_single_account(
+                        acc_now.login, getattr(acc_now, 'server', ''), login_str
+                    ), {
+                        'live_login': int(acc_now.login),
+                        'requested_login': int(login_str),
+                    }
                 if MT5NativeSession.login(int(login_str), password, server_clean):
                     acc = MT5NativeSession.account()
                     if acc:

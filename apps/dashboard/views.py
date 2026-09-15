@@ -39,7 +39,11 @@ def admin_view(request):
     bot_metrics = _calc_stats(all_hist.filter(source='BOT'))
     user_metrics = _calc_stats(all_hist.filter(source='USER'))
     tot_today = sum(w.get_today_pnl() for w in wallets)
+    tot_bal = sum(w.balance for w in wallets)
+    tot_eq = sum(w.equity for w in wallets)
+    tot_fl = sum(w.floating_pnl for w in wallets)
     try:
+        from decimal import Decimal
         from apps.trading.mt5_session import MT5NativeSession
         snap = MT5NativeSession.today_realized_pnl()
         acc = MT5NativeSession.account() if snap.get('ok') else None
@@ -48,12 +52,21 @@ def admin_view(request):
             bot_metrics['today_pnl'] = snap['BOT']
             user_metrics['today_pnl'] = snap['USER']
             tot_today = snap['all']
+            tot_bal = Decimal('0')
+            tot_eq = Decimal('0')
+            tot_fl = Decimal('0')
+            for w in wallets:
+                if str(w.mt5_login or '') == login:
+                    tot_bal += Decimal(str(round(float(acc.balance or 0), 2)))
+                    tot_eq += Decimal(str(round(float(acc.equity or 0), 2)))
+                    tot_fl += Decimal(str(round(float(getattr(acc, 'profit', 0) or 0), 2)))
+                else:
+                    tot_bal += w.balance
+                    tot_eq += w.equity
+                    tot_fl += w.floating_pnl
     except Exception:
         pass
 
-    tot_bal = sum(w.balance for w in wallets)
-    tot_eq = sum(w.equity for w in wallets)
-    tot_fl = sum(w.floating_pnl for w in wallets)
     all_positions_count = Position.objects.count()
 
     return render(request, 'admin/overview.html', {

@@ -11,7 +11,7 @@ class TradingPlan(models.Model):
 
     STATUS_CHOICES = [
         ('ANALYZING', 'Đang Phân Tích'),
-        ('PENDING_TRIGGER', 'Chờ Khớp Vùng Entry'),
+        ('PENDING_TRIGGER', 'Chờ gửi MARKET'),
         ('EXECUTING', 'Đang Thực Thi Vào Lệnh'),
         ('COMPLETED', 'Đã Hoàn Thành (TP/SL Hit)'),
         ('CANCELLED', 'Đã Hủy (Hết Hiệu Lực / Phá Cấu Trúc)'),
@@ -23,7 +23,7 @@ class TradingPlan(models.Model):
     direction = models.CharField(max_length=10, choices=DIRECTION_CHOICES, verbose_name="Hướng Lệnh")
     
     # Entry Zone & Protection Levels
-    entry_price = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Giá Kích Hoạt Entry")
+    entry_price = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Giá MARKET lúc gửi")
     entry_zone_low = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Vùng Entry Min")
     entry_zone_high = models.DecimalField(max_digits=15, decimal_places=5, verbose_name="Vùng Entry Max")
     

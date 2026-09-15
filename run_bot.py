@@ -31,8 +31,10 @@ def run_trading_bot_worker():
             ExecutionEngine.sync_symbol_prices_from_mt5()
             ExecutionEngine.update_positions_and_pnl()
 
-            # 2. Run full strategy & plan check every 20 ticks (~3s)
             cycle_counter += 1
+            # 2. BUY/SELL MARKET ngay nếu chưa đủ lệnh (~0.6s); phân tích đầy đủ ~3s
+            if cycle_counter % 4 == 0:
+                ExecutionEngine.try_immediate_market_entries()
             if cycle_counter % 20 == 0:
                 ExecutionEngine.run_full_trading_cycle()
 
@@ -57,6 +59,11 @@ def main():
     print("=" * 70)
     print("⚡ KHỞI ĐỘNG HỆ THỐNG EXNESS AUTO-TRADE DJANGO PLATFORM ⚡")
     print("=" * 70)
+
+    addrport = sys.argv[1] if len(sys.argv) > 1 else '0.0.0.0:8888'
+    if ':' not in addrport and addrport.isdigit():
+        addrport = f'0.0.0.0:{addrport}'
+    port_display = addrport.split(':')[-1]
 
     # 1. Run migrations & ensure Master Data exists
     print("📦 Đang kiểm tra & áp dụng Database Migrations...")
@@ -85,12 +92,7 @@ def main():
     bot_thread = threading.Thread(target=run_trading_bot_worker, daemon=True)
     bot_thread.start()
 
-    # 5. Start Django Server with CLI port or default 0.0.0.0:8888
-    addrport = sys.argv[1] if len(sys.argv) > 1 else '0.0.0.0:8888'
-    if ':' not in addrport and addrport.isdigit():
-        addrport = f'0.0.0.0:{addrport}'
-    
-    port_display = addrport.split(':')[-1]
+    addrport = f'0.0.0.0:{port_display}'
     print(f"\n🌐 Web Dashboard đã sẵn sàng tại: http://localhost:{port_display}/")
     print(f"💼 Trang Quản Trị Admin tại:       http://localhost:{port_display}/admin-panel/\n")
 

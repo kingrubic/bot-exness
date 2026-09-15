@@ -15,10 +15,50 @@ class AutoPlanGenerator:
     dựa trên kết quả phân tích kỹ thuật và tham số quản trị rủi ro.
     """
 
+    EMPTY_WALLET_USD = 1.0
+
+    @staticmethod
+    def wallet_has_capital(wallet: WalletAccount, live_equity: float | None = None, live_balance: float | None = None) -> bool:
+        """False khi ví ~$0 (thanh lý / hết tiền). Đọc balance_db/equity_db, không fallback sang capital."""
+        try:
+            if live_equity is not None or live_balance is not None:
+                eq = float(live_equity or 0)
+                bal = float(live_balance or 0)
+            else:
+                bal = float(getattr(wallet, 'balance_db', 0) or 0)
+                eq = float(getattr(wallet, 'equity_db', 0) or 0)
+        except (TypeError, ValueError):
+            eq, bal = 0.0, 0.0
+        return max(eq, bal) >= AutoPlanGenerator.EMPTY_WALLET_USD
+
+    @classmethod
+    def purge_all_plans_for_wallet(cls, wallet: WalletAccount) -> int:
+        qs = TradingPlan.objects.filter(wallet=wallet)
+        n = qs.count()
+        if n:
+            qs.delete()
+        return n
+
+    @staticmethod
+    def direction_from_forecast(forecast) -> str:
+        """Kế hoạch AI chỉ BUY hoặc SELL — không WAIT / không vùng entry."""
+        bias = str(getattr(forecast, 'trend_bias', '') or '').upper()
+        if bias == 'BEARISH':
+            return 'SELL'
+        if bias == 'BULLISH':
+            return 'BUY'
+        action = str(getattr(forecast, 'recommended_action', '') or '').upper()
+        if 'SELL' in action:
+            return 'SELL'
+        return 'BUY'
+
     @staticmethod
     def generate_plan_for_wallet(wallet: WalletAccount, symbol_config: SymbolConfig, forecast: MarketForecast, is_pyramiding: bool = False) -> TradingPlan:
         # Check if symbol is allowed for this wallet
         if symbol_config.symbol not in wallet.allowed_symbols:
+            return None
+        if not AutoPlanGenerator.wallet_has_capital(wallet):
+            AutoPlanGenerator.purge_all_plans_for_wallet(wallet)
             return None
         fields = AutoPlanGenerator._plan_fields(wallet, symbol_config, forecast, is_pyramiding=is_pyramiding)
         if not fields:
@@ -29,18 +69,8 @@ class AutoPlanGenerator:
     @staticmethod
     def _plan_fields(wallet: WalletAccount, symbol_config: SymbolConfig, forecast: MarketForecast, is_pyramiding: bool = False) -> dict:
 
-        # 1. HƯỚNG VÀO LỆNH THEO XU HƯỚNG THỊ TRƯỜNG (TREND-FOLLOWING)
-        if forecast.trend_bias == 'BULLISH':
-            direction = 'BUY'
-        elif forecast.trend_bias == 'BEARISH':
-            direction = 'SELL'
-        else:
-            if forecast.recommended_action == 'READY_TO_BUY' or 'BUY' in str(forecast.recommended_action):
-                direction = 'BUY'
-            elif forecast.recommended_action == 'READY_TO_SELL' or 'SELL' in str(forecast.recommended_action):
-                direction = 'SELL'
-            else:
-                direction = 'BUY'
+        # 1. Chỉ BUY hoặc SELL — vào MARKET ngay, không chờ hồi / vùng entry
+        direction = AutoPlanGenerator.direction_from_forecast(forecast)
 
         try:
             symbol_config.refresh_from_db()
@@ -57,7 +87,7 @@ class AutoPlanGenerator:
         tag_name = "AI Lướt Sóng Ngắn Hạn (Scale-In)" if is_pyramiding else "AI Lướt Sóng Ngắn Hạn"
         max_n = int(wallet.max_open_trades or 1)
         rationale = (
-            f"{tag_name}: Khớp MARKET {direction} {lot} Lot (Ask/Bid sàn) theo xu hướng {forecast.trend_bias}. "
+            f"{tag_name}: MARKET {direction} {lot} Lot ngay (Ask khi BUY / Bid khi SELL), không chờ vùng entry. "
             f"Chốt lời khi lãi ròng >= ${min_tp:.2f}. Lệnh lỗ giữ nguyên (gồng) đến khi về lãi. "
             f"Max daily loss {float(wallet.max_daily_loss_percent or 0):.2f}%/ngày chỉ chặn mở thêm lệnh. "
             f"Cho phép tối đa {max_n} lệnh mở đồng thời trên ví."
@@ -108,6 +138,9 @@ class AutoPlanGenerator:
     def update_or_create_plan_for_wallet(cls, wallet: WalletAccount, symbol_config: SymbolConfig, forecast: MarketForecast, is_pyramiding: bool = False) -> TradingPlan:
         """Làm mới 1 plan hiện tại cho ví+cặp: plan cũ (không EXECUTING) bị xóa, không tích dồn."""
         if symbol_config.symbol not in wallet.allowed_symbols:
+            return None
+        if not cls.wallet_has_capital(wallet):
+            cls.purge_all_plans_for_wallet(wallet)
             return None
         try:
             symbol_config.refresh_from_db()
@@ -194,6 +227,10 @@ class AutoPlanGenerator:
         1. Xóa toàn bộ các Trading Plan AI chưa khớp lệnh cũ của ví (status in PENDING_TRIGGER, ANALYZING, CANCELLED).
         2. Tính toán và sinh lại các Trading Plan mới dựa trên số dư hiện tại và danh sách các cặp cho phép mới.
         """
+        if not cls.wallet_has_capital(wallet):
+            cls.purge_all_plans_for_wallet(wallet)
+            return []
+
         # 1. Xóa các Plan cũ chưa kích hoạt thành lệnh
         TradingPlan.objects.filter(
             wallet=wallet,
