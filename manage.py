@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 # Add local packages folder to sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'packages'))
+sys.path.append(str(Path(__file__).resolve().parent / 'packages'))
 
 def main():
     """Run administrative tasks."""

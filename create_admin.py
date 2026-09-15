@@ -17,7 +17,7 @@ from pathlib import Path
 
 # Add packages and workspace to sys.path
 BASE_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(BASE_DIR / 'packages'))
+sys.path.append(str(BASE_DIR / 'packages'))
 sys.path.insert(0, str(BASE_DIR))
 
 import django
@@ -58,7 +58,7 @@ def create_admin(username, password):
             print(f"   - Mật khẩu (Password):      {password}")
 
         print("\n🌐 Đăng nhập vào trang quản trị:")
-        print("   👉 http://localhost:8000/admin-panel/\n")
+        print("   👉 http://localhost:8888/login/\n")
     except Exception as e:
         print(f"\n⚠️ [LỖI KẾT NỐI DATABASE]: {e}")
         print("👉 Vui lòng đảm bảo dịch vụ MySQL đang chạy và kiểm tra thông tin trong file .env!\n")

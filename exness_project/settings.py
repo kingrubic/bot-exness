@@ -6,7 +6,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Add local packages folder to sys.path
-sys.path.insert(0, str(BASE_DIR / 'packages'))
+sys.path.append(str(BASE_DIR / 'packages'))
 
 from dotenv import load_dotenv
 

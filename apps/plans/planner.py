@@ -20,6 +20,14 @@ class AutoPlanGenerator:
         # Check if symbol is allowed for this wallet
         if symbol_config.symbol not in wallet.allowed_symbols:
             return None
+        fields = AutoPlanGenerator._plan_fields(wallet, symbol_config, forecast, is_pyramiding=is_pyramiding)
+        if not fields:
+            return None
+        fields['created_at'] = timezone.now()
+        return TradingPlan.objects.create(**fields)
+
+    @staticmethod
+    def _plan_fields(wallet: WalletAccount, symbol_config: SymbolConfig, forecast: MarketForecast, is_pyramiding: bool = False) -> dict:
 
         # 1. HƯỚNG VÀO LỆNH THEO XU HƯỚNG THỊ TRƯỜNG (TREND-FOLLOWING)
         if forecast.trend_bias == 'BULLISH':
@@ -50,29 +58,29 @@ class AutoPlanGenerator:
         max_n = int(wallet.max_open_trades or 1)
         rationale = (
             f"{tag_name}: Khớp MARKET {direction} {lot} Lot (Ask/Bid sàn) theo xu hướng {forecast.trend_bias}. "
-            f"Không cắt lỗ. Chỉ chốt khi lãi ròng >= ${min_tp:.2f}. "
+            f"Chốt lời khi lãi ròng >= ${min_tp:.2f}. Lệnh lỗ giữ nguyên (gồng) đến khi về lãi. "
+            f"Max daily loss {float(wallet.max_daily_loss_percent or 0):.2f}%/ngày chỉ chặn mở thêm lệnh. "
             f"Cho phép tối đa {max_n} lệnh mở đồng thời trên ví."
         )
 
-        plan = TradingPlan.objects.create(
-            wallet=wallet,
-            symbol=symbol_config.symbol,
-            timeframe=symbol_config.timeframe,
-            direction=direction,
-            entry_price=entry_price,
-            entry_zone_low=entry_price,
-            entry_zone_high=entry_price,
-            stop_loss=None,
-            take_profit_1=None,
-            take_profit_2=None,
-            rr_ratio=1.0,
-            calculated_lot=lot,
-            risk_amount_usd=Decimal('0.00'),
-            rationale=rationale,
-            status='PENDING_TRIGGER',
-            created_at=timezone.now()
-        )
-        return plan
+        fields = {
+            'wallet': wallet,
+            'symbol': symbol_config.symbol,
+            'timeframe': symbol_config.timeframe,
+            'direction': direction,
+            'entry_price': entry_price,
+            'entry_zone_low': entry_price,
+            'entry_zone_high': entry_price,
+            'stop_loss': None,
+            'take_profit_1': None,
+            'take_profit_2': None,
+            'rr_ratio': 1.0,
+            'calculated_lot': lot,
+            'risk_amount_usd': Decimal('0.00'),
+            'rationale': rationale,
+            'status': 'PENDING_TRIGGER',
+        }
+        return fields
 
     @staticmethod
     def market_entry_price(symbol_config: SymbolConfig, direction: str) -> Decimal:
@@ -98,43 +106,41 @@ class AutoPlanGenerator:
 
     @classmethod
     def update_or_create_plan_for_wallet(cls, wallet: WalletAccount, symbol_config: SymbolConfig, forecast: MarketForecast, is_pyramiding: bool = False) -> TradingPlan:
-        """
-        Cập nhật kế hoạch giao dịch AI liên tục theo biến động giá thị trường thời gian thực.
-        Nếu đã có plan PENDING_TRIGGER thì update giá entry, SL, TP, Lot mới nhất theo nến và giá sàn.
-        Nếu chưa có thì tạo plan mới.
-        """
-        existing_plan = TradingPlan.objects.filter(
-            wallet=wallet,
-            symbol=symbol_config.symbol,
-            status='PENDING_TRIGGER'
-        ).first()
-
+        """Làm mới 1 plan hiện tại cho ví+cặp: plan cũ (không EXECUTING) bị xóa, không tích dồn."""
+        if symbol_config.symbol not in wallet.allowed_symbols:
+            return None
         try:
             symbol_config.refresh_from_db()
         except Exception:
             pass
 
-        new_plan = cls.generate_plan_for_wallet(wallet, symbol_config, forecast, is_pyramiding=is_pyramiding)
-        if not new_plan:
-            return existing_plan
+        fields = cls._plan_fields(wallet, symbol_config, forecast, is_pyramiding=is_pyramiding)
+        if not fields:
+            return None
 
-        if existing_plan and existing_plan.id != new_plan.id:
-            # Sync new calculations into existing plan to keep stable ID
-            existing_plan.direction = new_plan.direction
-            existing_plan.entry_price = new_plan.entry_price
-            existing_plan.entry_zone_low = new_plan.entry_zone_low
-            existing_plan.entry_zone_high = new_plan.entry_zone_high
-            existing_plan.stop_loss = new_plan.stop_loss
-            existing_plan.take_profit_1 = new_plan.take_profit_1
-            existing_plan.take_profit_2 = new_plan.take_profit_2
-            existing_plan.rr_ratio = new_plan.rr_ratio
-            existing_plan.calculated_lot = new_plan.calculated_lot
-            existing_plan.risk_amount_usd = new_plan.risk_amount_usd
-            existing_plan.rationale = new_plan.rationale
-            existing_plan.save()
-            new_plan.delete()
-            return existing_plan
-        return new_plan
+        # Bỏ plan chết + các plan chờ cũ cùng ví/cặp; giữ EXECUTING (đang có lệnh mở)
+        TradingPlan.objects.filter(
+            wallet=wallet,
+            symbol=symbol_config.symbol,
+            status__in=['FAILED', 'CANCELLED', 'COMPLETED', 'PENDING', 'ANALYZING'],
+        ).delete()
+
+        pending_qs = TradingPlan.objects.filter(
+            wallet=wallet,
+            symbol=symbol_config.symbol,
+            status='PENDING_TRIGGER',
+        ).order_by('-updated_at', '-created_at')
+        keep = pending_qs.first()
+        if keep:
+            pending_qs.exclude(pk=keep.pk).delete()
+            for k, v in fields.items():
+                setattr(keep, k, v)
+            keep.status = 'PENDING_TRIGGER'
+            keep.save()
+            return keep
+
+        fields['created_at'] = timezone.now()
+        return TradingPlan.objects.create(**fields)
 
     @classmethod
     def discard_plan(cls, plan: TradingPlan) -> None:
@@ -149,19 +155,37 @@ class AutoPlanGenerator:
     @classmethod
     def purge_dead_plans(cls) -> int:
         """
-        Xóa plan FAILED/CANCELLED ngay, và plan chưa khớp (PENDING_TRIGGER / PENDING / ANALYZING)
-        nếu đã quá STALE_PLAN_SECONDS. Không đụng EXECUTING / COMPLETED (đã gắn vị thế).
+        Không tích dồn: xóa FAILED/CANCELLED/COMPLETED ngay.
+        Chỉ giữ 1 plan PENDING mới nhất mỗi ví+cặp, và plan EXECUTING (lệnh đang mở).
         """
+        dead_qs = TradingPlan.objects.filter(status__in=['FAILED', 'CANCELLED', 'COMPLETED'])
+        count = dead_qs.count()
+        dead_qs.delete()
+
         cutoff = timezone.now() - timedelta(seconds=STALE_PLAN_SECONDS)
-        dead_qs = TradingPlan.objects.filter(status__in=['FAILED', 'CANCELLED'])
         stale_qs = TradingPlan.objects.filter(
             status__in=['PENDING_TRIGGER', 'PENDING', 'ANALYZING'],
             created_at__lt=cutoff,
         )
-        count = dead_qs.count() + stale_qs.count()
-        if count:
-            dead_qs.delete()
-            stale_qs.delete()
+        count += stale_qs.count()
+        stale_qs.delete()
+
+        pending = list(
+            TradingPlan.objects.filter(
+                status__in=['PENDING_TRIGGER', 'PENDING', 'ANALYZING']
+            ).order_by('wallet_id', 'symbol', '-updated_at', '-created_at')
+        )
+        seen = set()
+        drop_ids = []
+        for p in pending:
+            key = (p.wallet_id, p.symbol)
+            if key in seen:
+                drop_ids.append(p.pk)
+            else:
+                seen.add(key)
+        if drop_ids:
+            count += len(drop_ids)
+            TradingPlan.objects.filter(pk__in=drop_ids).delete()
         return count
 
     @classmethod

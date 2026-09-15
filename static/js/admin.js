@@ -19,12 +19,82 @@ function getCsrfToken() {
     return cookieValue;
 }
 
+function apiFetch(url, options = {}) {
+    const headers = Object.assign({
+        'X-CSRFToken': getCsrfToken(),
+        'X-Requested-With': 'XMLHttpRequest',
+    }, options.headers || {});
+    return fetch(url, Object.assign({ credentials: 'same-origin' }, options, { headers }));
+}
+
+function unwrapApiList(payload) {
+    if (Array.isArray(payload)) return payload;
+    if (payload && Array.isArray(payload.results)) return payload.results;
+    if (payload && Array.isArray(payload.wallets)) return payload.wallets;
+    if (payload && Array.isArray(payload.symbols)) return payload.symbols;
+    return [];
+}
+
+async function parseApiJson(res) {
+    const text = await res.text();
+    if (!text) return {};
+    try {
+        return JSON.parse(text);
+    } catch (e) {
+        return { success: false, error: text.slice(0, 180) || `HTTP ${res.status}` };
+    }
+}
+
 // Global State
 let walletsData = [];
 let symbolsData = [];
+let cachedSymbols = [];
 let countdownSeconds = 5;
 let pollingInterval = null;
 let isPolling = false;
+let uiPointerBusy = false;
+let uiPointerBusyTimer = null;
+let lastHistorySig = '';
+let lastPlansSig = '';
+
+function setUiPointerBusy(on) {
+    if (on) {
+        uiPointerBusy = true;
+        if (uiPointerBusyTimer) {
+            clearTimeout(uiPointerBusyTimer);
+            uiPointerBusyTimer = null;
+        }
+        return;
+    }
+    if (uiPointerBusyTimer) clearTimeout(uiPointerBusyTimer);
+    uiPointerBusyTimer = setTimeout(() => {
+        uiPointerBusy = false;
+        uiPointerBusyTimer = null;
+    }, 400);
+}
+
+document.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('.btn-action-icon, button.btn-outline-danger, #tbody-positions, #tbody-plans, #tbody-wallets, #modal-quick-trade')) {
+        setUiPointerBusy(true);
+    }
+});
+document.addEventListener('pointerup', () => setUiPointerBusy(false));
+document.addEventListener('pointercancel', () => setUiPointerBusy(false));
+document.addEventListener('click', (e) => {
+    const closeBtn = e.target.closest('[data-action="close-pos"]');
+    if (closeBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeSinglePosition(closeBtn.dataset.id, closeBtn.dataset.ticket);
+        return;
+    }
+    const delPlan = e.target.closest('[data-action="delete-plan"]');
+    if (delPlan) {
+        e.preventDefault();
+        e.stopPropagation();
+        deleteTradingPlan(delPlan.dataset.id);
+    }
+});
 
 // DOM Ready
 document.addEventListener('DOMContentLoaded', () => {
@@ -119,8 +189,8 @@ async function closeAllPositionsPrompt() {
         return;
     }
     try {
-        const res = await fetch('/api/positions/close-all/', { method: 'POST' });
-        const data = await res.json();
+        const res = await apiFetch('/api/positions/close-all/', { method: 'POST' });
+        const data = await parseApiJson(res);
         if (data.success) {
             showToast(data.message, 'success');
             refreshAllData();
@@ -186,6 +256,15 @@ function formatPnl(amount, options = {}) {
 // Track previous price for each symbol to trigger tick up/down flash, old price comparison and arrows
 const prevPriceStore = {};
 
+function formatPosPrice(currentPrice, symbol) {
+    const curr = Number(currentPrice);
+    const sym = String(symbol || '');
+    let decimals = 2;
+    if (sym.includes('EUR') || sym.includes('GBP') || sym.includes('USDJPY')) decimals = 5;
+    else if (sym.includes('XAU') || sym.includes('XAG')) decimals = 2;
+    return curr.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+
 function renderLivePriceWithTick(symbolKey, currentPrice, originalSymbol = '') {
     const prev = prevPriceStore[symbolKey];
     const curr = Number(currentPrice);
@@ -205,9 +284,7 @@ function renderLivePriceWithTick(symbolKey, currentPrice, originalSymbol = '') {
     const diff = curr - prev;
     const isUp = diff > 0;
     const flashClass = isUp ? 'flash-price-up text-success' : 'flash-price-down text-danger';
-    const arrowIcon = isUp ? '<i class="fa-solid fa-caret-up text-success ms-1"></i>' : '<i class="fa-solid fa-caret-down text-danger ms-1"></i>';
-
-    return `<span class="font-weight-bold ${flashClass}">$${currFormatted}${arrowIcon}</span>`;
+    return `<span class="font-weight-bold ${flashClass}">$${currFormatted}</span>`;
 }
 
 /* ==================== BOT VS USER REPORT BY WALLET SCOPE ==================== */
@@ -422,7 +499,13 @@ function handleLiveTicksData(data) {
         if (kpiPosCount) kpiPosCount.innerText = data.positions ? data.positions.length : (ov.active_positions_count ?? 0);
 
         const kpiToday = document.getElementById('kpi-today');
-        if (kpiToday) kpiToday.innerHTML = formatPnl(ov.total_today_pnl);
+        if (kpiToday) {
+            const v = Number(ov.total_today_pnl).toFixed(2);
+            if (kpiToday.dataset.val !== v) {
+                kpiToday.dataset.val = v;
+                kpiToday.innerHTML = formatPnl(ov.total_today_pnl);
+            }
+        }
 
         const kpiWallets = document.getElementById('kpi-wallets-count');
         if (kpiWallets) kpiWallets.innerText = ov.active_wallets_count || ov.total_wallets_count;
@@ -479,7 +562,7 @@ function handleLiveTicksData(data) {
         });
     }
 
-    // 3. Update Active Positions
+    // 3. Update Active Positions (patch in-place so close buttons stay clickable)
     if (data.positions) {
         renderOverviewPositions(data.positions);
     }
@@ -506,15 +589,23 @@ function handleLiveTicksData(data) {
         }
     }
 
-    // 5. Update Trading Plans
     if (data.plans) {
-        renderOverviewPlans(data.plans);
+        const sig = (data.plans || []).map(p => p.id + ':' + p.status).join('|');
+        if (sig !== lastPlansSig) {
+            lastPlansSig = sig;
+            renderOverviewPlans(data.plans);
+        }
     }
 
-    // 6. Update Trade History
-    if (data.history && data.history.length > 0) {
-        rawOverviewHistory = data.history;
-        filterOverviewHistory(false);
+    if (Array.isArray(data.history)) {
+        const first = data.history[0];
+        const last = data.history[data.history.length - 1];
+        const sig = data.history.length + ':' + (first?.ticket || '') + ':' + (last?.ticket || '') + ':' + (first?.pnl ?? '') + ':' + (first?.closed_at || '');
+        if (sig !== lastHistorySig) {
+            lastHistorySig = sig;
+            rawOverviewHistory = data.history;
+            filterOverviewHistory(false);
+        }
     }
 
     const timerEl = document.getElementById('countdown-timer');
@@ -592,6 +683,7 @@ function renderOverviewPositions(positions) {
 
     if (cachedOverviewPositions.length === 0) {
         tbody.innerHTML = `<tr><td colspan="12" class="text-center py-4 text-muted"><i class="fa-solid fa-circle-check text-success me-2"></i> Không có vị thế mở nào đang chạy</td></tr>`;
+        tbody.dataset.sig = '';
         renderPaginationComponent('pagination-overview-positions', 0, 1, ADMIN_PAGE_SIZE, 'changeOverviewPosPage');
         return;
     }
@@ -602,7 +694,16 @@ function renderOverviewPositions(positions) {
 
     const startIndex = (currentOverviewPosPage - 1) * ADMIN_PAGE_SIZE;
     const paged = cachedOverviewPositions.slice(startIndex, startIndex + ADMIN_PAGE_SIZE);
+    const sig = currentOverviewPosPage + '|' + paged.map(p => String(p.ticket)).sort().join(',');
+    const rowsReady = paged.every(p => document.getElementById('pos-row-' + p.ticket));
+    const skipRebuild = uiPointerBusy || (rowsReady && tbody.dataset.sig === sig);
 
+    if (skipRebuild) {
+        patchOverviewPositionRows(paged);
+        return;
+    }
+
+    tbody.dataset.sig = sig;
     tbody.innerHTML = paged.map(p => {
         const isBot = (p.source === 'BOT');
         const tagBadge = isBot 
@@ -610,7 +711,7 @@ function renderOverviewPositions(positions) {
             : `<span class="badge text-white font-monospace shadow-sm" style="background-color: #6f42c1; font-size: 0.72rem; letter-spacing: 0.5px;"><i class="fa-solid fa-user me-1"></i>USER</span>`;
 
         return `
-        <tr>
+        <tr id="pos-row-${p.ticket}">
             <td class="font-monospace font-weight-bold">#${p.ticket}</td>
             <td>${tagBadge}</td>
             <td><span class="badge bg-light text-dark border font-weight-bold">${p.wallet_name}</span></td>
@@ -618,9 +719,9 @@ function renderOverviewPositions(positions) {
             <td><span class="badge ${p.position_type === 'BUY' ? 'badge-buy' : 'badge-sell'}">${p.position_type}</span></td>
             <td class="font-weight-bold">${p.lot_size} Lot</td>
             <td>$${p.open_price}</td>
-            <td class="font-weight-bold">${renderLivePriceWithTick('pos_' + p.id, p.current_price, p.symbol)}</td>
-            <td><small class="text-muted">$${p.stop_loss} / $${p.take_profit}</small></td>
-            <td>
+            <td class="font-weight-bold pos-cell-price" data-price=""><span class="pos-price-num font-weight-bold text-dark">$${formatPosPrice(p.current_price, p.symbol)}</span></td>
+            <td class="pos-cell-sltp"><small class="text-muted">$${p.stop_loss} / $${p.take_profit}</small></td>
+            <td class="pos-cell-pnl">
                 ${formatPnl(p.floating_pnl, { asBadge: true })}
             </td>
             <td>
@@ -628,7 +729,7 @@ function renderOverviewPositions(positions) {
                 ${p.is_trailing ? '<span class="badge bg-warning text-dark">Trailing</span>' : ''}
             </td>
             <td class="text-end text-nowrap">
-                <button class="btn btn-sm btn-outline-danger btn-action-icon" onclick="closeSinglePosition(${p.id}, '${p.ticket}')" title="Đóng Lệnh">
+                <button type="button" class="btn btn-sm btn-outline-danger btn-action-icon" data-action="close-pos" data-id="${p.id}" data-ticket="${p.ticket}" title="Đóng Lệnh">
                     <i class="fa-solid fa-xmark"></i>
                 </button>
             </td>
@@ -639,10 +740,47 @@ function renderOverviewPositions(positions) {
     renderPaginationComponent('pagination-overview-positions', cachedOverviewPositions.length, currentOverviewPosPage, ADMIN_PAGE_SIZE, 'changeOverviewPosPage');
 }
 
+function patchOverviewPositionRows(paged) {
+    paged.forEach(p => {
+        const row = document.getElementById('pos-row-' + p.ticket);
+        if (!row) return;
+        const priceEl = row.querySelector('.pos-cell-price');
+        const pnlEl = row.querySelector('.pos-cell-pnl');
+        const slEl = row.querySelector('.pos-cell-sltp');
+        if (priceEl) {
+            const shown = formatPosPrice(p.current_price, p.symbol);
+            let numEl = priceEl.querySelector('.pos-price-num');
+            if (!numEl) {
+                priceEl.innerHTML = `<span class="pos-price-num font-weight-bold text-dark">$${shown}</span>`;
+                numEl = priceEl.querySelector('.pos-price-num');
+                priceEl.dataset.shown = shown;
+            } else if (priceEl.dataset.shown !== shown) {
+                numEl.textContent = '$' + shown;
+                priceEl.dataset.shown = shown;
+            }
+        }
+        if (pnlEl) {
+            const v = Number(p.floating_pnl).toFixed(2);
+            if (pnlEl.dataset.val !== v) {
+                pnlEl.dataset.val = v;
+                pnlEl.innerHTML = formatPnl(p.floating_pnl, { asBadge: true });
+            }
+        }
+        if (slEl) {
+            const html = `<small class="text-muted">$${p.stop_loss} / $${p.take_profit}</small>`;
+            if (slEl.dataset.val !== html) {
+                slEl.dataset.val = html;
+                slEl.innerHTML = html;
+            }
+        }
+    });
+}
+
 function renderOverviewPlans(plans) {
     cachedOverviewPlans = plans || [];
     const tbody = document.getElementById('tbody-plans');
     if (!tbody) return;
+    if (uiPointerBusy && tbody.querySelector('[data-action="delete-plan"]')) return;
 
     if (cachedOverviewPlans.length === 0) {
         tbody.innerHTML = `<tr><td colspan="12" class="text-center py-4 text-muted"><i class="fa-solid fa-brain text-warning me-2"></i> Chưa có kế hoạch AI nào được khởi tạo</td></tr>`;
@@ -678,7 +816,7 @@ function renderOverviewPlans(plans) {
                 <td><span class="badge ${statusBadge}">${pl.status_display || pl.status}</span></td>
                 <td><small class="text-muted text-truncate d-inline-block" style="max-width: 230px;" title="${pl.rationale}">${pl.rationale}</small></td>
                 <td class="text-end text-nowrap">
-                    <button class="btn btn-sm btn-outline-danger btn-action-icon" onclick="deleteTradingPlan(${pl.id})" title="Xóa Kế Hoạch Này">
+                    <button type="button" class="btn btn-sm btn-outline-danger btn-action-icon" data-action="delete-plan" data-id="${pl.id}" title="Xóa Kế Hoạch Này">
                         <i class="fa-solid fa-trash"></i>
                     </button>
                 </td>
@@ -800,8 +938,12 @@ function renderOverviewHistory(history) {
 async function closeSinglePosition(positionId, ticket) {
     if (!confirm(`Bạn có chắc chắn muốn đóng lệnh #${ticket}?`)) return;
     try {
-        const res = await fetch(`/api/positions/${positionId}/close/`, { method: 'POST' });
-        const data = await res.json();
+        const res = await apiFetch(`/api/positions/${positionId}/close/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticket: String(ticket || '') }),
+        });
+        const data = await parseApiJson(res);
         if (data.success) {
             showToast(data.message, 'success');
             refreshAllData();
@@ -887,6 +1029,10 @@ function renderWalletsTable(wallets, forceFullRender = false) {
     const allRowsExist = paged.every(w => document.getElementById(`wallet-row-${w.id}`));
     const existingRowCount = tbody.querySelectorAll('tr[id^="wallet-row-"]').length;
 
+    if (uiPointerBusy && tbody.querySelector('.btn-action-icon') && !forceFullRender) {
+        if (!(allRowsExist && existingRowCount === paged.length)) return;
+    }
+
     if (!forceFullRender && allRowsExist && existingRowCount === paged.length) {
         paged.forEach(w => {
             const row = document.getElementById(`wallet-row-${w.id}`);
@@ -964,6 +1110,7 @@ function renderWalletsTable(wallets, forceFullRender = false) {
                     <td class="font-weight-bold text-dark font-monospace"><span class="badge bg-light text-primary border font-monospace px-2 py-1">${Number(w.default_lot_size || 0.01).toFixed(2)} Lot</span></td>
                     <td class="font-weight-bold font-monospace"><span class="badge bg-light text-dark border px-2 py-1">${Number(w.max_open_trades || 1)} lệnh</span></td>
                     <td class="font-weight-bold font-monospace"><span class="badge bg-light text-success border px-2 py-1">$${Number(w.min_take_profit_usd || 1).toFixed(2)}</span></td>
+                    <td class="font-weight-bold font-monospace"><span class="badge bg-light text-danger border px-2 py-1">${Number(w.risk_percent || 1.5).toFixed(1)}%</span></td>
                     <td class="font-weight-bold text-success wallet-cell-balance" data-val="${w.balance}">${formatMoney(w.balance)}</td>
                     <td class="font-weight-bold text-primary wallet-cell-equity" data-val="${w.equity}">${formatMoney(w.equity)}</td>
                     <td class="wallet-cell-floating" data-val="${w.floating_pnl}">${formatPnl(w.floating_pnl, { asBadge: true })}</td>
@@ -1015,11 +1162,16 @@ function selectAllSymbols(selectAll) {
     updateSelectedSymbolsCount();
 }
 
-function selectGoldOnly() {
+function selectDefaultPairs() {
+    const defaults = ['XAUUSD', 'BTCUSD', 'ETHUSD'];
     document.querySelectorAll('.symbol-checkbox').forEach(chk => {
-        chk.checked = (chk.value === 'XAUUSD');
+        chk.checked = defaults.includes(chk.value);
     });
     updateSelectedSymbolsCount();
+}
+
+function selectGoldOnly() {
+    selectDefaultPairs();
 }
 
 function onAccountTypeChanged() {
@@ -1175,8 +1327,8 @@ async function openAddWalletModal() {
     if (document.getElementById('wallet-bot-status')) document.getElementById('wallet-bot-status').value = 'RUNNING';
     if (document.getElementById('wallet-is-active')) document.getElementById('wallet-is-active').checked = true;
 
-    // Default to XAUUSD
-    selectGoldOnly();
+    // Default to XAUUSD + BTCUSD + ETHUSD
+    selectDefaultPairs();
 
     if (typeof jQuery !== 'undefined') {
         jQuery('#modal-wallet select').trigger('change');
@@ -1214,6 +1366,8 @@ async function openEditWalletModal(id) {
     if (document.getElementById('wallet-default-lot')) document.getElementById('wallet-default-lot').value = Number(w.default_lot_size || 0.01).toFixed(2);
     if (document.getElementById('wallet-max-open-trades')) document.getElementById('wallet-max-open-trades').value = String(w.max_open_trades || 5);
     if (document.getElementById('wallet-min-take-profit')) document.getElementById('wallet-min-take-profit').value = Number(w.min_take_profit_usd || 1).toFixed(2);
+    if (document.getElementById('wallet-risk-percent')) document.getElementById('wallet-risk-percent').value = Number(w.risk_percent || 1.5);
+    if (document.getElementById('wallet-max-daily-loss')) document.getElementById('wallet-max-daily-loss').value = Number(w.max_daily_loss_percent || 4);
     if (document.getElementById('wallet-bot-status')) document.getElementById('wallet-bot-status').value = w.bot_status || 'RUNNING';
     if (document.getElementById('wallet-is-active')) document.getElementById('wallet-is-active').checked = w.is_active;
 
@@ -1393,6 +1547,8 @@ async function saveWallet(e) {
         default_lot_size: parseFloat(document.getElementById('wallet-default-lot')?.value || 0.01) || 0.01,
         max_open_trades: parseInt(document.getElementById('wallet-max-open-trades')?.value || '5', 10) || 5,
         min_take_profit_usd: parseFloat(document.getElementById('wallet-min-take-profit')?.value || 1) || 1,
+        risk_percent: parseFloat(document.getElementById('wallet-risk-percent')?.value || 1.5) || 1.5,
+        max_daily_loss_percent: parseFloat(document.getElementById('wallet-max-daily-loss')?.value || 4) || 4,
         allowed_symbols: selectedSymbols,
         bot_status: document.getElementById('wallet-bot-status').value,
         is_active: document.getElementById('wallet-is-active').checked
@@ -1423,6 +1579,11 @@ async function saveWallet(e) {
             if (typeof refreshOverviewDeepData === 'function') refreshOverviewDeepData();
             if (typeof fetchLiveTicks === 'function') fetchLiveTicks();
             if (typeof refreshAllData === 'function') refreshAllData();
+            if (data.algo_required && typeof window.showMt5AlgoPopup === 'function') {
+                window.showMt5AlgoPopup(true);
+            } else if (typeof window.refreshMt5Status === 'function') {
+                window.refreshMt5Status();
+            }
         } else {
             displayWalletModalError(data.error || data.message || 'Có lỗi xảy ra khi kết nối ví');
         }
@@ -1933,11 +2094,13 @@ async function openQuickTradeModal(symbol = 'XAUUSD') {
     if (walletSelect) {
         walletSelect.innerHTML = '<option value="">Đang nạp ví Exness...</option>';
         try {
-            const res = await fetch('/api/wallets/');
-            const wList = await res.json();
-            if (Array.isArray(wList) && wList.length > 0) {
-                walletsData = wList;
-                walletSelect.innerHTML = wList.map(w => {
+            const res = await apiFetch('/api/wallets/');
+            const wList = unwrapApiList(await parseApiJson(res));
+            const fallback = Array.isArray(walletsData) ? walletsData : [];
+            const list = wList.length > 0 ? wList : fallback;
+            if (list.length > 0) {
+                walletsData = list;
+                walletSelect.innerHTML = list.map(w => {
                     const bal = (w.balance !== undefined && w.balance !== null) ? Number(w.balance).toFixed(2) : Number(w.balance_db || 0).toFixed(2);
                     return `<option value="${w.id}">Ví #${w.mt5_login} (${w.name}) - Số dư: $${bal}</option>`;
                 }).join('');
@@ -1951,12 +2114,12 @@ async function openQuickTradeModal(symbol = 'XAUUSD') {
         }
     }
 
-    // Load available symbols from backend
     try {
-        const resTicks = await fetch('/api/live-ticks/');
-        const ticksData = await resTicks.json();
-        if (ticksData && Array.isArray(ticksData.symbols) && ticksData.symbols.length > 0) {
-            cachedSymbols = ticksData.symbols;
+        const resTicks = await apiFetch('/api/live-ticks/');
+        const ticksData = await parseApiJson(resTicks);
+        const tickSymbols = Array.isArray(ticksData.symbols) ? ticksData.symbols.filter(s => s.is_active !== false) : [];
+        if (tickSymbols.length > 0) {
+            cachedSymbols = tickSymbols;
             const symbolSelect = document.getElementById('trade-symbol');
             if (symbolSelect) {
                 symbolSelect.innerHTML = cachedSymbols.map(s => `
@@ -1970,6 +2133,9 @@ async function openQuickTradeModal(symbol = 'XAUUSD') {
 
     const symbolSelect = document.getElementById('trade-symbol');
     if (symbolSelect && symbol) {
+        if (![...symbolSelect.options].some(o => o.value === symbol)) {
+            symbolSelect.insertAdjacentHTML('afterbegin', `<option value="${symbol}">${symbol}</option>`);
+        }
         symbolSelect.value = symbol;
     }
 
@@ -1980,14 +2146,17 @@ async function openQuickTradeModal(symbol = 'XAUUSD') {
     quickTradePriceTimer = setInterval(updateTradeModalPrice, 600);
 
     const modalEl = document.getElementById('modal-quick-trade');
-    if (modalEl && !modalEl._hasQuickTradeHideListener) {
-        modalEl._hasQuickTradeHideListener = true;
-        modalEl.addEventListener('hidden.bs.modal', () => {
-            if (quickTradePriceTimer) {
-                clearInterval(quickTradePriceTimer);
-                quickTradePriceTimer = null;
-            }
-        });
+    if (modalEl && typeof bootstrap !== 'undefined') {
+        bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        if (!modalEl._hasQuickTradeHideListener) {
+            modalEl._hasQuickTradeHideListener = true;
+            modalEl.addEventListener('hidden.bs.modal', () => {
+                if (quickTradePriceTimer) {
+                    clearInterval(quickTradePriceTimer);
+                    quickTradePriceTimer = null;
+                }
+            });
+        }
     }
 }
 
@@ -2008,8 +2177,8 @@ async function updateTradeModalPrice() {
     const sym = symSelect.value;
     
     try {
-        const res = await fetch('/api/live-ticks/');
-        const data = await res.json();
+        const res = await apiFetch('/api/live-ticks/');
+        const data = await parseApiJson(res);
         if (data && Array.isArray(data.symbols)) {
             cachedSymbols = data.symbols;
         }
@@ -2052,7 +2221,7 @@ async function updateTradeModalPrice() {
 }
 
 async function executeManualTrade(orderType) {
-    const walletId = document.getElementById('trade-wallet-id')?.value;
+    const walletId = parseInt(document.getElementById('trade-wallet-id')?.value || '0', 10);
     const symbol = document.getElementById('trade-symbol')?.value;
     const volume = parseFloat(document.getElementById('trade-volume')?.value || '0.01');
     const sl = parseFloat(document.getElementById('trade-sl')?.value || '0') || null;
@@ -2060,6 +2229,10 @@ async function executeManualTrade(orderType) {
 
     if (!walletId) {
         alert('Vui lòng chọn ví Exness để đặt lệnh');
+        return;
+    }
+    if (!symbol) {
+        alert('Vui lòng chọn cặp giao dịch');
         return;
     }
     if (!volume || volume <= 0) {
@@ -2071,9 +2244,14 @@ async function executeManualTrade(orderType) {
     const btnSell = document.getElementById('btn-submit-sell');
     if (btnBuy) btnBuy.disabled = true;
     if (btnSell) btnSell.disabled = true;
+    const alertBox = document.getElementById('quick-trade-alert');
+    if (alertBox) {
+        alertBox.classList.add('d-none');
+        alertBox.innerText = '';
+    }
 
     try {
-        const res = await fetch('/api/orders/send/', {
+        const res = await apiFetch('/api/orders/send/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -2087,26 +2265,30 @@ async function executeManualTrade(orderType) {
             })
         });
 
-        const data = await res.json();
+        const data = await parseApiJson(res);
         if (data.success) {
             showToast(data.message, 'success');
             const modalEl = document.getElementById('modal-quick-trade');
-            if (modalEl) {
+            if (modalEl && typeof bootstrap !== 'undefined') {
                 const modal = bootstrap.Modal.getInstance(modalEl);
                 if (modal) modal.hide();
             }
             refreshAllData();
             fetchLiveTicks();
         } else {
-            showToast(data.error || 'Lỗi khi gửi lệnh lên MT5', 'error');
-            const alertBox = document.getElementById('quick-trade-alert');
+            const err = data.error || 'Lỗi khi gửi lệnh lên MT5';
+            showToast(err, 'error');
             if (alertBox) {
-                alertBox.innerText = data.error || 'Lỗi gửi lệnh';
+                alertBox.innerText = err;
                 alertBox.classList.remove('d-none');
             }
         }
     } catch (e) {
         showToast('Lỗi kết nối tới máy chủ MT5', 'error');
+        if (alertBox) {
+            alertBox.innerText = 'Lỗi kết nối tới máy chủ';
+            alertBox.classList.remove('d-none');
+        }
     } finally {
         if (btnBuy) btnBuy.disabled = false;
         if (btnSell) btnSell.disabled = false;
@@ -2116,8 +2298,8 @@ async function executeManualTrade(orderType) {
 async function closeAllPositionsPrompt() {
     if (!confirm('CẢNH BÁO: Bạn có chắc chắn muốn đóng TOÀN BỘ các vị thế đang mở trên Exness MT5?')) return;
     try {
-        const res = await fetch('/api/positions/close-all/', { method: 'POST' });
-        const data = await res.json();
+        const res = await apiFetch('/api/positions/close-all/', { method: 'POST' });
+        const data = await parseApiJson(res);
         if (data.success) {
             showToast(data.message, 'success');
             refreshAllData();

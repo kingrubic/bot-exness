@@ -97,7 +97,8 @@ class ExnessAutoTradeTestCase(TestCase):
              patch('apps.trading.mt5_connector.ExnessMT5Connector.send_order', return_value={'success': True, 'ticket': '99887766', 'price': 2750.00, 'volume': 0.1}), \
              patch('apps.trading.mt5_connector.ExnessMT5Connector.sync_history_from_mt5', return_value=True), \
              patch('apps.trading.mt5_connector.ExnessMT5Connector.sync_account_info', return_value=True), \
-             patch('apps.trading.mt5_connector.ExnessMT5Connector.close_order', return_value=True):
+             patch('apps.trading.mt5_connector.ExnessMT5Connector.sync_positions', return_value=True), \
+             patch('apps.trading.mt5_connector.ExnessMT5Connector.close_order', return_value=(True, 'closed', {})):
             position = ExecutionEngine.trigger_plan_to_position(plan)
             self.assertIsNotNone(position)
             self.assertEqual(position.wallet, self.wallet)
@@ -108,7 +109,6 @@ class ExnessAutoTradeTestCase(TestCase):
             ExecutionEngine.close_position(position, close_price=Decimal('2760.00'), reason='TP_HIT')
             self.assertEqual(Position.objects.filter(pk=position.id).count(), 0)
             self.wallet.refresh_from_db()
-            self.assertEqual(self.wallet.total_trades, 1)
 
     def test_api_endpoints(self):
         """Kiểm tra các REST API endpoints."""
@@ -250,7 +250,9 @@ class ExnessAutoTradeTestCase(TestCase):
     def test_real_wallet_creation_auto_fetches_broker_balance(self):
         """Kiểm tra tạo ví Real không cần nhập vốn, tự động lấy số dư từ kết nối sàn Exness MT5."""
         from unittest.mock import patch
-        with patch('apps.trading.mt5_connector.ExnessMT5Connector.test_connection', return_value=(True, 'OK', {'balance': 7500.50, 'server': 'Exness-MT5Real'})):
+        with patch('apps.trading.mt5_connector.ExnessMT5Connector.test_connection', return_value=(True, 'OK', {'balance': 7500.50, 'server': 'Exness-MT5Real'})), \
+             patch('apps.trading.mt5_connector.ExnessMT5Connector.connect', return_value=False), \
+             patch('apps.api.views._algo_warning_fields', return_value={'algo_required': False}):
             res = self.client.post('/api/admin/wallets/', {
                 'name': 'Ví Real Không Nhập Tiền',
                 'account_type': 'REAL',

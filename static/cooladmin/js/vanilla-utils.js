@@ -242,6 +242,10 @@ function renderPaginationComponent(containerId, totalItems, currentPage, pageSiz
         </button>
     `;
 
+    const sig = `${totalItems}:${currentPage}:${pageSize}:${onPageChangeName}`;
+    if (container.dataset.pageSig === sig) return;
+    if (typeof isLiveUiLocked === 'function' && isLiveUiLocked()) return;
+    container.dataset.pageSig = sig;
     container.innerHTML = `
         <div class="dt-pagination">
             <div class="dt-pagination__info">

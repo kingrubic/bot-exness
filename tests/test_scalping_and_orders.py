@@ -265,15 +265,17 @@ def test_fee_aware_profit_closing_and_breakeven():
 
 
 @pytest.mark.django_db
-def test_no_stop_loss_hold_losing_trade():
-    """Không cắt lỗ: lệnh âm được giữ dù trend đảo chiều / drawdown lớn."""
+def test_risk_percent_holds_losing_trade():
+    """Lệnh lỗ được gồng, không cắt lỗ tự động."""
     wallet = WalletAccount.objects.create(
-        name="No SL Wallet",
+        name="SL Wallet",
         account_type="DEMO",
         mt5_login="",
         balance_db=Decimal("1000.00"),
         capital=Decimal("1000.00"),
         is_active=True,
+        risk_percent=1.5,
+        max_daily_loss_percent=4.0,
         max_open_trades=5,
         allowed_symbols_json='["XAUUSD"]'
     )
@@ -296,25 +298,70 @@ def test_no_stop_loss_hold_losing_trade():
         position_type="BUY",
         lot_size=0.01,
         open_price=Decimal("2750.00"),
-        current_price=Decimal("2748.00"),
+        current_price=Decimal("2749.90"),
         opened_at=timezone.now()
     )
 
-    MarketForecast.objects.create(
-        symbol="XAUUSD",
-        timeframe="M5",
-        trend_bias="BEARISH",
-        recommended_action="READY_TO_SELL",
-        confidence_score=90.0,
-        current_price=Decimal("2744.00")
-    )
+    # Lỗ rất nhỏ chưa tới min_tp $1 → giữ
+    wallet.min_take_profit_usd = Decimal("5.00")
+    wallet.save(update_fields=['min_take_profit_usd'])
+    sym.current_price = Decimal("2749.80")
+    sym.save()
+    ExecutionEngine.update_positions_and_pnl()
+    assert Position.objects.filter(ticket="LOCAL-SL-1").exists()
 
+    # Lỗ -$6: gồng, không cắt lỗ tự động
     sym.current_price = Decimal("2744.00")
     sym.save()
     ExecutionEngine.update_positions_and_pnl()
-
     assert Position.objects.filter(ticket="LOCAL-SL-1").exists()
     assert not TradeHistory.objects.filter(ticket="LOCAL-SL-1").exists()
+
+
+@pytest.mark.django_db
+def test_scalp_stop_matches_min_take_profit():
+    from apps.trading.execution_engine import ExecutionEngine
+    wallet = WalletAccount.objects.create(
+        name="Scalp SL",
+        account_type="DEMO",
+        mt5_login="",
+        balance_db=Decimal("1000.00"),
+        capital=Decimal("1000.00"),
+        min_take_profit_usd=Decimal("1.00"),
+        risk_percent=1.5,
+    )
+    assert ExecutionEngine.wallet_scalp_loss_usd(wallet) == 1.0
+    wallet.min_take_profit_usd = Decimal("20.00")
+    assert ExecutionEngine.wallet_scalp_loss_usd(wallet) == 15.0
+
+
+@pytest.mark.django_db
+def test_db_stop_loss_price_does_not_close_loser():
+    """Giá chạm stop_loss trên DB không tự đóng — gồng đến khi lãi."""
+    wallet = WalletAccount.objects.create(
+        name="Price SL Wallet",
+        account_type="DEMO",
+        mt5_login="",
+        balance_db=Decimal("1000.00"),
+        capital=Decimal("1000.00"),
+        is_active=True,
+        risk_percent=50.0,
+        allowed_symbols_json='["XAUUSD"]'
+    )
+    SymbolConfig.objects.create(
+        symbol="XAUUSD", display_name="Gold", category="METALS",
+        digits=2, point_size=0.01, contract_size=100.0,
+        current_price=Decimal("2747.50"), is_active=True
+    )
+    Position.objects.create(
+        wallet=wallet, ticket="LOCAL-SL-PX", symbol="XAUUSD",
+        position_type="BUY", lot_size=0.01,
+        open_price=Decimal("2750.00"), current_price=Decimal("2747.50"),
+        stop_loss=Decimal("2748.00"), opened_at=timezone.now()
+    )
+    ExecutionEngine.update_positions_and_pnl()
+    assert Position.objects.filter(ticket="LOCAL-SL-PX").exists()
+    assert not TradeHistory.objects.filter(ticket="LOCAL-SL-PX").exists()
 
 
 @pytest.mark.django_db
@@ -480,6 +527,72 @@ def test_purge_failed_and_stale_unfilled_plans():
     assert not TradingPlan.objects.filter(pk=stale.pk).exists()
     assert TradingPlan.objects.filter(pk=fresh.pk).exists()
     assert TradingPlan.objects.filter(pk=executing.pk).exists()
+
+
+def test_normalize_mt5_symbol_strips_exness_suffix():
+    from apps.trading.mt5_connector import ExnessMT5Connector
+    assert ExnessMT5Connector.normalize_symbol('XAUUSDm') == 'XAUUSD'
+    assert ExnessMT5Connector.normalize_symbol('BTCUSDm') == 'BTCUSD'
+    assert ExnessMT5Connector.normalize_symbol('ETHUSDm') == 'ETHUSD'
+    assert ExnessMT5Connector.normalize_symbol('EURUSD') == 'EURUSD'
+    assert ExnessMT5Connector.normalize_symbol('US30m') == 'US30'
+    cands = ExnessMT5Connector.symbol_candidates('XAUUSD')
+    assert 'XAUUSD' in cands
+    assert 'XAUUSDm' in cands
+
+
+@pytest.mark.django_db
+def test_default_active_symbols_are_gold_btc_eth():
+    from apps.core.trading_defaults import apply_default_active_symbols, DEFAULT_ACTIVE_SYMBOLS
+    for name in ('XAUUSD', 'BTCUSD', 'ETHUSD', 'EURUSD'):
+        SymbolConfig.objects.create(
+            symbol=name, display_name=name, category='FOREX',
+            digits=5, point_size=0.00001, is_active=True,
+        )
+    wallet = WalletAccount.objects.create(
+        name="Default Pair Wallet",
+        account_type="DEMO",
+        mt5_login="998877",
+        allowed_symbols_json='["XAUUSD"]',
+    )
+    apply_default_active_symbols()
+    active = set(SymbolConfig.objects.filter(is_active=True).values_list('symbol', flat=True))
+    assert active == set(DEFAULT_ACTIVE_SYMBOLS)
+    wallet.refresh_from_db()
+    assert set(wallet.allowed_symbols) == {'XAUUSD', 'BTCUSD', 'ETHUSD'}
+
+
+@pytest.mark.django_db
+def test_order_source_tag_prefers_saved_user_over_magic():
+    from apps.trading.order_source import classify_order_source, remember_order_source
+    remember_order_source('12345', 'USER', 0)
+    assert classify_order_source(magic=8882026, comment='AI-XAUUSD', ticket='12345') == 'USER'
+    remember_order_source('999', 'BOT', 8882026)
+    assert classify_order_source(magic=0, comment='', ticket='999') == 'BOT'
+    assert classify_order_source(magic=0, comment='manual', ticket='unknown') == 'USER'
+
+
+def test_mt5_session_helpers_without_terminal():
+    from apps.trading.mt5_session import (
+        MT5NativeSession, SUCCESS_RETCODES, RET_DONE, RET_INVALID_FILL, RETRY_RETCODES,
+    )
+    assert MT5NativeSession.normalize_symbol('XAUUSDm') == 'XAUUSD'
+    assert 'XAUUSDm' in MT5NativeSession.symbol_candidates('XAUUSD')
+    assert RET_DONE in SUCCESS_RETCODES
+    assert RET_INVALID_FILL not in SUCCESS_RETCODES
+    assert 10004 in RETRY_RETCODES
+    first = MT5NativeSession.history_from_for_wallet(1)
+    MT5NativeSession.mark_history_synced(1)
+    nxt = MT5NativeSession.history_from_for_wallet(1)
+    assert nxt > first
+    MT5NativeSession._history_cursor.pop(1, None)
+
+
+def test_mt5_algo_off_status_code():
+    from apps.trading.mt5_launcher import MT5Launcher
+    assert MT5Launcher.status_code_from_flags(True, True, True, False) == 'algo_off'
+    assert MT5Launcher.status_code_from_flags(True, True, True, True) == 'ready'
+    assert MT5Launcher.status_code_from_flags(True, True, False, False) == 'not_logged_in'
 
 
 

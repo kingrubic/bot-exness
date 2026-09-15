@@ -416,6 +416,28 @@ body.app .navbar-sidebar .navbar__list > li.active > a::before,
     color: #dc2626 !important;
 }
 
+.table-positions-live {
+    table-layout: fixed;
+}
+.table-positions-live td.pos-cell-price,
+.table-positions-live td.pos-cell-pnl {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.table-positions-live td.pos-cell-price {
+    min-width: 7.2rem;
+}
+#tbody-positions {
+    contain: layout style;
+}
+#tbody-positions tr {
+    height: 48px;
+}
+#tbody-positions td {
+    vertical-align: middle;
+    overflow: hidden;
+}
+
 /* Fintech Live Ticker Cards */
 .ticker-card-fintech {
     background: #ffffff;

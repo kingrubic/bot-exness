@@ -18,25 +18,45 @@ class TechnicalAnalyzer:
         symbol = symbol_config.symbol
         price = float(symbol_config.current_price)
         timeframe = symbol_config.timeframe
-        
-        # Base ATR calculation based on symbol category & price level
-        cat = getattr(symbol_config, 'category', 'FOREX')
         digits = symbol_config.digits
-        if cat == 'CRYPTO' or 'BTC' in symbol or 'ETH' in symbol or 'SOL' in symbol or 'BNB' in symbol:
-            atr = round(price * random.uniform(0.015, 0.035), digits)
-            spread = round(random.uniform(2.0, 5.0), 1)
-        elif cat == 'METALS' or 'XAU' in symbol or 'XAG' in symbol or 'XPT' in symbol:
-            atr = round(price * random.uniform(0.004, 0.008), digits)
-            spread = round(random.uniform(0.8, 1.8), 1)
-        elif cat == 'INDICES' or 'US30' in symbol or 'US500' in symbol or 'DE40' in symbol or 'USTEC' in symbol:
-            atr = round(price * random.uniform(0.005, 0.012), digits)
-            spread = round(random.uniform(1.0, 3.0), 1)
-        elif cat == 'COMMODITIES' or 'OIL' in symbol or 'ENERGY' in cat:
-            atr = round(price * random.uniform(0.012, 0.025), digits)
-            spread = round(random.uniform(1.2, 2.5), 1)
-        else: # Forex pairs
-            atr = round(price * random.uniform(0.0035, 0.0070), digits)
-            spread = round(random.uniform(0.4, 1.2), 1)
+        atr = None
+        try:
+            from apps.trading.mt5_session import MT5NativeSession
+            rates = MT5NativeSession.copy_rates(symbol, timeframe or 'M15', 50)
+            if rates and len(rates) >= 15:
+                trs = []
+                prev_close = float(rates[0]['close'])
+                for row in rates[1:]:
+                    high = float(row['high'])
+                    low = float(row['low'])
+                    close = float(row['close'])
+                    tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                    trs.append(tr)
+                    prev_close = close
+                if trs:
+                    atr = round(sum(trs[-14:]) / min(14, len(trs)), digits)
+                    price = float(rates[-1]['close'])
+        except Exception:
+            atr = None
+
+        cat = getattr(symbol_config, 'category', 'FOREX')
+        spread = float(symbol_config.current_spread_pips or 0)
+        if atr is None:
+            if cat == 'CRYPTO' or 'BTC' in symbol or 'ETH' in symbol or 'SOL' in symbol or 'BNB' in symbol:
+                atr = round(price * random.uniform(0.015, 0.035), digits)
+                spread = spread or round(random.uniform(2.0, 5.0), 1)
+            elif cat == 'METALS' or 'XAU' in symbol or 'XAG' in symbol or 'XPT' in symbol:
+                atr = round(price * random.uniform(0.004, 0.008), digits)
+                spread = spread or round(random.uniform(0.8, 1.8), 1)
+            elif cat == 'INDICES' or 'US30' in symbol or 'US500' in symbol or 'DE40' in symbol or 'USTEC' in symbol:
+                atr = round(price * random.uniform(0.005, 0.012), digits)
+                spread = spread or round(random.uniform(1.0, 3.0), 1)
+            elif cat == 'COMMODITIES' or 'OIL' in symbol or 'ENERGY' in cat:
+                atr = round(price * random.uniform(0.012, 0.025), digits)
+                spread = spread or round(random.uniform(1.2, 2.5), 1)
+            else:
+                atr = round(price * random.uniform(0.0035, 0.0070), digits)
+                spread = spread or round(random.uniform(0.4, 1.2), 1)
 
         # Enforce minimum ATR
         min_atr = 5 * (10 ** (-digits))

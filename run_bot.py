@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 
 # Add local packages folder to sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'packages'))
+sys.path.append(str(Path(__file__).resolve().parent / 'packages'))
 
 import django
 from django.core.management import execute_from_command_line
@@ -27,7 +27,7 @@ def run_trading_bot_worker():
     while True:
         try:
             close_old_connections()
-            # 1. Update live price from MT5 and position floating PnLs every 150ms
+            # 1. Tick MT5 (in-memory) + PnL gốc từ terminal; persist DB ~1s
             ExecutionEngine.sync_symbol_prices_from_mt5()
             ExecutionEngine.update_positions_and_pnl()
 
@@ -64,12 +64,24 @@ def main():
     execute_from_command_line(['manage.py', 'migrate'])
 
     from apps.accounts.models import ExnessServerMaster
+    from apps.core.seed_data import run_seed
+    from apps.core.trading_defaults import apply_default_active_symbols
     if ExnessServerMaster.objects.count() == 0:
-        from apps.core.seed_data import run_seed
         print("🌱 Đang khởi tạo Master Data cho sàn Exness...")
         run_seed()
+    else:
+        apply_default_active_symbols()
 
-    # 2. Start background trading bot thread
+    # 2. Open Exness MetaTrader 5 (required for live prices / orders)
+    print("🔌 Đang kiểm tra ứng dụng Exness MetaTrader 5...")
+    from apps.trading.mt5_launcher import MT5Launcher
+    MT5Launcher.ensure_terminal_running()
+    mt5_status = MT5Launcher.get_runtime_status(probe_api=True, use_cache=False)
+    MT5Launcher.print_setup_guide(mt5_status)
+    if not mt5_status.get('ok'):
+        MT5Launcher.notify_windows(mt5_status)
+
+    # 3. Start background trading bot thread
     bot_thread = threading.Thread(target=run_trading_bot_worker, daemon=True)
     bot_thread.start()
 
@@ -81,8 +93,38 @@ def main():
     port_display = addrport.split(':')[-1]
     print(f"\n🌐 Web Dashboard đã sẵn sàng tại: http://localhost:{port_display}/")
     print(f"💼 Trang Quản Trị Admin tại:       http://localhost:{port_display}/admin-panel/\n")
-    
-    execute_from_command_line(['manage.py', 'runserver', addrport, '--noreload'])
+
+    start_web_server(addrport)
+
+
+def start_web_server(addrport: str):
+    """Waitress WSGI (Windows) — không dùng Django runserver nên không còn cảnh báo development."""
+    host, _, port = str(addrport).rpartition(':')
+    if not port.isdigit():
+        host, port = '0.0.0.0', '8888'
+    if not host:
+        host = '0.0.0.0'
+
+    from django.core.wsgi import get_wsgi_application
+    application = get_wsgi_application()
+
+    try:
+        from waitress import serve
+    except ImportError:
+        print('⚠️ Chưa có waitress — fallback Django runserver.')
+        execute_from_command_line(['manage.py', 'runserver', addrport, '--noreload'])
+        return
+
+    print(f"🚀 Waitress WSGI đang lắng nghe {host}:{port} (threads=12)")
+    serve(
+        application,
+        host=host,
+        port=int(port),
+        threads=12,
+        ident='exness-auto-trade',
+        channel_timeout=120,
+    )
+
 
 if __name__ == '__main__':
     main()

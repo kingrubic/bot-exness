@@ -117,6 +117,20 @@ class TradeHistory(models.Model):
         return f"History #{self.ticket} [{self.wallet.name}] {self.symbol} {self.position_type} -> PnL: ${self.pnl}"
 
 
+class OrderSourceTag(models.Model):
+    """Chỉ lưu BOT/USER theo ticket MT5. Toàn bộ số liệu lệnh/lịch sử lấy từ terminal."""
+    ticket = models.CharField(max_length=64, unique=True, db_index=True)
+    source = models.CharField(max_length=10, choices=Position.ORDER_SOURCES, default='USER')
+    magic = models.IntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Nguồn lệnh (Bot/User)"
+
+    def __str__(self):
+        return f"#{self.ticket} {self.source}"
+
+
 class BotLog(models.Model):
     LOG_LEVELS = [
         ('INFO', 'Thông Tin (INFO)'),

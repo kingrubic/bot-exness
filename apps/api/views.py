@@ -20,42 +20,109 @@ import time
 from django.http import StreamingHttpResponse
 from apps.core.time_utils import format_vn_time
 
+
+def _mt5_status_with_wallets(use_cache=True):
+    from apps.trading.mt5_launcher import MT5Launcher
+    data = MT5Launcher.get_runtime_status(probe_api=True, timeout_ms=2000, use_cache=use_cache)
+    data['wallet_active'] = WalletAccount.objects.filter(is_active=True).exists()
+    data['wallet_running'] = WalletAccount.objects.filter(is_active=True, bot_status='RUNNING').exists()
+    return data
+
+
+def _mt5_today_snap():
+    try:
+        from apps.trading.mt5_session import MT5NativeSession
+        if not MT5NativeSession.available():
+            return {'ok': False}, ''
+        acc = MT5NativeSession.account()
+        snap = MT5NativeSession.today_realized_pnl()
+        login = str(acc.login) if acc else ''
+        return snap, login
+    except Exception:
+        return {'ok': False}, ''
+
+
+def _mt5_today_for_wallets(wallets):
+    snap, login = _mt5_today_snap()
+    if not snap.get('ok') or not login:
+        return {'ok': False}, ''
+    if not any(str(getattr(w, 'mt5_login', '') or '') == login for w in wallets):
+        return {'ok': False}, login
+    return snap, login
+
+
+def _algo_warning_fields():
+    st = _mt5_status_with_wallets(use_cache=False)
+    need = bool(st.get('running') and st.get('logged_in') and not st.get('algo_trading'))
+    if not need:
+        return {'algo_required': False}
+    return {
+        'algo_required': True,
+        'algo_title': st.get('title') or 'Cần bật Algo Trading trên MT5',
+        'algo_steps': st.get('steps') or [],
+    }
+
+
 def build_live_ticks_data():
     """Tạo payload đồng bộ giá Live, Vị thế, Lỗ/Lãi Thả Nổi, Số Dư, Vốn Khả Dụng và KPI thời gian thực siêu tốc (<2ms)."""
     # 1. Symbols (Lấy toàn bộ các cặp cấu hình để phục vụ Quick Trade và Market Ticker)
     symbols = []
-    for s in SymbolConfig.objects.all():
+    from apps.trading.mt5_session import MT5NativeSession
+    live_ticks = MT5NativeSession.cached_ticks()
+    for s in SymbolConfig.objects.filter(is_active=True):
+        tick = live_ticks.get(s.symbol) or {}
         symbols.append({
             'symbol': s.symbol,
             'display_name': s.display_name,
             'category': s.category,
             'category_display': s.get_category_display(),
-            'current_price': float(s.current_price),
-            'bid': float(s.current_bid),
-            'ask': float(s.current_ask),
-            'spread': float(s.current_spread_pips),
+            'current_price': float(tick.get('last') if tick else s.current_price),
+            'bid': float(tick.get('bid') if tick else s.current_bid),
+            'ask': float(tick.get('ask') if tick else s.current_ask),
+            'spread': float(tick.get('spread_pips') if tick else s.current_spread_pips),
             'timeframe': s.timeframe,
             'digits': s.digits,
             'is_active': s.is_active,
         })
 
-    # 2. Positions
+    # 2. Positions — giá/PnL ưu tiên MT5 price_current, thứ tự cố định để UI không rebuild tbody.
+    live_map = {}
+    try:
+        if MT5NativeSession.available():
+            live_map = MT5NativeSession.positions_by_ticket() or {}
+    except Exception:
+        live_map = {}
+
+    def _pos_price(symbol, raw):
+        s = str(symbol or '')
+        n = float(raw or 0.0)
+        if any(x in s for x in ('EUR', 'GBP', 'JPY')):
+            return round(n, 5)
+        return round(n, 2)
+
     positions = []
-    for p in Position.objects.select_related('wallet').all():
+    for p in Position.objects.select_related('wallet').all().order_by('opened_at', 'ticket'):
         pos_source = getattr(p, 'source', 'BOT') or 'BOT'
+        live = live_map.get(str(p.ticket))
+        if live is not None:
+            cur = float(getattr(live, 'price_current', 0) or 0.0)
+            pnl = float(getattr(live, 'profit', 0) or 0.0)
+        else:
+            cur = float(p.current_price or 0.0)
+            pnl = float(p.floating_pnl or 0.0)
         positions.append({
             'id': p.id,
-            'ticket': p.ticket,
+            'ticket': str(p.ticket),
             'wallet_id': p.wallet_id,
             'wallet_name': p.wallet.name if p.wallet else '',
             'symbol': p.symbol,
             'position_type': p.position_type,
             'lot_size': float(p.lot_size or 0.01),
-            'open_price': float(p.open_price or 0.0),
-            'current_price': float(p.current_price or 0.0),
+            'open_price': _pos_price(p.symbol, p.open_price),
+            'current_price': _pos_price(p.symbol, cur),
             'stop_loss': float(p.stop_loss) if p.stop_loss is not None else None,
             'take_profit': float(p.take_profit) if p.take_profit is not None else None,
-            'floating_pnl': float(p.floating_pnl or 0.0),
+            'floating_pnl': round(pnl, 2),
             'floating_pips': float(p.floating_pips or 0.0),
             'source': pos_source,
             'source_display': 'BOT (Tự Động)' if pos_source == 'BOT' else 'USER (Người Dùng)',
@@ -74,8 +141,17 @@ def build_live_ticks_data():
     tot_trades = 0
     tot_wins = 0
 
+    mt5_today, mt5_login = _mt5_today_for_wallets(WalletAccount.objects.all())
+
     for w in WalletAccount.objects.all():
-        w_today_pnl = w.get_today_pnl()
+        breakdown = w.get_performance_breakdown()
+        if mt5_today.get('ok') and mt5_login and str(w.mt5_login or '') == mt5_login:
+            w_today_pnl = Decimal(str(mt5_today['all']))
+            breakdown['bot']['today_pnl'] = mt5_today['BOT']
+            breakdown['user']['today_pnl'] = mt5_today['USER']
+            breakdown['all']['today_pnl'] = mt5_today['all']
+        else:
+            w_today_pnl = w.get_today_pnl()
         tot_bal += w.balance
         tot_eq += w.equity
         tot_fl += w.floating_pnl
@@ -86,7 +162,6 @@ def build_live_ticks_data():
 
         p_count = sum(1 for pos in positions if pos['wallet_id'] == w.id)
         lev_str = w.leverage_display
-        breakdown = w.get_performance_breakdown()
         wallets.append({
             'id': w.id,
             'name': w.name,
@@ -113,6 +188,7 @@ def build_live_ticks_data():
             'default_lot_size': float(w.default_lot_size or 0.01),
             'max_open_trades': int(w.max_open_trades or 1),
             'min_take_profit_usd': float(w.min_take_profit_usd or 1),
+            'max_daily_loss_percent': float(w.max_daily_loss_percent or 4),
             'is_active': w.is_active,
             'bot_status': w.bot_status,
             'bot_status_display': w.get_bot_status_display(),
@@ -132,6 +208,8 @@ def build_live_ticks_data():
         pnl = float(qs.aggregate(s=Sum('pnl'))['s'] or 0.0)
         today = timezone.localdate()
         today_pnl = float(qs.filter(closed_at__date=today).aggregate(s=Sum('pnl'))['s'] or 0.0)
+        if mt5_today.get('ok'):
+            today_pnl = float(mt5_today.get(source_name, today_pnl) or 0.0)
         vol = round(float(qs.aggregate(v=Sum('lot_size'))['v'] or 0.0), 2)
         return {
             'total_trades': tot,
@@ -253,17 +331,19 @@ def global_overview_api(request):
     total_balance = sum(w.balance for w in wallets)
     total_equity = sum(w.equity for w in wallets)
     total_floating = sum(w.floating_pnl for w in wallets)
-    total_today = sum(w.get_today_pnl() for w in wallets)
+    mt5_today, mt5_login = _mt5_today_for_wallets(wallets)
+    if mt5_today.get('ok'):
+        total_today = Decimal(str(mt5_today['all']))
+    else:
+        total_today = sum(w.get_today_pnl() for w in wallets)
     total_profit = sum(w.total_profit for w in wallets)
-    
     total_trades = sum(w.total_trades for w in wallets)
     total_wins = sum(w.winning_trades for w in wallets)
     overall_winrate = round((total_wins / total_trades) * 100, 1) if total_trades > 0 else 0.0
-    
     active_positions_count = Position.objects.count()
     active_wallets_count = wallets.filter(is_active=True).count()
 
-    def _calc_global_stats(qs):
+    def _calc_global_stats(qs, source_name=''):
         tot = qs.count()
         wins = qs.filter(pnl__gt=0).count()
         losses = qs.filter(pnl__lt=0).count()
@@ -271,6 +351,8 @@ def global_overview_api(request):
         pnl = float(qs.aggregate(s=Sum('pnl'))['s'] or 0.0)
         today = timezone.localdate()
         today_pnl = float(qs.filter(closed_at__date=today).aggregate(s=Sum('pnl'))['s'] or 0.0)
+        if mt5_today.get('ok') and source_name:
+            today_pnl = float(mt5_today.get(source_name, today_pnl) or 0.0)
         vol = round(float(qs.aggregate(v=Sum('lot_size'))['v'] or 0.0), 2)
         return {
             'total_trades': tot,
@@ -283,8 +365,8 @@ def global_overview_api(request):
         }
 
     all_hist = TradeHistory.objects.all()
-    bot_stats = _calc_global_stats(all_hist.filter(source='BOT'))
-    user_stats = _calc_global_stats(all_hist.filter(source='USER'))
+    bot_stats = _calc_global_stats(all_hist.filter(source='BOT'), 'BOT')
+    user_stats = _calc_global_stats(all_hist.filter(source='USER'), 'USER')
     
     data = {
         'total_balance': float(total_balance),
@@ -308,9 +390,15 @@ def global_overview_api(request):
 def wallet_list_api(request):
     """Danh sách các ví Exness kèm thông tin tóm tắt."""
     wallets = WalletAccount.objects.all()
+    mt5_today, mt5_login = _mt5_today_snap()
     result = []
     for w in wallets:
         breakdown = w.get_performance_breakdown()
+        today_val = w.get_today_pnl()
+        if mt5_today.get('ok') and mt5_login and str(w.mt5_login or '') == mt5_login:
+            today_val = Decimal(str(mt5_today['all']))
+            breakdown['bot']['today_pnl'] = mt5_today['BOT']
+            breakdown['user']['today_pnl'] = mt5_today['USER']
         result.append({
             'id': w.id,
             'name': w.name,
@@ -328,7 +416,7 @@ def wallet_list_api(request):
             'margin': float(w.margin),
             'margin_free': float(w.margin_free),
             'margin_level': float(w.margin_level),
-            'today_pnl': float(w.get_today_pnl()),
+            'today_pnl': float(today_val),
             'total_profit': float(w.total_profit),
             'win_rate': w.win_rate,
             'total_trades': w.total_trades,
@@ -337,6 +425,7 @@ def wallet_list_api(request):
             'default_lot_size': float(w.default_lot_size or 0.01),
             'max_open_trades': int(w.max_open_trades or 1),
             'min_take_profit_usd': float(w.min_take_profit_usd or 1),
+            'max_daily_loss_percent': float(w.max_daily_loss_percent or 4),
             'is_active': w.is_active,
             'bot_status': w.bot_status,
             'bot_status_display': w.get_bot_status_display(),
@@ -356,6 +445,12 @@ def wallet_detail_api(request, wallet_id):
         return Response({'error': 'Không tìm thấy ví'}, status=status.HTTP_404_NOT_FOUND)
 
     breakdown = w.get_performance_breakdown()
+    mt5_today, mt5_login = _mt5_today_snap()
+    today_val = w.get_today_pnl()
+    if mt5_today.get('ok') and mt5_login and str(w.mt5_login or '') == mt5_login:
+        today_val = Decimal(str(mt5_today['all']))
+        breakdown['bot']['today_pnl'] = mt5_today['BOT']
+        breakdown['user']['today_pnl'] = mt5_today['USER']
     report = {
         'id': w.id,
         'name': w.name,
@@ -373,7 +468,7 @@ def wallet_detail_api(request, wallet_id):
         'margin_level': float(w.margin_level),
         'leverage': w.leverage,
         'leverage_display': w.leverage_display,
-        'today_pnl': float(w.get_today_pnl()),
+        'today_pnl': float(today_val),
         'total_profit': float(w.total_profit),
         'win_rate': w.win_rate,
         'total_trades': w.total_trades,
@@ -507,16 +602,21 @@ def wallet_detail_api(request, wallet_id):
 
 @api_view(['POST'])
 def close_position_api(request, position_id):
-    """Đóng thủ công 1 lệnh đang mở."""
-    try:
-        pos = Position.objects.get(pk=position_id)
-        ok, msg = ExecutionEngine.close_position(pos, reason='MANUAL_CLOSE')
-        if ok:
-            return Response({'success': True, 'message': msg})
-        else:
-            return Response({'success': False, 'error': msg}, status=status.HTTP_400_BAD_REQUEST)
-    except Position.DoesNotExist:
-        return Response({'success': False, 'error': 'Không tìm thấy vị thế trong cơ sở dữ liệu'}, status=status.HTTP_404_NOT_FOUND)
+    """Đóng thủ công 1 lệnh đang mở trên MT5. Tra ticket nếu id DB đổi sau lần sync."""
+    pos = Position.objects.filter(pk=position_id).first()
+    ticket = ''
+    if hasattr(request, 'data'):
+        ticket = str(request.data.get('ticket') or '').strip()
+    if not ticket:
+        ticket = str(request.GET.get('ticket') or '').strip()
+    if pos is None and ticket:
+        pos = Position.objects.filter(ticket=ticket).first()
+    if pos is None:
+        return Response({'success': False, 'error': 'Không tìm thấy vị thế từ MT5'}, status=status.HTTP_404_NOT_FOUND)
+    ok, msg = ExecutionEngine.close_position(pos, reason='MANUAL_CLOSE')
+    if ok:
+        return Response({'success': True, 'message': msg})
+    return Response({'success': False, 'error': msg}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['POST'])
@@ -584,7 +684,10 @@ def manual_order_send_api(request):
     from apps.trading.mt5_connector import ExnessMT5Connector
     connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
     if not connector.connect():
-        return Response({'success': False, 'error': f'Không thể kết nối tới máy chủ MT5 ({wallet.mt5_server})'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            'success': False,
+            'error': f'Không thể kết nối tới máy chủ MT5 ({wallet.mt5_server}). Hãy mở MetaTrader 5, đăng nhập tài khoản #{wallet.mt5_login} và bật Algo Trading.'
+        }, status=status.HTTP_400_BAD_REQUEST)
 
     res = connector.send_order(
         symbol=symbol,
@@ -592,16 +695,18 @@ def manual_order_send_api(request):
         volume=volume,
         sl=sl,
         tp=tp,
-        comment=comment
+        comment=comment,
+        magic=0,
     )
 
     if res and res.get('success'):
-        # Đồng bộ ngay lập tức số dư và vị thế từ MT5
         connector.sync_account_info(wallet)
         connector.sync_positions(wallet)
-        ticket = res.get('ticket')
+        ticket = str(res.get('ticket') or '')
         deal = res.get('deal', '')
         price = res.get('price', 0.0)
+        from apps.trading.order_source import remember_order_source
+        remember_order_source(ticket, 'USER', 0)
 
         BotLog.log(
             level='INFO',
@@ -795,7 +900,10 @@ def admin_wallet_manage_api(request, wallet_id=None):
             wallet=wallet
         )
 
-        return Response({'success': True, 'message': 'Kết nối và tạo ví Exness thành công', 'wallet_id': wallet.id})
+        payload = {'success': True, 'message': 'Kết nối và tạo ví Exness thành công', 'wallet_id': wallet.id}
+        if wallet.is_active:
+            payload.update(_algo_warning_fields())
+        return Response(payload)
 
     elif request.method == 'PUT':
         try:
@@ -869,7 +977,10 @@ def admin_wallet_manage_api(request, wallet_id=None):
             wallet=wallet
         )
 
-        return Response({'success': True, 'message': 'Cập nhật ví Exness thành công'})
+        payload = {'success': True, 'message': 'Cập nhật ví Exness thành công'}
+        if wallet.is_active:
+            payload.update(_algo_warning_fields())
+        return Response(payload)
 
     elif request.method == 'DELETE':
         try:
@@ -1265,6 +1376,24 @@ def clear_wallet_history_api(request, wallet_id):
         return Response({'success': True, 'message': f"Đã xóa toàn bộ {count} bản ghi lịch sử lệnh của ví '{wallet.name}'!"})
     except WalletAccount.DoesNotExist:
         return Response({'success': False, 'error': 'Không tìm thấy ví Exness'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['GET'])
+def mt5_status_api(request):
+    """Trạng thái MT5 để hiện banner/popup khi terminal chưa bật, chưa login, hoặc tắt Algo Trading."""
+    return Response(_mt5_status_with_wallets())
+
+
+@api_view(['POST'])
+def mt5_launch_api(request):
+    """Mở (hoặc cài rồi mở) Exness MetaTrader 5 từ web."""
+    from apps.trading.mt5_launcher import MT5Launcher
+    launched = MT5Launcher.ensure_terminal_running()
+    data = MT5Launcher.get_runtime_status(probe_api=True, timeout_ms=2500, use_cache=False)
+    data['launched'] = launched
+    data['wallet_active'] = WalletAccount.objects.filter(is_active=True).exists()
+    data['wallet_running'] = WalletAccount.objects.filter(is_active=True, bot_status='RUNNING').exists()
+    return Response(data)
 
 
 

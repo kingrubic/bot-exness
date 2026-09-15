@@ -4,17 +4,17 @@ from pathlib import Path
 from decimal import Decimal
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(BASE_DIR / 'packages'))
+sys.path.append(str(BASE_DIR / 'packages'))
 sys.path.insert(0, str(BASE_DIR))
 
 import django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'exness_project.settings')
 django.setup()
 
-from django.utils import timezone
 from apps.symbols.models import SymbolConfig
 from apps.analysis.analyzer import TechnicalAnalyzer
 from apps.accounts.models import ExnessServerMaster
+from apps.core.trading_defaults import apply_default_active_symbols
 
 def run_seed():
     """
@@ -522,6 +522,8 @@ def run_seed():
         )
 
     print("✅ Đã hoàn tất khởi tạo 100 Server MT5 Exness (50 Real + 50 Demo)!")
+    apply_default_active_symbols()
+
 
 if __name__ == '__main__':
     run_seed()

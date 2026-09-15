@@ -27,6 +27,7 @@ class LiveMarketFeedService:
 
     _last_fetch_time = 0
     _cached_prices = {}
+    _last_db_flush = 0.0
 
     TV_BROKER_MAPPINGS = {
         # Forex Major / Minor (Exness ECN / Pro Spreads)
@@ -151,75 +152,104 @@ class LiveMarketFeedService:
 
     @classmethod
     def sync_all_symbols(cls) -> dict:
-        """
-        Đồng bộ giá trực tiếp cho các cặp đang active (is_active=True).
-        Liên tục tạo nhịp nhảy tick thời gian thực siêu tốc (<0.5ms).
-        """
-        cls._start_bg_feed_updater()
-
+        """Tick native MT5 (in-memory). Ghi DB tối đa 1 lần/giây. Không giả lập pipette."""
         active_symbols = list(SymbolConfig.objects.filter(is_active=True))
         if not active_symbols:
             return {}
 
-        # 1. Lấy trực tiếp từ Exness MT5 Terminal nếu Bridge online
+        from apps.trading.mt5_session import MT5NativeSession, MT5_AVAILABLE as SESSION_MT5
         from apps.trading.mt5_connector import ExnessMT5Connector, BRIDGE_URL
-        if ExnessMT5Connector.is_bridge_reachable():
+
+        names = [s.symbol for s in active_symbols]
+        mt5_updated = {}
+
+        if SESSION_MT5:
+            ticks = MT5NativeSession.snapshot_ticks(names)
+            if ticks:
+                cls._cached_prices.update(ticks)
+                mt5_updated = {k: float(v['last']) for k, v in ticks.items()}
+                cls._flush_ticks_to_db(active_symbols, ticks)
+                return mt5_updated
+
+        if ExnessMT5Connector.is_wine_bridge_open():
             try:
                 import requests
-                resp = requests.get(f"{BRIDGE_URL}/all_prices", timeout=0.5)
+                resp = requests.get(f"{BRIDGE_URL}/all_prices", timeout=0.4)
                 if resp.status_code == 200 and resp.json().get('success'):
                     mt5_prices = resp.json().get('prices', {})
-                    mt5_updated = {}
+                    tick_map = {}
                     for sym in active_symbols:
-                        price_info = (
-                            mt5_prices.get(sym.symbol) or 
-                            mt5_prices.get(f"{sym.symbol}m") or 
-                            mt5_prices.get(f"{sym.symbol}_i") or 
-                            mt5_prices.get(f"{sym.symbol}c")
-                        )
-                        if price_info:
-                            sym.current_price = Decimal(str(price_info['last'] or price_info['bid']))
-                            sym.current_bid = Decimal(str(price_info['bid']))
-                            sym.current_ask = Decimal(str(price_info['ask']))
-                            sym.current_spread_pips = float(price_info['spread_pips'])
-                            sym.last_scanned_at = timezone.now()
-                            sym.save(update_fields=['current_price', 'current_bid', 'current_ask', 'current_spread_pips', 'last_scanned_at'])
-                            mt5_updated[sym.symbol] = float(sym.current_price)
-                    if mt5_updated:
-                        return mt5_updated
+                        price_info = None
+                        for cand in ExnessMT5Connector.symbol_candidates(sym.symbol):
+                            price_info = mt5_prices.get(cand)
+                            if price_info:
+                                break
+                        if not price_info:
+                            continue
+                        last = price_info.get('last') or price_info.get('bid')
+                        if last is None:
+                            continue
+                        tick_map[sym.symbol] = {
+                            'last': float(last),
+                            'bid': float(price_info.get('bid') or last),
+                            'ask': float(price_info.get('ask') or last),
+                            'spread_pips': float(price_info.get('spread_pips') or 0),
+                        }
+                    if tick_map:
+                        cls._cached_prices.update(tick_map)
+                        cls._flush_ticks_to_db(active_symbols, tick_map)
+                        return {k: v['last'] for k, v in tick_map.items()}
             except Exception as me:
                 logger.debug(f"MT5 all_prices fetch error: {me}")
 
+        cls._start_bg_feed_updater()
         broker_feed = cls._network_feed_cache
-
-        # 3. Cập nhật vào Database SymbolConfig (Khớp giá sàn Exness + Nhảy Pipette thời gian thực)
-        import random
-        results = {}
+        fallback = {}
         for sym in active_symbols:
-            digits = sym.digits
-            point_val = float(sym.point_size)
-            
             if sym.symbol in broker_feed:
                 data = broker_feed[sym.symbol]
-                base_price = float(data['price'])
-            else:
-                base_price = float(sym.current_price or 1.0)
-            
-            # Nhảy pipette vi mô theo từng nhịp tick (+/- 1-2 pipettes ở số thập phân cuối cùng)
-            pipette_delta = random.choice([-1.0, -0.5, 0.0, 0.5, 1.0]) * point_val
-            curr = round(base_price + pipette_delta, digits)
-            
-            spread_pips = sym.current_spread_pips or (1.2 if sym.category == 'METALS' else (0.6 if sym.category == 'FOREX' else 2.0))
-            half_spread = (spread_pips * point_val * 10) / 2.0
-            bid = round(curr - half_spread, digits)
-            ask = round(curr + half_spread, digits)
+                fallback[sym.symbol] = {
+                    'last': float(data['price']),
+                    'bid': float(data.get('bid') or data['price']),
+                    'ask': float(data.get('ask') or data['price']),
+                    'spread_pips': float(sym.current_spread_pips or 0),
+                }
+        if fallback:
+            cls._cached_prices.update(fallback)
+            cls._flush_ticks_to_db(active_symbols, fallback)
+            return {k: v['last'] for k, v in fallback.items()}
+        return {s.symbol: float(s.current_price or 0) for s in active_symbols}
 
-            sym.current_price = Decimal(str(curr))
+    @classmethod
+    def _flush_ticks_to_db(cls, active_symbols, ticks: dict):
+        now = time.time()
+        if now - cls._last_db_flush < 1.0:
+            return
+        cls._last_db_flush = now
+        changed = []
+        for sym in active_symbols:
+            data = ticks.get(sym.symbol)
+            if not data:
+                continue
+            digits = int(sym.digits or 5)
+            last = round(float(data['last']), digits)
+            bid = round(float(data.get('bid') or last), digits)
+            ask = round(float(data.get('ask') or last), digits)
+            spread = float(data.get('spread_pips') or 0)
+            if (
+                float(sym.current_price or 0) == last
+                and float(sym.current_bid or 0) == bid
+                and float(sym.current_ask or 0) == ask
+            ):
+                continue
+            sym.current_price = Decimal(str(last))
             sym.current_bid = Decimal(str(bid))
             sym.current_ask = Decimal(str(ask))
-            sym.current_spread_pips = spread_pips
+            sym.current_spread_pips = spread
             sym.last_scanned_at = timezone.now()
-            sym.save(update_fields=['current_price', 'current_bid', 'current_ask', 'current_spread_pips', 'last_scanned_at'])
-            results[sym.symbol] = curr
-
-        return results
+            changed.append(sym)
+        if changed:
+            SymbolConfig.objects.bulk_update(
+                changed,
+                ['current_price', 'current_bid', 'current_ask', 'current_spread_pips', 'last_scanned_at'],
+            )

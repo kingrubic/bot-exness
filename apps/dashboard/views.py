@@ -38,11 +38,22 @@ def admin_view(request):
     all_hist = TradeHistory.objects.all()
     bot_metrics = _calc_stats(all_hist.filter(source='BOT'))
     user_metrics = _calc_stats(all_hist.filter(source='USER'))
+    tot_today = sum(w.get_today_pnl() for w in wallets)
+    try:
+        from apps.trading.mt5_session import MT5NativeSession
+        snap = MT5NativeSession.today_realized_pnl()
+        acc = MT5NativeSession.account() if snap.get('ok') else None
+        login = str(acc.login) if acc else ''
+        if snap.get('ok') and login and any(str(w.mt5_login or '') == login for w in wallets):
+            bot_metrics['today_pnl'] = snap['BOT']
+            user_metrics['today_pnl'] = snap['USER']
+            tot_today = snap['all']
+    except Exception:
+        pass
 
     tot_bal = sum(w.balance for w in wallets)
     tot_eq = sum(w.equity for w in wallets)
     tot_fl = sum(w.floating_pnl for w in wallets)
-    tot_today = sum(w.get_today_pnl() for w in wallets)
     all_positions_count = Position.objects.count()
 
     return render(request, 'admin/overview.html', {

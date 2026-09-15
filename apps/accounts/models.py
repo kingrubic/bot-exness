@@ -54,7 +54,10 @@ class WalletAccount(models.Model):
     
     # Active Pairs configuration for this wallet
     # JSON list of allowed symbols e.g. ["XAUUSD", "EURUSD"]
-    allowed_symbols_json = models.TextField(default='["XAUUSD"]', verbose_name="Danh Sách Cặp Cho Phép")
+    allowed_symbols_json = models.TextField(
+        default='["XAUUSD", "BTCUSD", "ETHUSD"]',
+        verbose_name="Danh Sách Cặp Cho Phép",
+    )
     
     # Execution & Status
     is_active = models.BooleanField(default=True, verbose_name="Kích Hoạt")
@@ -112,7 +115,7 @@ class WalletAccount(models.Model):
         try:
             return json.loads(self.allowed_symbols_json)
         except Exception:
-            return ["XAUUSD"]
+            return ["XAUUSD", "BTCUSD", "ETHUSD"]
 
     @property
     def leverage_display(self):
@@ -122,9 +125,19 @@ class WalletAccount(models.Model):
         self.allowed_symbols_json = json.dumps(symbols_list)
 
     def get_today_pnl(self):
-        """Tính tổng lãi/lỗ của các lệnh đã đóng trong ngày hôm nay."""
+        """Lãi/lỗ đã đóng hôm nay: ưu tiên tổng deal MT5 trong ngày, fallback DB nếu terminal không sẵn sàng."""
         from decimal import Decimal
         from django.db.models import Sum
+        try:
+            from apps.trading.mt5_session import MT5NativeSession
+            if self.mt5_login and MT5NativeSession.available():
+                acc = MT5NativeSession.account()
+                if acc and str(acc.login) == str(self.mt5_login):
+                    snap = MT5NativeSession.today_realized_pnl()
+                    if snap.get('ok'):
+                        return Decimal(str(snap['all']))
+        except Exception:
+            pass
         today = timezone.localdate()
         agg = self.trade_history.filter(closed_at__date=today).aggregate(tot=Sum('pnl'))
         return Decimal(str(round(agg['tot'], 2))) if agg['tot'] is not None else Decimal('0.00')

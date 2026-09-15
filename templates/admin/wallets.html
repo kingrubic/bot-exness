@@ -36,6 +36,7 @@
                     <th>Lot Đánh</th>
                     <th>Số Lệnh Tối Đa</th>
                     <th>Min Chốt Lời</th>
+                    <th>% Rủi Ro / Lệnh</th>
                     <th>Số Dư (Balance)</th>
                     <th>Vốn Khả Dụng (Equity)</th>
                     <th>Lời/Lỗ Thả Nổi (PnL)</th>
@@ -47,7 +48,7 @@
             </thead>
             <tbody id="tbody-wallets">
                 <tr>
-                    <td colspan="14" class="text-center py-4 text-muted">
+                    <td colspan="15" class="text-center py-4 text-muted">
                         <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải danh sách ví...
                     </td>
                 </tr>
@@ -141,31 +142,45 @@
                             </div>
                         </div>
 
-                        <div class="col-md-3">
+                        <div class="col-md-2">
                             <label class="form-label font-weight-bold small text-secondary">Số Lot Đánh Mỗi Lệnh <span class="text-danger">*</span></label>
                             <div class="input-group">
                                 <input type="number" step="0.01" min="0.01" max="100.0" class="form-control font-weight-bold text-primary" id="wallet-default-lot" name="default_lot_size" value="0.01" required>
                                 <span class="input-group-text font-weight-bold">Lot</span>
                             </div>
-                            <div class="form-text small text-muted">Mặc định: 0.01 Lot</div>
                         </div>
-                        <div class="col-md-3">
-                            <label class="form-label font-weight-bold small text-secondary">Số Lệnh Đánh Cùng Lúc <span class="text-danger">*</span></label>
+                        <div class="col-md-2">
+                            <label class="form-label font-weight-bold small text-secondary">Số Lệnh Cùng Lúc <span class="text-danger">*</span></label>
                             <div class="input-group">
                                 <input type="number" step="1" min="1" max="500" class="form-control font-weight-bold text-dark" id="wallet-max-open-trades" name="max_open_trades" value="5" required>
                                 <span class="input-group-text font-weight-bold">lệnh</span>
                             </div>
-                            <div class="form-text small text-muted">Tối đa vị thế mở đồng thời</div>
                         </div>
-                        <div class="col-md-3">
-                            <label class="form-label font-weight-bold small text-secondary">Min Chốt Lời / Lệnh <span class="text-danger">*</span></label>
+                        <div class="col-md-2">
+                            <label class="form-label font-weight-bold small text-secondary">Min Chốt Lời <span class="text-danger">*</span></label>
                             <div class="input-group">
                                 <input type="number" step="0.01" min="0.01" max="100000" class="form-control font-weight-bold text-success" id="wallet-min-take-profit" name="min_take_profit_usd" value="1.00" required>
                                 <span class="input-group-text font-weight-bold">$</span>
                             </div>
-                            <div class="form-text small text-muted">Chỉ đóng khi lãi ròng ≥ mức này</div>
+                            <div class="form-text small text-muted">Đóng khi lãi ròng ≥ mức này</div>
                         </div>
-                        <div class="col-md-3">
+                        <div class="col-md-2">
+                            <label class="form-label font-weight-bold small text-secondary">% Rủi Ro / Lệnh <span class="text-danger">*</span></label>
+                            <div class="input-group">
+                                <input type="number" step="0.1" min="0.1" max="100" class="form-control font-weight-bold text-danger" id="wallet-risk-percent" name="risk_percent" value="1.5" required>
+                                <span class="input-group-text font-weight-bold">%</span>
+                            </div>
+                            <div class="form-text small text-muted">Đóng lệnh lỗ khi lỗ ≥ % số dư</div>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label font-weight-bold small text-secondary">% Lỗ Tối Đa / Ngày</label>
+                            <div class="input-group">
+                                <input type="number" step="0.1" min="0.1" max="100" class="form-control font-weight-bold text-danger" id="wallet-max-daily-loss" name="max_daily_loss_percent" value="4.0">
+                                <span class="input-group-text font-weight-bold">%</span>
+                            </div>
+                            <div class="form-text small text-muted">Đóng lệnh lỗ khi chạm hạn ngày</div>
+                        </div>
+                        <div class="col-md-2">
                             <label class="form-label font-weight-bold small text-secondary">Trạng Thái Chạy Bot</label>
                             <select class="form-select" id="wallet-bot-status" name="bot_status">
                                 <option value="RUNNING">🟢 Đang Hoạt Động (Auto Trade)</option>
@@ -198,8 +213,8 @@
                                     <button type="button" class="btn btn-xs btn-outline-secondary rounded-pill px-3" onclick="selectAllSymbols(false)" id="btn-unselect-symbols">
                                         <i class="fa-solid fa-xmark me-1"></i> Unselect
                                     </button>
-                                    <button type="button" class="btn btn-xs btn-outline-warning rounded-pill px-3" onclick="selectGoldOnly()">
-                                        <i class="fa-solid fa-coins me-1"></i> Chỉ Vàng (XAU)
+                                    <button type="button" class="btn btn-xs btn-outline-warning rounded-pill px-3" onclick="selectDefaultPairs()">
+                                        <i class="fa-solid fa-coins me-1"></i> XAU + BTC + ETH
                                     </button>
                                 </div>
                             </div>

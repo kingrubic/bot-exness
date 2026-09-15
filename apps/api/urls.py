@@ -22,6 +22,9 @@ urlpatterns = [
     path('plans/clear/', views.clear_trading_plans_api, name='api_clear_trading_plans'),
     path('plans/<int:plan_id>/delete/', views.delete_trading_plan_api, name='api_delete_trading_plan'),
     
+    path('mt5/status/', views.mt5_status_api, name='api_mt5_status'),
+    path('mt5/launch/', views.mt5_launch_api, name='api_mt5_launch'),
+
     # Admin APIs
     path('admin/wallets/test-connection/', views.admin_wallet_test_connection_api, name='api_admin_wallet_test_connection'),
     path('admin/wallets/', views.admin_wallet_manage_api, name='api_admin_create_wallet'),
