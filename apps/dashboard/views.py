@@ -8,65 +8,53 @@ from apps.symbols.models import SymbolConfig
 
 @staff_member_required(login_url='/login/')
 def admin_view(request):
-    """Trang Quản Trị: Báo Cáo Hiệu Suất Vốn & Tổng Quan."""
-    from apps.trading.models import TradeHistory, Position
-    from django.db.models import Sum
-    from django.utils import timezone
+    """Trang Quản Trị: Báo Cáo Hiệu Suất Vốn & Tổng Quan (SSR nhẹ — số liệu realtime qua /api/live-ticks/)."""
+    from apps.trading.models import Position
 
     wallets = WalletAccount.objects.all()
     current_wallet = WalletAccount.get_current()
     symbols = SymbolConfig.objects.filter(is_active=True)
 
-    def _calc_stats(qs):
-        tot = qs.count()
-        wins = qs.filter(pnl__gt=0).count()
-        losses = qs.filter(pnl__lt=0).count()
-        wr = round((wins / tot) * 100, 1) if tot > 0 else 0.0
-        pnl = float(qs.aggregate(s=Sum('pnl'))['s'] or 0.0)
-        today = timezone.localdate()
-        today_pnl = float(qs.filter(closed_at__date=today).aggregate(s=Sum('pnl'))['s'] or 0.0)
-        vol = round(float(qs.aggregate(v=Sum('lot_size'))['v'] or 0.0), 2)
-        return {
-            'total_trades': tot,
-            'winning_trades': wins,
-            'losing_trades': losses,
-            'win_rate': wr,
-            'total_profit': round(pnl, 2),
-            'today_pnl': round(today_pnl, 2),
-            'total_volume': vol,
-        }
+    empty = {
+        'total_trades': 0, 'winning_trades': 0, 'losing_trades': 0,
+        'win_rate': 0.0, 'total_profit': 0.0, 'today_pnl': 0.0, 'total_volume': 0.0,
+    }
+    tot_today = tot_bal = tot_eq = tot_fl = 0
+    all_positions_count = 0
+    bot_metrics = dict(empty)
+    user_metrics = dict(empty)
 
     if current_wallet:
-        all_hist = TradeHistory.objects.filter(wallet=current_wallet)
-        tot_today = current_wallet.get_today_pnl()
         tot_bal = current_wallet.balance
         tot_eq = current_wallet.equity
         tot_fl = current_wallet.floating_pnl
+        tot_today = current_wallet.today_pnl
         all_positions_count = Position.objects.filter(wallet=current_wallet).count()
-    else:
-        all_hist = TradeHistory.objects.none()
-        tot_today = 0
-        tot_bal = 0
-        tot_eq = 0
-        tot_fl = 0
-        all_positions_count = 0
-    bot_metrics = _calc_stats(all_hist.filter(source='BOT'))
-    user_metrics = _calc_stats(all_hist.filter(source='USER'))
-    try:
-        from decimal import Decimal
-        from apps.trading.mt5_session import MT5NativeSession
-        snap = MT5NativeSession.today_realized_pnl()
-        acc = MT5NativeSession.account() if snap.get('ok') else None
-        login = str(acc.login) if acc else ''
-        if current_wallet and snap.get('ok') and login and str(current_wallet.mt5_login or '') == login:
-            bot_metrics['today_pnl'] = snap['BOT']
-            user_metrics['today_pnl'] = snap['USER']
-            tot_today = snap['all']
-            tot_bal = Decimal(str(round(float(acc.balance or 0), 2)))
-            tot_eq = Decimal(str(round(float(acc.equity or 0), 2)))
-            tot_fl = Decimal(str(round(float(getattr(acc, 'profit', 0) or 0), 2)))
-    except Exception:
-        pass
+        bot_metrics = {
+            **empty,
+            'total_trades': int(current_wallet.total_trades or 0),
+            'winning_trades': int(current_wallet.winning_trades or 0),
+            'losing_trades': int(current_wallet.losing_trades or 0),
+            'win_rate': float(current_wallet.win_rate or 0),
+            'total_profit': float(current_wallet.total_profit or 0),
+            'today_pnl': float(tot_today or 0),
+        }
+        try:
+            from decimal import Decimal
+            from apps.trading.mt5_session import MT5NativeSession
+            snap = MT5NativeSession.today_realized_pnl()
+            acc = MT5NativeSession.account() if snap.get('ok') else None
+            login = str(acc.login) if acc else ''
+            if snap.get('ok') and login and str(current_wallet.mt5_login or '') == login:
+                bot_metrics['today_pnl'] = snap['BOT']
+                user_metrics = {**empty, 'today_pnl': snap['USER']}
+                tot_today = snap['all']
+                tot_bal = Decimal(str(round(float(acc.balance or 0), 2)))
+                tot_eq = Decimal(str(round(float(acc.equity or 0), 2)))
+                tot_fl = Decimal(str(round(float(getattr(acc, 'profit', 0) or 0), 2)))
+                all_positions_count = len(MT5NativeSession.positions() or [])
+        except Exception:
+            pass
 
     return render(request, 'admin/overview.html', {
         'wallets': wallets,

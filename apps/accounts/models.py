@@ -46,7 +46,7 @@ class WalletAccount(models.Model):
     default_lot_size = models.FloatField(default=0.01, verbose_name="Khối Lượng Đánh Mặc Định (Lot)")
     risk_percent = models.FloatField(default=1.5, verbose_name="% Rủi Ro Mỗi Lệnh")
     max_daily_loss_percent = models.FloatField(default=4.0, verbose_name="% Giới Hạn Lỗ Tối Đa Trong Ngày")
-    max_open_trades = models.IntegerField(default=100, verbose_name="Số Lệnh Mở Tối Đa")
+    max_open_trades = models.IntegerField(default=5, verbose_name="Số Lệnh Mở Tối Đa")
     min_take_profit_usd = models.DecimalField(
         max_digits=12, decimal_places=2, default=Decimal('1.00'),
         verbose_name="Số Tiền Min Chốt Lời (USD)"
@@ -75,6 +75,10 @@ class WalletAccount(models.Model):
         return f"{self.name} ({self.account_type}) - #{self.mt5_login}"
 
     def save(self, *args, **kwargs):
+        try:
+            self.max_open_trades = max(1, min(500, int(self.max_open_trades or 5)))
+        except (TypeError, ValueError):
+            self.max_open_trades = 5
         super().save(*args, **kwargs)
         if self.is_active and self.pk:
             others = list(type(self).objects.filter(is_active=True).exclude(pk=self.pk))

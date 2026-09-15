@@ -79,8 +79,48 @@ def test_close_position_simulation():
     ok, msg = ExecutionEngine.close_position(pos, reason="MANUAL_CLOSE")
     assert ok is True
     assert not Position.objects.filter(ticket="LOCAL-12345678").exists()
-    assert TradeHistory.objects.filter(ticket="LOCAL-12345678").exists()
+    hist = TradeHistory.objects.get(ticket="LOCAL-12345678")
+    assert hist.close_reason == "MANUAL_CLOSE"
+    assert hist.source == "USER"
     assert float(wallet.balance) == 1010.00
+
+
+@pytest.mark.django_db
+def test_manual_close_reason_not_overwritten_as_tp_for_bot_source():
+    """Đóng tay / close-all → MANUAL_CLOSE + USER (không ép TP_HIT)."""
+    from apps.trading.order_source import remember_close_reason, resolve_close_reason, remember_order_source, classify_order_source
+    remember_order_source('555001', 'USER', 0)
+    remember_close_reason('555001', 'MANUAL_CLOSE', source='USER', magic=0)
+    assert resolve_close_reason(ticket='555001', deal_reason=3, comment='WebManual', source='USER') == 'MANUAL_CLOSE'
+    assert classify_order_source(magic=8882026, comment='AI-XAU', ticket='555001') == 'USER'
+    assert resolve_close_reason(ticket='999', deal_reason=5, comment='', source='BOT') == 'TP_HIT'
+    assert resolve_close_reason(ticket='998', deal_reason=0, comment='', source='BOT') == 'MANUAL_CLOSE'
+
+
+@pytest.mark.django_db
+def test_close_all_open_tags_user_and_closes_local():
+    wallet = WalletAccount.objects.create(
+        name="CloseAll", account_type="DEMO", mt5_login="", is_active=True,
+        balance_db=Decimal("1000"), capital=Decimal("1000"),
+    )
+    Position.objects.create(
+        wallet=wallet, ticket="LOCAL-CA-1", symbol="XAUUSD", position_type="BUY",
+        lot_size=0.01, open_price=Decimal("2700"), current_price=Decimal("2701"),
+        floating_pnl=Decimal("1"), source="BOT", opened_at=timezone.now(),
+    )
+    Position.objects.create(
+        wallet=wallet, ticket="LOCAL-CA-2", symbol="XAUUSD", position_type="SELL",
+        lot_size=0.01, open_price=Decimal("2700"), current_price=Decimal("2699"),
+        floating_pnl=Decimal("1"), source="BOT", opened_at=timezone.now(),
+    )
+    ok, msg, info = ExecutionEngine.close_all_open(wallet)
+    assert ok is True
+    assert info['closed'] == 2
+    assert Position.objects.filter(wallet=wallet).count() == 0
+    hist = list(TradeHistory.objects.filter(wallet=wallet))
+    assert len(hist) == 2
+    assert all(h.source == 'USER' for h in hist)
+    assert all(h.close_reason == 'MANUAL_CLOSE' for h in hist)
 
 
 @pytest.mark.django_db
@@ -400,6 +440,11 @@ def test_wallet_max_open_trades_cap():
     can_enter2, is_pyr, _ = ExecutionEngine.can_wallet_open_or_pyramid(wallet, "XAUUSD", "BUY")
     assert can_enter2 is True
     assert is_pyr is True
+
+    wallet.max_open_trades = 999
+    wallet.save()
+    assert wallet.max_open_trades == 500
+    assert ExecutionEngine.get_max_allowed_positions_for_wallet(wallet) == 500
 
 
 @pytest.mark.django_db

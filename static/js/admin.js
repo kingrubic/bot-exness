@@ -222,12 +222,14 @@ async function closeAllPositionsPrompt() {
     try {
         const res = await apiFetch('/api/positions/close-all/', { method: 'POST' });
         const data = await parseApiJson(res);
-        if (data.success || data.message) {
-            showToast(data.message || 'Đã gửi lệnh đóng toàn bộ', data.success ? 'success' : 'error');
+        const errs = (data.errors || []).slice(0, 3).join(' | ');
+        if (data.success || (data.closed && data.closed > 0)) {
+            showToast(data.message || 'Đã đóng toàn bộ', data.success ? 'success' : 'error');
+            if (errs) showToast(errs, 'error');
             refreshAllData();
             fetchLiveTicks();
         } else {
-            showToast(data.error || 'Lỗi đóng lệnh khẩn cấp', 'error');
+            showToast((data.message || data.error || 'Lỗi đóng lệnh khẩn cấp') + (errs ? ` — ${errs}` : ''), 'error');
         }
     } catch (e) {
         showToast('Lỗi kết nối máy chủ', 'error');
@@ -457,7 +459,7 @@ function startPollingLiveTicks() {
                 handleLiveTicksData(data);
             }
         } catch (e) {}
-        setTimeout(continuousLoop, 120);
+        setTimeout(continuousLoop, 1000);
     }
 
     continuousLoop();

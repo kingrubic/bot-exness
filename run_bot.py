@@ -32,8 +32,8 @@ def run_trading_bot_worker():
             ExecutionEngine.update_positions_and_pnl()
 
             cycle_counter += 1
-            # 2. BUY/SELL MARKET ngay nếu chưa đủ lệnh (~0.6s); phân tích đầy đủ ~3s
-            if cycle_counter % 4 == 0:
+            # 2. Tối đa 1 lệnh mới / ~1.2s; phân tích đầy đủ ~3s
+            if cycle_counter % 8 == 0:
                 ExecutionEngine.try_immediate_market_entries()
             if cycle_counter % 20 == 0:
                 ExecutionEngine.run_full_trading_cycle()

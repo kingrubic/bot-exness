@@ -370,7 +370,7 @@ class ExnessMT5Connector:
 
         return {'success': False, 'error': 'Chưa kết nối sàn Exness MT5'}
 
-    def close_order(self, ticket: int, symbol: str, order_type: str, volume: float) -> tuple[bool, str, dict]:
+    def close_order(self, ticket: int, symbol: str, order_type: str, volume: float, comment: str = 'Close') -> tuple[bool, str, dict]:
         """
         Đóng lệnh trên Exness MT5.
         Trả về (success: bool, message: str, data: dict).
@@ -390,6 +390,7 @@ class ExnessMT5Connector:
                 symbol=symbol,
                 order_type=order_type,
                 volume=volume,
+                comment=comment or 'Close',
             )
 
         if self.bridge_mode or not MT5_AVAILABLE:
@@ -699,6 +700,14 @@ class ExnessMT5Connector:
                         if close_p_val == 0.0 and open_p_val > 0.0:
                             close_p_val = open_p_val
 
+                        from apps.trading.order_source import resolve_close_reason
+                        close_reason = resolve_close_reason(
+                            ticket=ticket_str,
+                            deal_reason=d.get('reason'),
+                            comment=deal_comment,
+                            source=source,
+                        )
+
                         deals_data.append({
                             'ticket': ticket_str,
                             'symbol': self.normalize_symbol(sym) or sym,
@@ -710,7 +719,7 @@ class ExnessMT5Connector:
                             'commission': Decimal(str(round(comm_d, 2))),
                             'swap': Decimal(str(round(swap_d, 2))),
                             'pips': 0.0,
-                            'close_reason': 'MANUAL_CLOSE' if source == 'USER' else 'TP_HIT',
+                            'close_reason': close_reason,
                             'is_win': net_pnl_val > 0,
                             'source': source,
                             'magic': deal_magic,

@@ -191,12 +191,27 @@ class ExecutionEngine:
         return position
 
     @classmethod
-    def get_max_allowed_positions_for_wallet(cls, wallet: WalletAccount) -> int:
-        """Số lệnh mở đồng thời tối đa = cấu hình từng ví (max_open_trades)."""
+    def count_open_positions(cls, wallet: WalletAccount) -> int:
+        """Đếm lệnh đang mở: ưu tiên MT5 live (chuẩn), fallback DB."""
         try:
-            n = int(wallet.max_open_trades or 1)
+            from apps.trading.mt5_session import MT5NativeSession
+            if wallet.mt5_login and MT5NativeSession.available():
+                acc = MT5NativeSession.account()
+                if acc and str(acc.login) == str(wallet.mt5_login):
+                    rows = MT5NativeSession.positions()
+                    if rows is not None:
+                        return len(rows)
+        except Exception:
+            pass
+        return wallet.positions.count()
+
+    @classmethod
+    def get_max_allowed_positions_for_wallet(cls, wallet: WalletAccount) -> int:
+        """Số lệnh mở đồng thời = cấu hình ví (trần an toàn 500)."""
+        try:
+            n = int(wallet.max_open_trades or 5)
         except (TypeError, ValueError):
-            n = 1
+            n = 5
         return max(1, min(n, 500))
 
     @classmethod
@@ -342,7 +357,7 @@ class ExecutionEngine:
             return False, False, f"Free Margin ${margin_free:.2f} không đủ để mở thêm lệnh."
 
         all_open_positions = wallet.positions.all()
-        total_open_count = all_open_positions.count()
+        total_open_count = cls.count_open_positions(wallet)
         max_allowed = cls.get_max_allowed_positions_for_wallet(wallet)
 
         if total_open_count >= max_allowed:
@@ -383,7 +398,28 @@ class ExecutionEngine:
             if not AutoPlanGenerator.wallet_has_capital(wallet):
                 AutoPlanGenerator.purge_all_plans_for_wallet(wallet)
                 continue
+
+            if wallet.mt5_login:
+                try:
+                    connector = ExnessMT5Connector(
+                        login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server
+                    )
+                    if connector.connect():
+                        connector.sync_positions(wallet)
+                except Exception:
+                    pass
+
+            if cls.count_open_positions(wallet) >= cls.get_max_allowed_positions_for_wallet(wallet):
+                TradingPlan.objects.filter(
+                    wallet=wallet,
+                    status__in=['PENDING_TRIGGER', 'PENDING', 'ANALYZING'],
+                ).delete()
+                continue
+
+            opened_this_cycle = False
             for sym_name in wallet.allowed_symbols:
+                if opened_this_cycle:
+                    break
                 item = packed.get(sym_name)
                 if not item:
                     continue
@@ -402,7 +438,9 @@ class ExecutionEngine:
                         wallet, sym_config, forecast, is_pyramiding=is_pyramiding
                     )
                     if plan and plan.status in ('PENDING_TRIGGER', 'PENDING'):
-                        cls.trigger_plan_to_position(plan)
+                        pos = cls.trigger_plan_to_position(plan)
+                        if pos is not None:
+                            opened_this_cycle = True
                 except Exception as pe:
                     BotLog.log(
                         level='ERROR',
@@ -447,7 +485,7 @@ class ExecutionEngine:
     def update_positions_and_pnl(cls, sync_mt5: bool = False):
         """
         PnL lấy profit/price_current từ MT5 khi terminal sống.
-        Persist account/positions tối đa 1 lần/giây.
+        Tự chốt khi lãi >= min_take_profit_usd (đóng theo MT5 live, sync 1 lần cuối).
         """
         try:
             from apps.trading.mt5_session import MT5NativeSession
@@ -468,12 +506,117 @@ class ExecutionEngine:
                 else:
                     cls.persist_mt5_state()
 
-            live_by_ticket = MT5NativeSession.positions_by_ticket() if MT5NativeSession.available() else {}
+            live_rows = []
+            try:
+                live_rows = MT5NativeSession.positions() or []
+            except Exception:
+                live_rows = []
+            live_by_ticket = {str(p.ticket): p for p in live_rows} if live_rows else {}
             live_account = MT5NativeSession.account() if MT5NativeSession.available() else None
+            live_login = str(getattr(live_account, 'login', '') or '') if live_account else ''
 
+            wallets_by_login = {
+                str(w.mt5_login): w
+                for w in WalletAccount.objects.filter(mt5_login__isnull=False).exclude(mt5_login='')
+            }
             symbol_map = {s.symbol: s for s in SymbolConfig.objects.all()}
             positions_to_save = []
-            for position in Position.objects.select_related('wallet').all():
+            closed_any = False
+            live_count = len(live_rows)
+
+            # --- 1) Chốt nhanh hàng loạt theo MT5 live (không tạo Position từng ticket) ---
+            if live_rows and live_login:
+                wallet_live = wallets_by_login.get(live_login) or WalletAccount.get_current()
+                if wallet_live and str(wallet_live.mt5_login or '') == live_login:
+                    min_tp = float(getattr(wallet_live, 'min_take_profit_usd', 1) or 1)
+                    if min_tp <= 0:
+                        min_tp = 0.01
+                    # Khi rất nhiều lệnh: ưu tiên đóng winner, max 200/chu kỳ
+                    batch_n = 200 if live_count >= 50 else 50
+                    batch = MT5NativeSession.close_positions_batch(
+                        live_rows,
+                        comment='BotClose',
+                        only_profit_ge=min_tp,
+                        max_n=batch_n,
+                    )
+                    closed_tickets = batch.get('closed') or []
+                    if closed_tickets:
+                        closed_any = True
+                        from apps.trading.models import OrderSourceTag
+                        tags = [
+                            OrderSourceTag(ticket=t, source='BOT', magic=8882026, close_reason='TP_HIT')
+                            for t in closed_tickets
+                        ]
+                        try:
+                            OrderSourceTag.objects.bulk_create(
+                                tags,
+                                update_conflicts=True,
+                                unique_fields=['ticket'],
+                                update_fields=['source', 'magic', 'close_reason'],
+                            )
+                        except Exception:
+                            pass
+                        Position.objects.filter(ticket__in=closed_tickets).delete()
+                        if batch.get('error'):
+                            logger.warning("Batch tự chốt dừng sớm: %s (đã đóng %s)", batch['error'], len(closed_tickets))
+                        else:
+                            logger.info(
+                                "Batch tự chốt: đóng %s/%s winner (live=%s)",
+                                len(closed_tickets), batch.get('total', 0), live_count,
+                            )
+                        # Refresh live map sau batch
+                        try:
+                            live_rows = MT5NativeSession.positions() or []
+                            live_by_ticket = {str(p.ticket): p for p in live_rows}
+                            live_count = len(live_rows)
+                        except Exception:
+                            pass
+
+            # --- 2) Cập nhật PnL DB (bỏ qua khi quá nhiều lệnh để không chậm) ---
+            db_qs = Position.objects.select_related('wallet').all()
+            if live_count > 80:
+                # Chỉ dọn LOCAL + ghost; không bulk_update hàng trăm dòng mỗi tick
+                for position in db_qs:
+                    ticket = str(position.ticket)
+                    is_local = ticket.startswith('LOCAL-')
+                    if not is_local and live_login and str(position.wallet.mt5_login or '') == live_login:
+                        if ticket not in live_by_ticket:
+                            try:
+                                position.delete()
+                            except Exception:
+                                pass
+                        continue
+                    if is_local:
+                        wallet = position.wallet
+                        sym = symbol_map.get(position.symbol)
+                        if not sym:
+                            continue
+                        curr_price = sym.current_price or Decimal('0')
+                        if curr_price <= 0:
+                            continue
+                        open_p = float(position.open_price or 0)
+                        curr_p = float(curr_price)
+                        lot = float(position.lot_size or 0.01)
+                        cs = float(sym.contract_size or 100)
+                        diff = (curr_p - open_p) if position.position_type == 'BUY' else (open_p - curr_p)
+                        pnl = round(diff * cs * lot, 2)
+                        min_tp = float(getattr(wallet, 'min_take_profit_usd', 1) or 1)
+                        if pnl >= min_tp:
+                            cls.close_position(position, reason='TP_HIT', defer_sync=True)
+                            closed_any = True
+                if closed_any and live_login:
+                    w = wallets_by_login.get(live_login)
+                    if w and w.mt5_login:
+                        try:
+                            connector = ExnessMT5Connector(login=w.mt5_login, password=w.mt5_password, server=w.mt5_server)
+                            if connector.connect():
+                                connector.sync_account_info(w)
+                                connector.sync_positions(w)
+                        except Exception:
+                            pass
+                return
+
+            for position in db_qs:
                 wallet = position.wallet
                 live_p = live_by_ticket.get(str(position.ticket))
                 sym = symbol_map.get(position.symbol)
@@ -486,11 +629,8 @@ class ExecutionEngine:
                     position.current_price = curr_price
                     open_p = float(position.open_price or live_p.price_open or 0)
                     curr_p = float(curr_price)
-                    lot = float(position.lot_size or live_p.volume or 0.01)
                     pnl = round(float(live_p.profit or 0), 2)
                     swap_fee = float(getattr(live_p, 'swap', 0) or 0)
-                    comm = float(position.commission or getattr(live_p, 'commission', 0) or 0)
-                    net_pnl = round(pnl + swap_fee + comm, 2)
                     position.floating_pnl = Decimal(str(pnl))
                     position.swap = Decimal(str(round(swap_fee, 2)))
                     if live_p.sl:
@@ -499,9 +639,7 @@ class ExecutionEngine:
                         position.take_profit = Decimal(str(live_p.tp))
                 else:
                     if not is_local and live_account is not None:
-                        live_login = str(getattr(live_account, 'login', '') or '')
                         if live_login and str(wallet.mt5_login or '') == live_login:
-                            # Stop-out / đóng ngoài web: xóa vị thế ma để không kẹt max_open_trades
                             try:
                                 position.delete()
                             except Exception:
@@ -525,9 +663,7 @@ class ExecutionEngine:
                     net_pnl = round(pnl - est_comm - swap_fee, 2)
                     position.floating_pnl = Decimal(str(pnl))
 
-                point_size = float(getattr(sym, 'point_size', None) or 0.0001)
-                if point_size <= 0:
-                    point_size = 0.0001
+                point_size = float(getattr(sym, 'point_size', None) or 0.0001) or 0.0001
                 cat = getattr(sym, 'category', 'FOREX') if sym else 'FOREX'
                 digits = getattr(sym, 'digits', 2) if sym else 2
                 if digits in [3, 5]:
@@ -539,8 +675,7 @@ class ExecutionEngine:
                 else:
                     pip_size = max(point_size * 10.0, 0.0001)
                 diff = (curr_p - open_p) if position.position_type == 'BUY' else (open_p - curr_p)
-                pips = round(diff / pip_size, 1) if pip_size else 0.0
-                position.floating_pips = pips
+                position.floating_pips = round(diff / pip_size, 1) if pip_size else 0.0
 
                 if position.position_type == 'BUY':
                     if position.highest_price is None or curr_price > position.highest_price:
@@ -549,38 +684,15 @@ class ExecutionEngine:
                     if position.lowest_price is None or curr_price < position.lowest_price:
                         position.lowest_price = curr_price
 
-                should_close = False
-                close_reason = 'TP_HIT'
-                min_tp = float(getattr(wallet, 'min_take_profit_usd', 1) or 1)
-                if min_tp <= 0:
-                    min_tp = 0.01
+                if live_p is None and is_local:
+                    min_tp = float(getattr(wallet, 'min_take_profit_usd', 1) or 1) or 0.01
+                    net_local = locals().get('net_pnl', pnl)
+                    if pnl >= min_tp or net_local >= min_tp:
+                        ok, _ = cls.close_position(position, reason='TP_HIT', defer_sync=True)
+                        if ok:
+                            closed_any = True
+                        continue
 
-                # Chốt khi lãi MT5 (đúng số trên bảng vị thế) >= min_tp — BOT và USER
-                if pnl >= min_tp or net_pnl >= min_tp:
-                    should_close = True
-                    close_reason = 'TP_HIT'
-                    forecast = MarketForecast.objects.filter(symbol=position.symbol).first()
-
-                    if position.position_type == 'BUY':
-                        if position.highest_price and position.highest_price > position.open_price:
-                            peak_gain = float(position.highest_price) - open_p
-                            curr_gain = curr_p - open_p
-                            if peak_gain > 0 and curr_gain <= peak_gain * 0.75:
-                                close_reason = 'TRAILING_TP'
-                        if forecast and (forecast.trend_bias == 'BEARISH' or 'SELL' in str(forecast.recommended_action)):
-                            close_reason = 'TREND_REVERSAL'
-                    else:
-                        if position.lowest_price and position.lowest_price < position.open_price:
-                            peak_gain = open_p - float(position.lowest_price)
-                            curr_gain = open_p - curr_p
-                            if peak_gain > 0 and curr_gain <= peak_gain * 0.75:
-                                close_reason = 'TRAILING_TP'
-                        if forecast and (forecast.trend_bias == 'BULLISH' or 'BUY' in str(forecast.recommended_action)):
-                            close_reason = 'TREND_REVERSAL'
-
-                if should_close:
-                    cls.close_position(position, reason=close_reason)
-                    continue
                 positions_to_save.append(position)
 
             if positions_to_save:
@@ -589,19 +701,34 @@ class ExecutionEngine:
                     'highest_price', 'lowest_price', 'stop_loss', 'take_profit', 'swap'
                 ])
 
+            if closed_any and live_login:
+                w = wallets_by_login.get(live_login) or WalletAccount.get_current()
+                if w and w.mt5_login:
+                    try:
+                        connector = ExnessMT5Connector(login=w.mt5_login, password=w.mt5_password, server=w.mt5_server)
+                        if connector.connect():
+                            connector.sync_account_info(w)
+                            connector.sync_positions(w)
+                            # History nặng — chỉ sync khi số lệnh còn lại vừa phải
+                            if live_count <= 80:
+                                connector.sync_history_from_mt5(w)
+                    except Exception as se:
+                        logger.warning("Sync sau tự chốt: %s", se)
+
             if live_account is None:
                 cls.recalculate_all_wallets()
         except Exception as e:
             BotLog.log(level='ERROR', category='EXECUTION', message=f'Lỗi khi cập nhật vị thế: {e}', traceback=traceback.format_exc())
 
     @classmethod
-    def close_position(cls, position: Position, close_price: Decimal = None, reason: str = 'TP_HIT') -> tuple[bool, str]:
+    def close_position(cls, position: Position, close_price: Decimal = None, reason: str = 'TP_HIT', *, defer_sync: bool = False) -> tuple[bool, str]:
         """Đóng vị thế THẬT trên sàn Exness MT5 và lưu vào lịch sử (Tính toán Net PnL sau phí)."""
         wallet = position.wallet
         ticket_str = str(position.ticket)
         is_local_sim = ticket_str.startswith('LOCAL-')
         connector = None
         res_close = None
+        msg = f'Đã đóng lệnh #{ticket_str}'
 
         now = time.time()
         if ticket_str in cls._closing:
@@ -616,11 +743,13 @@ class ExecutionEngine:
                 connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
                 if not connector.connect():
                     return False, "Chưa kết nối MT5 Terminal để đóng lệnh. Hãy mở MT5, đăng nhập và bật Algo Trading."
+                close_comment = 'WebManual' if reason == 'MANUAL_CLOSE' else 'BotClose'
                 res_close = connector.close_order(
                     ticket=ticket_str,
                     symbol=position.symbol,
                     order_type=position.position_type,
-                    volume=float(position.lot_size)
+                    volume=float(position.lot_size),
+                    comment=close_comment,
                 )
             finally:
                 cls._closing.discard(ticket_str)
@@ -654,8 +783,16 @@ class ExecutionEngine:
                 return False, f"Sàn Exness MT5 từ chối đóng lệnh: {msg}"
             cls._close_cooldown.pop(ticket_str, None)
 
-        from apps.trading.order_source import remember_order_source
-        remember_order_source(ticket_str, getattr(position, 'source', 'USER') or 'USER', getattr(position, 'magic', 0) or 0)
+        from apps.trading.order_source import remember_order_source, remember_close_reason
+        # Đóng tay / đóng toàn bộ → nguồn USER; bot tự chốt giữ nguồn mở lệnh gốc
+        if reason == 'MANUAL_CLOSE':
+            hist_source = 'USER'
+            hist_magic = 0
+        else:
+            hist_source = getattr(position, 'source', 'BOT') or ('BOT' if position.plan else 'USER')
+            hist_magic = getattr(position, 'magic', 0) or (8882026 if hist_source == 'BOT' else 0)
+        remember_order_source(ticket_str, hist_source, hist_magic)
+        remember_close_reason(ticket_str, reason, source=hist_source, magic=hist_magic)
 
         if not is_local_sim and wallet and wallet.mt5_login and connector:
             linked_plan = position.plan
@@ -663,22 +800,23 @@ class ExecutionEngine:
                 position.delete()
             except Exception:
                 pass
-            try:
-                connector.sync_account_info(wallet)
-                connector.sync_positions(wallet)
-                connector.sync_history_from_mt5(wallet)
-                wallet.refresh_from_db()
-                wallet.calculate_metrics()
-                wallet.today_pnl = wallet.get_today_pnl()
-                wallet.save(update_fields=['today_pnl'])
-            except Exception:
-                pass
+            if not defer_sync:
+                try:
+                    connector.sync_account_info(wallet)
+                    connector.sync_positions(wallet)
+                    connector.sync_history_from_mt5(wallet)
+                    wallet.refresh_from_db()
+                    wallet.calculate_metrics()
+                    wallet.today_pnl = wallet.get_today_pnl()
+                    wallet.save(update_fields=['today_pnl'])
+                except Exception:
+                    pass
             if linked_plan:
                 AutoPlanGenerator.discard_plan(linked_plan)
             BotLog.log(
                 level='INFO',
                 category='EXECUTION',
-                message=f"ĐÃ ĐÓNG LỆNH #{ticket_str} trên Exness MT5. Lịch sử/số dư lấy từ terminal.",
+                message=f"ĐÃ ĐÓNG LỆNH #{ticket_str} trên Exness MT5 ({reason}/{hist_source}). Lịch sử/số dư lấy từ terminal.",
                 wallet=wallet,
                 symbol=getattr(position, 'symbol', ''),
             )
@@ -694,9 +832,7 @@ class ExecutionEngine:
         net_pnl = gross_pnl + comm_val + swap_val
         is_win = net_pnl > Decimal('0.00')
 
-        pos_source = getattr(position, 'source', 'BOT') or ('BOT' if position.plan else 'USER')
-        pos_magic = getattr(position, 'magic', 0) or (8882026 if pos_source == 'BOT' else 0)
-        pos_comment = getattr(position, 'comment', '') or ('AutoBot' if pos_source == 'BOT' else 'Manual Trade')
+        pos_comment = getattr(position, 'comment', '') or ('AutoBot' if hist_source == 'BOT' else 'Manual Trade')
 
         TradeHistory.objects.update_or_create(
             wallet=wallet,
@@ -715,8 +851,8 @@ class ExecutionEngine:
                 'pips': position.floating_pips,
                 'close_reason': reason,
                 'is_win': is_win,
-                'source': pos_source,
-                'magic': pos_magic,
+                'source': hist_source,
+                'magic': hist_magic,
                 'comment': pos_comment,
                 'opened_at': position.opened_at,
                 'closed_at': timezone.now()
@@ -757,6 +893,127 @@ class ExecutionEngine:
 
         position.delete()
         return True, f"Đã đóng thành công lệnh #{ticket_str}"
+
+    @classmethod
+    def close_all_open(cls, wallet: WalletAccount | None = None) -> tuple[bool, str, dict]:
+        """Đóng toàn bộ vị thế live MT5 bằng batch nhanh. Gắn USER + MANUAL_CLOSE. Sync nhẹ 1 lần cuối."""
+        from apps.trading.mt5_session import MT5NativeSession
+        from apps.trading.models import OrderSourceTag
+
+        if wallet is None:
+            wallet = WalletAccount.get_current()
+        if not wallet:
+            return False, 'Chưa có ví đang kích hoạt để đóng lệnh.', {'closed': 0, 'total': 0, 'errors': []}
+
+        connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
+        if wallet.mt5_login and not connector.connect():
+            return False, 'Chưa kết nối MT5. Mở terminal, đăng nhập và bật Algo Trading.', {
+                'closed': 0, 'total': 0, 'errors': ['MT5 chưa kết nối / Algo tắt'],
+            }
+
+        closed = 0
+        errors: list[str] = []
+        total = 0
+
+        # LOCAL sim
+        for pos in list(Position.objects.filter(wallet=wallet, ticket__startswith='LOCAL-')):
+            total += 1
+            ok, msg = cls.close_position(pos, reason='MANUAL_CLOSE', defer_sync=True)
+            if ok:
+                closed += 1
+            else:
+                errors.append(f'#{pos.ticket}: {msg}')
+
+        live = []
+        try:
+            if wallet.mt5_login:
+                live = MT5NativeSession.positions() or []
+        except Exception:
+            live = []
+
+        if live:
+            total += len(live)
+            # Đóng theo lô 300 đến hết
+            remaining = list(live)
+            rounds = 0
+            while remaining and rounds < 20:
+                rounds += 1
+                batch = MT5NativeSession.close_positions_batch(
+                    remaining, comment='WebManual', only_profit_ge=None, max_n=300,
+                )
+                done = batch.get('closed') or []
+                if done:
+                    closed += len(done)
+                    tags = [
+                        OrderSourceTag(ticket=t, source='USER', magic=0, close_reason='MANUAL_CLOSE')
+                        for t in done
+                    ]
+                    try:
+                        OrderSourceTag.objects.bulk_create(
+                            tags,
+                            update_conflicts=True,
+                            unique_fields=['ticket'],
+                            update_fields=['source', 'magic', 'close_reason'],
+                        )
+                    except Exception:
+                        for t in done:
+                            try:
+                                OrderSourceTag.objects.update_or_create(
+                                    ticket=t,
+                                    defaults={'source': 'USER', 'magic': 0, 'close_reason': 'MANUAL_CLOSE'},
+                                )
+                            except Exception:
+                                pass
+                    Position.objects.filter(ticket__in=done).delete()
+                if batch.get('error'):
+                    errors.append(batch['error'])
+                    break
+                failed = set(batch.get('failed') or [])
+                # Lấy lại live còn lại
+                try:
+                    remaining = MT5NativeSession.positions() or []
+                except Exception:
+                    remaining = []
+                if failed and not done:
+                    for t in list(failed)[:5]:
+                        errors.append(f'#{t}: MT5 từ chối đóng')
+                    break
+                if not remaining:
+                    break
+
+        if wallet.mt5_login:
+            try:
+                connector.sync_account_info(wallet)
+                connector.sync_positions(wallet)
+                # History đầy đủ chỉ khi còn ít lệnh (tránh treo khi vừa đóng 1000)
+                left = 0
+                try:
+                    left = len(MT5NativeSession.positions() or [])
+                except Exception:
+                    left = 0
+                if left <= 30:
+                    connector.sync_history_from_mt5(wallet)
+                wallet.refresh_from_db()
+                wallet.calculate_metrics()
+                wallet.today_pnl = wallet.get_today_pnl()
+                wallet.save(update_fields=['today_pnl'])
+            except Exception as e:
+                logger.warning('close_all sync sau đóng: %s', e)
+
+        BotLog.log(
+            level='INFO',
+            category='EXECUTION',
+            message=f"Đóng toàn bộ nhanh: {closed}/{total} lệnh (USER / MANUAL_CLOSE).",
+            wallet=wallet,
+        )
+        payload = {'closed': closed, 'total': total, 'errors': errors}
+        if total == 0:
+            return True, 'Không có vị thế mở để đóng.', payload
+        if closed >= total and not errors:
+            return True, f'Đã đóng thành công toàn bộ {closed} lệnh (nguồn USER).', payload
+        if closed > 0:
+            return True, f'Đã đóng {closed}/{total} lệnh.', payload
+        return False, (errors[0] if errors else 'Không đóng được lệnh nào. Kiểm tra Algo Trading.'), payload
 
     @classmethod
     def recalculate_all_wallets(cls):

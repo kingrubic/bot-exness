@@ -425,9 +425,10 @@ class MT5NativeSession:
         if not deals:
             return []
         try:
-            from apps.trading.order_source import classify_order_source
+            from apps.trading.order_source import classify_order_source, resolve_close_reason
         except Exception:
             classify_order_source = None
+            resolve_close_reason = None
 
         by_pos: dict[str, dict] = {}
         for d in deals:
@@ -481,12 +482,22 @@ class MT5NativeSession:
             total_swap = float(sum(float(getattr(x, 'swap', 0) or 0) for x in grp['all']))
             net = round(total_profit + total_comm + total_swap, 2)
             lot = round(sum(float(getattr(x, 'volume', 0) or 0) for x in outs), 2) or float(getattr(out_deal, 'volume', 0) or 0)
-            comment = str(getattr(target, 'comment', '') or '').strip()
-            magic = int(getattr(target, 'magic', 0) or 0)
+            comment = str(getattr(out_deal, 'comment', '') or getattr(target, 'comment', '') or '').strip()
+            magic = int(getattr(in_deal or target, 'magic', 0) or getattr(target, 'magic', 0) or 0)
             if classify_order_source:
                 source = classify_order_source(magic, comment, pos_id)
             else:
                 source = 'BOT' if magic == 8882026 else 'USER'
+            deal_reason = cls.deal_int(out_deal, 'reason', -1)
+            if resolve_close_reason:
+                close_reason = resolve_close_reason(
+                    ticket=pos_id,
+                    deal_reason=deal_reason,
+                    comment=comment,
+                    source=source,
+                )
+            else:
+                close_reason = 'MANUAL_CLOSE' if source == 'USER' else 'TP_HIT'
             open_dt = datetime.fromtimestamp(open_ts, tz=dt_timezone.utc) if open_ts else datetime.now(dt_timezone.utc)
             close_dt = datetime.fromtimestamp(close_ts, tz=dt_timezone.utc) if close_ts else open_dt
             rows.append({
@@ -500,7 +511,7 @@ class MT5NativeSession:
                 'commission': round(total_comm, 2),
                 'swap': round(total_swap, 2),
                 'pips': 0.0,
-                'close_reason': 'MANUAL_CLOSE' if source == 'USER' else 'TP_HIT',
+                'close_reason': close_reason,
                 'is_win': net > 0,
                 'source': source,
                 'magic': magic,
@@ -514,17 +525,20 @@ class MT5NativeSession:
     _hist_cache = {'ts': 0.0, 'rows': None}
 
     @classmethod
-    def closed_history(cls, days: int = 90, limit: int = 200) -> list[dict]:
-        """Lịch sử lệnh đã đóng từ history_deals MT5 (cache 2s)."""
+    def closed_history(cls, days: int = 1, limit: int = 200) -> list[dict]:
+        """Lịch sử lệnh đã đóng trong ngày (mặc định hôm nay). Cache 15s."""
         empty: list[dict] = []
         if not cls.available() or not cls.ensure():
             return empty
         now = time.time()
         cached = cls._hist_cache
-        if cached.get('rows') is not None and (now - cached.get('ts', 0)) < 2.0:
+        if cached.get('rows') is not None and (now - cached.get('ts', 0)) < 15.0:
             return cached['rows'][:limit]
-        date_from = datetime.now() - timedelta(days=max(1, int(days)))
-        deals = cls.history_deals(date_from, datetime.now())
+        # Chỉ lấy từ 00:00 hôm nay (local)
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        if int(days or 1) > 1:
+            today_start = datetime.now() - timedelta(days=max(1, int(days)))
+        deals = cls.history_deals(today_start, datetime.now())
         if deals is None:
             return cached.get('rows') or empty
         rows = cls.group_closed_deals(deals)
@@ -533,14 +547,17 @@ class MT5NativeSession:
 
     @classmethod
     def history_from_for_wallet(cls, wallet_id: int) -> datetime:
+        """Đồng bộ history chỉ từ đầu ngày hôm nay (hoặc cursor gần nhất trong ngày)."""
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         prev = cls._history_cursor.get(wallet_id)
-        if prev:
-            return prev - timedelta(hours=2)
-        return datetime.now() - timedelta(days=90)
+        if prev and prev > today_start:
+            return prev - timedelta(hours=1)
+        return today_start
 
     @classmethod
     def mark_history_synced(cls, wallet_id: int):
         cls._history_cursor[wallet_id] = datetime.now()
+        cls._hist_cache = {'ts': 0.0, 'rows': None}
 
     _today_pnl_cache = {'ts': 0.0, 'day': None, 'data': None}
 
@@ -737,7 +754,7 @@ class MT5NativeSession:
         return {'success': False, 'error': f'Lỗi MT5 mở lệnh: {last_err}'}
 
     @classmethod
-    def close_market(cls, ticket: int, symbol: str = '', order_type: str = 'BUY', volume: float = 0.01) -> tuple[bool, str, dict]:
+    def close_market(cls, ticket: int, symbol: str = '', order_type: str = 'BUY', volume: float = 0.01, comment: str = 'Close') -> tuple[bool, str, dict]:
         if ticket <= 0:
             return False, 'Ticket không hợp lệ', {}
         if not cls.ensure():
@@ -756,6 +773,7 @@ class MT5NativeSession:
         modes = list(spec.get('filling_modes') or [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN])
         last_err = 'MT5 từ chối đóng lệnh'
         last_code = 0
+        close_comment = (comment or 'Close')[:31]
         with _LOCK:
             for _ in range(6):
                 tick = mt5.symbol_info_tick(broker)
@@ -772,7 +790,7 @@ class MT5NativeSession:
                         'price': price,
                         'deviation': 300,
                         'magic': int(getattr(pos, 'magic', 0) or 0),
-                        'comment': 'Close',
+                        'comment': close_comment,
                         'type_time': mt5.ORDER_TIME_GTC,
                         'type_filling': f_mode,
                     }
@@ -807,6 +825,119 @@ class MT5NativeSession:
             return True, f'Vị thế #{ticket} đã đóng trên sàn MT5', {'already_closed': True}
         retryable = last_code in RETRY_RETCODES
         return False, f'MT5 từ chối đóng lệnh: {last_err}', {'retryable': retryable, 'retcode': last_code}
+
+    @classmethod
+    def close_positions_batch(
+        cls,
+        positions: list | None = None,
+        *,
+        comment: str = 'BotClose',
+        only_profit_ge: float | None = None,
+        max_n: int = 500,
+    ) -> dict:
+        """
+        Đóng hàng loạt nhanh trên MT5: 1 lần ensure, cache filling/tick theo symbol,
+        không sleep/retry nặng, không sync DB. Trả tickets đã đóng.
+        """
+        empty = {'closed': [], 'failed': [], 'skipped': 0, 'total': 0}
+        if not cls.ensure():
+            return {**empty, 'error': 'MT5 chưa kết nối / Algo tắt'}
+        if positions is None:
+            positions = cls.positions() or []
+        if not positions:
+            return empty
+
+        targets = []
+        for pos in positions:
+            if only_profit_ge is not None:
+                pnl = float(getattr(pos, 'profit', 0) or 0)
+                swap = float(getattr(pos, 'swap', 0) or 0)
+                comm = float(getattr(pos, 'commission', 0) or 0)
+                if pnl < only_profit_ge and (pnl + swap + comm) < only_profit_ge:
+                    continue
+            targets.append(pos)
+            if len(targets) >= max_n:
+                break
+
+        fill_cache: dict[str, list] = {}
+        close_comment = (comment or 'Close')[:31]
+        closed: list[str] = []
+        failed: list[str] = []
+
+        with _LOCK:
+            for pos in targets:
+                ticket = int(getattr(pos, 'ticket', 0) or 0)
+                if ticket <= 0:
+                    continue
+                broker = str(getattr(pos, 'symbol', '') or '')
+                if not broker:
+                    failed.append(str(ticket))
+                    continue
+                real_vol = float(getattr(pos, 'volume', 0) or 0)
+                if real_vol <= 0:
+                    failed.append(str(ticket))
+                    continue
+                close_type = mt5.ORDER_TYPE_SELL if int(pos.type) == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                if broker not in fill_cache:
+                    fill_cache[broker] = list(
+                        cls.spec(broker).get('filling_modes')
+                        or [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
+                    )
+                modes = fill_cache[broker]
+                tick = mt5.symbol_info_tick(broker)
+                if not tick:
+                    failed.append(str(ticket))
+                    continue
+                price = float(tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask)
+                ok = False
+                for f_mode in modes:
+                    req = {
+                        'action': mt5.TRADE_ACTION_DEAL,
+                        'position': ticket,
+                        'symbol': broker,
+                        'volume': real_vol,
+                        'type': close_type,
+                        'price': price,
+                        'deviation': 500,
+                        'magic': int(getattr(pos, 'magic', 0) or 0),
+                        'comment': close_comment,
+                        'type_time': mt5.ORDER_TIME_GTC,
+                        'type_filling': f_mode,
+                    }
+                    res = mt5.order_send(req)
+                    if res is None:
+                        continue
+                    code = int(res.retcode)
+                    if code in SUCCESS_RETCODES or code == RET_POSITION_CLOSED:
+                        ok = True
+                        break
+                    if code == RET_INVALID_FILL:
+                        continue
+                    if code in (RET_AT_DISABLED_CLIENT, RET_AT_DISABLED_SERVER, RET_MARKET_CLOSED):
+                        return {
+                            'closed': closed,
+                            'failed': failed + [str(ticket)],
+                            'skipped': max(0, len(targets) - len(closed) - len(failed) - 1),
+                            'total': len(targets),
+                            'error': 'Algo tắt' if code in (RET_AT_DISABLED_CLIENT, RET_AT_DISABLED_SERVER) else 'Market closed',
+                        }
+                    # lỗi khác: thử filling tiếp; hết thì fail
+                if ok:
+                    closed.append(str(ticket))
+                else:
+                    # Có thể đã đóng ngoài luồng
+                    check = mt5.positions_get(ticket=ticket)
+                    if not check:
+                        closed.append(str(ticket))
+                    else:
+                        failed.append(str(ticket))
+
+        return {
+            'closed': closed,
+            'failed': failed,
+            'skipped': max(0, len(positions) - len(targets)),
+            'total': len(targets),
+        }
 
     @classmethod
     def modify_sltp(cls, ticket: int, sl: float, tp: float, symbol: str = '') -> tuple[bool, str]:

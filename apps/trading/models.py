@@ -74,7 +74,8 @@ class TradeHistory(models.Model):
         ('TREND_REVERSAL', 'Chốt Lời Khi Đảo Chiều Trend'),
         ('USER_AUTO_TP', 'Bot Chốt Lời Cho User (User Auto TP)'),
         ('MANUAL_CLOSE', 'Đóng Thủ Công (Manual Close)'),
-        ('MAX_DAILY_DD', 'Dừng Do Chạm Max Daily Loss'),
+        ('STOP_OUT', 'Thanh lý / Stop Out (sàn buộc đóng)'),
+        ('MAX_DAILY_DD', 'Thanh lý / Stop Out (sàn buộc đóng)'),
     ]
 
     ORDER_SOURCES = [
@@ -118,10 +119,11 @@ class TradeHistory(models.Model):
 
 
 class OrderSourceTag(models.Model):
-    """Chỉ lưu BOT/USER theo ticket MT5. Toàn bộ số liệu lệnh/lịch sử lấy từ terminal."""
+    """Nguồn mở lệnh (BOT/USER) + lý do đóng đã biết từ app (không đoán mù từ magic)."""
     ticket = models.CharField(max_length=64, unique=True, db_index=True)
     source = models.CharField(max_length=10, choices=Position.ORDER_SOURCES, default='USER')
     magic = models.IntegerField(default=0)
+    close_reason = models.CharField(max_length=30, blank=True, default='', verbose_name="Lý do đóng đã ghi nhận")
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
