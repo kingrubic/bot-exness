@@ -712,9 +712,7 @@ function updatePositionsTotals(positions) {
     const total = rows.reduce((sum, p) => sum + (Number(p.floating_pnl) || 0), 0);
     const html = formatPnl(total, { asBadge: true });
     const headerEl = document.getElementById('positions-total-pnl');
-    const cellEl = document.getElementById('positions-total-pnl-cell');
     if (headerEl) headerEl.innerHTML = html;
-    if (cellEl) cellEl.innerHTML = html;
     const btn = document.getElementById('btn-close-all-positions');
     if (btn) btn.disabled = rows.length === 0;
 }
