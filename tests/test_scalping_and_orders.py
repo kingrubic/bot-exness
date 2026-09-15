@@ -1013,5 +1013,25 @@ def test_overview_kpis_use_active_wallet_only():
     assert data['active_wallets_count'] == 1
 
 
+@pytest.mark.django_db
+def test_api_rejects_activating_second_wallet():
+    from django.test import Client
+    WalletAccount.objects.create(
+        name="A", account_type="DEMO", mt5_login="111", is_active=True,
+    )
+    b = WalletAccount.objects.create(
+        name="B", account_type="DEMO", mt5_login="222", is_active=False,
+    )
+    res = Client().put(
+        f'/api/admin/wallets/{b.id}/',
+        data='{"is_active": true}',
+        content_type='application/json',
+    )
+    assert res.status_code == 400
+    assert 'Đã có ví đang kích hoạt' in res.json()['error']
+    b.refresh_from_db()
+    assert b.is_active is False
+
+
 
 

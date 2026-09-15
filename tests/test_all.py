@@ -249,6 +249,8 @@ class ExnessAutoTradeTestCase(TestCase):
 
     def test_real_wallet_creation_auto_fetches_broker_balance(self):
         """Kiểm tra tạo ví Real không cần nhập vốn, tự động lấy số dư từ kết nối sàn Exness MT5."""
+        self.wallet.is_active = False
+        self.wallet.save(update_fields=['is_active'])
         from unittest.mock import patch
         with patch('apps.trading.mt5_connector.ExnessMT5Connector.test_connection', return_value=(True, 'OK', {'balance': 7500.50, 'server': 'Exness-MT5Real'})), \
              patch('apps.trading.mt5_connector.ExnessMT5Connector.connect', return_value=False), \

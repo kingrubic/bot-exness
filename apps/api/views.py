@@ -53,6 +53,20 @@ def _mt5_today_snap():
         return {'ok': False}, ''
 
 
+def _other_active_wallet(exclude_id=None):
+    qs = WalletAccount.objects.filter(is_active=True)
+    if exclude_id:
+        qs = qs.exclude(pk=exclude_id)
+    return qs.first()
+
+
+def _active_wallet_busy_error(other):
+    return (
+        f'Đã có ví đang kích hoạt: {other.name} (#{other.mt5_login}). '
+        'MT5 chỉ chạy 1 tài khoản. Hãy tắt ví đó trước khi bật ví này.'
+    )
+
+
 def _empty_source_metrics():
     return {
         'total_trades': 0,
@@ -1016,6 +1030,11 @@ def admin_wallet_manage_api(request, wallet_id=None):
         if not symbols or len(symbols) == 0:
             return Response({'error': 'Vui lòng chọn ít nhất một cặp giao dịch cho ví'}, status=status.HTTP_400_BAD_REQUEST)
 
+        if bool(data.get('is_active', True)):
+            other = _other_active_wallet()
+            if other:
+                return Response({'error': _active_wallet_busy_error(other)}, status=status.HTTP_400_BAD_REQUEST)
+
         # 1. Bắt buộc kiểm tra kết nối tới sàn Exness MT5 / Sandbox
         is_valid, msg, acc_info = ExnessMT5Connector.test_connection(
             login=mt5_login, 
@@ -1096,6 +1115,11 @@ def admin_wallet_manage_api(request, wallet_id=None):
             return Response({'error': 'Không tìm thấy ví'}, status=status.HTTP_404_NOT_FOUND)
 
         data = request.data
+        if bool(data.get('is_active', False)) and not wallet.is_active:
+            other = _other_active_wallet(exclude_id=wallet.id)
+            if other:
+                return Response({'error': _active_wallet_busy_error(other)}, status=status.HTTP_400_BAD_REQUEST)
+
         if 'allowed_symbols' in data:
             symbols = data['allowed_symbols']
             if isinstance(symbols, str):

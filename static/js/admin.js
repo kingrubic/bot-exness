@@ -987,11 +987,14 @@ function changeWalletsPage(page) {
 function displayWalletModalError(msg) {
     const alertBox = document.getElementById('wallet-modal-alert');
     const alertMsg = document.getElementById('wallet-modal-alert-msg');
-    if (alertBox && alertMsg) {
+    const modalEl = document.getElementById('modal-wallet');
+    const modalOpen = !!(modalEl && modalEl.classList.contains('show'));
+    if (alertBox && alertMsg && modalOpen) {
         alertMsg.innerText = msg;
         alertBox.classList.remove('d-none');
         alertBox.classList.add('d-flex');
         alertBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
     }
     showToast(msg, 'error');
 }
@@ -1525,6 +1528,17 @@ async function saveWallet(e) {
         return;
     }
 
+    const wantActive = document.getElementById('wallet-is-active').checked;
+    if (wantActive) {
+        const others = (walletsData || []).filter(w => w.is_active && String(w.id) !== String(id || ''));
+        if (others.length) {
+            displayWalletModalError(
+                `Đã có ví đang kích hoạt: ${others[0].name} (#${others[0].mt5_login}). MT5 chỉ chạy 1 tài khoản. Hãy tắt ví đó trước khi bật ví này.`
+            );
+            return;
+        }
+    }
+
     const saveBtn = document.getElementById('btn-save-wallet');
     const origSaveHtml = saveBtn ? saveBtn.innerHTML : '';
     if (saveBtn) {
@@ -1549,7 +1563,7 @@ async function saveWallet(e) {
         max_daily_loss_percent: parseFloat(document.getElementById('wallet-max-daily-loss')?.value || 4) || 4,
         allowed_symbols: selectedSymbols,
         bot_status: document.getElementById('wallet-bot-status').value,
-        is_active: document.getElementById('wallet-is-active').checked
+        is_active: wantActive
     };
 
     const url = id ? `/api/admin/wallets/${id}/` : '/api/admin/wallets/';
