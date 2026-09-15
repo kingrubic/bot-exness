@@ -98,6 +98,40 @@ python3 run_bot.py
 ```
 *(Tùy chọn: Bạn có thể đổi cổng bằng cách chạy `python3 run_bot.py 8080`)*
 
+### 6️⃣ Bước 6: Kết nối Exness MT5 trên Linux / Ubuntu (Wine)
+
+Trên Linux, **chỉ mở cửa sổ MT5 là chưa đủ**. Django không nói chuyện trực tiếp với terminal; phải chạy thêm **Wine Bridge** cổng `9999`. Cần **3 terminal**, theo đúng thứ tự:
+
+**Terminal 1 — Web Dashboard + Bot Worker:**
+```bash
+cd /home/ubuntu/Documents/resource/github-user/exness
+source venv/bin/activate
+python3 run_bot.py
+```
+
+**Terminal 2 — Mở phần mềm Exness MetaTrader 5:**
+```bash
+DISPLAY=:0 WINEPREFIX=~/.mt5 wine "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+```
+Đăng nhập tài khoản Exness trong cửa sổ MT5 (login, mật khẩu, server).
+
+**Terminal 3 — Wine Bridge (bắt buộc, cổng 9999):**
+```bash
+cd /home/ubuntu/Documents/resource/github-user/exness
+DISPLAY=:0 WINEPREFIX=~/.mt5 wine "C:\\Python310\\python.exe" -u "Z:$(pwd)/deploy/mt5_wine_bridge.py"
+```
+
+**Kiểm tra bridge đã sẵn sàng:**
+```bash
+curl http://127.0.0.1:9999/health
+```
+Kết quả phải có `"status": "OK"` và `"initialized": true`. Sau đó vào Admin → Ví → **Kiểm Tra Kết Nối Sàn**.
+
+> Lỗi `Chưa tìm thấy kết nối MT5 Terminal đang hoạt động` = chưa chạy Terminal 3 (bridge `9999`), dù cửa sổ MT5 đã mở.
+> MT5 chỉ giữ **1 tài khoản** tại một thời điểm. Ví trên web phải trùng login/server với phiên đang đăng nhập trong MT5.
+
+**Windows:** không cần Wine Bridge. Mở MetaTrader 5 rồi chạy `python run_bot.py` (hoặc `run_bot.bat`).
+
 ---
 
 ## 🌐 Đường Dẫn Truy Cập Hệ Thống:

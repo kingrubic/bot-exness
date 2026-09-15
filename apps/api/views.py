@@ -111,6 +111,8 @@ def build_live_ticks_data():
             'active_trades_count': p_count,
             'risk_percent': w.risk_percent,
             'default_lot_size': float(w.default_lot_size or 0.01),
+            'max_open_trades': int(w.max_open_trades or 1),
+            'min_take_profit_usd': float(w.min_take_profit_usd or 1),
             'is_active': w.is_active,
             'bot_status': w.bot_status,
             'bot_status_display': w.get_bot_status_display(),
@@ -333,6 +335,8 @@ def wallet_list_api(request):
             'active_trades_count': w.positions.count(),
             'risk_percent': w.risk_percent,
             'default_lot_size': float(w.default_lot_size or 0.01),
+            'max_open_trades': int(w.max_open_trades or 1),
+            'min_take_profit_usd': float(w.min_take_profit_usd or 1),
             'is_active': w.is_active,
             'bot_status': w.bot_status,
             'bot_status_display': w.get_bot_status_display(),
@@ -765,7 +769,8 @@ def admin_wallet_manage_api(request, wallet_id=None):
             default_lot_size=float(data.get('default_lot_size', 0.01)),
             risk_percent=float(data.get('risk_percent', 1.5)),
             max_daily_loss_percent=float(data.get('max_daily_loss_percent', 4.0)),
-            max_open_trades=int(data.get('max_open_trades', 5)),
+            max_open_trades=max(1, int(data.get('max_open_trades', 5))),
+            min_take_profit_usd=Decimal(str(data.get('min_take_profit_usd', 1.0) or 1.0)),
             is_active=data.get('is_active', True),
             bot_status=data.get('bot_status', 'RUNNING')
         )
@@ -839,7 +844,8 @@ def admin_wallet_manage_api(request, wallet_id=None):
         if 'default_lot_size' in data: wallet.default_lot_size = float(data['default_lot_size'])
         if 'risk_percent' in data: wallet.risk_percent = float(data['risk_percent'])
         if 'max_daily_loss_percent' in data: wallet.max_daily_loss_percent = float(data['max_daily_loss_percent'])
-        if 'max_open_trades' in data: wallet.max_open_trades = int(data['max_open_trades'])
+        if 'max_open_trades' in data: wallet.max_open_trades = max(1, int(data['max_open_trades']))
+        if 'min_take_profit_usd' in data: wallet.min_take_profit_usd = Decimal(str(data['min_take_profit_usd'] or 1))
         if 'is_active' in data: wallet.is_active = bool(data['is_active'])
         if 'bot_status' in data: wallet.bot_status = data['bot_status']
 

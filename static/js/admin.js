@@ -962,6 +962,8 @@ function renderWalletsTable(wallets, forceFullRender = false) {
                     <td class="font-monospace font-weight-bold text-primary">#${w.mt5_login}</td>
                     <td><span class="badge bg-light text-dark border font-monospace">${w.mt5_server}</span></td>
                     <td class="font-weight-bold text-dark font-monospace"><span class="badge bg-light text-primary border font-monospace px-2 py-1">${Number(w.default_lot_size || 0.01).toFixed(2)} Lot</span></td>
+                    <td class="font-weight-bold font-monospace"><span class="badge bg-light text-dark border px-2 py-1">${Number(w.max_open_trades || 1)} lệnh</span></td>
+                    <td class="font-weight-bold font-monospace"><span class="badge bg-light text-success border px-2 py-1">$${Number(w.min_take_profit_usd || 1).toFixed(2)}</span></td>
                     <td class="font-weight-bold text-success wallet-cell-balance" data-val="${w.balance}">${formatMoney(w.balance)}</td>
                     <td class="font-weight-bold text-primary wallet-cell-equity" data-val="${w.equity}">${formatMoney(w.equity)}</td>
                     <td class="wallet-cell-floating" data-val="${w.floating_pnl}">${formatPnl(w.floating_pnl, { asBadge: true })}</td>
@@ -1168,6 +1170,8 @@ async function openAddWalletModal() {
     const passHelp = document.getElementById('wallet-password-help');
     if (passHelp) passHelp.innerText = 'Mật khẩu MT5 giao dịch';
     if (document.getElementById('wallet-default-lot')) document.getElementById('wallet-default-lot').value = '0.01';
+    if (document.getElementById('wallet-max-open-trades')) document.getElementById('wallet-max-open-trades').value = '5';
+    if (document.getElementById('wallet-min-take-profit')) document.getElementById('wallet-min-take-profit').value = '1.00';
     if (document.getElementById('wallet-bot-status')) document.getElementById('wallet-bot-status').value = 'RUNNING';
     if (document.getElementById('wallet-is-active')) document.getElementById('wallet-is-active').checked = true;
 
@@ -1208,6 +1212,8 @@ async function openEditWalletModal(id) {
     if (passHelp) passHelp.innerText = 'Để trống nếu muốn giữ nguyên mật khẩu cũ';
     document.getElementById('wallet-mt5-server').value = w.mt5_server;
     if (document.getElementById('wallet-default-lot')) document.getElementById('wallet-default-lot').value = Number(w.default_lot_size || 0.01).toFixed(2);
+    if (document.getElementById('wallet-max-open-trades')) document.getElementById('wallet-max-open-trades').value = String(w.max_open_trades || 5);
+    if (document.getElementById('wallet-min-take-profit')) document.getElementById('wallet-min-take-profit').value = Number(w.min_take_profit_usd || 1).toFixed(2);
     if (document.getElementById('wallet-bot-status')) document.getElementById('wallet-bot-status').value = w.bot_status || 'RUNNING';
     if (document.getElementById('wallet-is-active')) document.getElementById('wallet-is-active').checked = w.is_active;
 
@@ -1385,6 +1391,8 @@ async function saveWallet(e) {
         account_type: account_type,
         capital: capitalVal,
         default_lot_size: parseFloat(document.getElementById('wallet-default-lot')?.value || 0.01) || 0.01,
+        max_open_trades: parseInt(document.getElementById('wallet-max-open-trades')?.value || '5', 10) || 5,
+        min_take_profit_usd: parseFloat(document.getElementById('wallet-min-take-profit')?.value || 1) || 1,
         allowed_symbols: selectedSymbols,
         bot_status: document.getElementById('wallet-bot-status').value,
         is_active: document.getElementById('wallet-is-active').checked

@@ -47,6 +47,10 @@ class WalletAccount(models.Model):
     risk_percent = models.FloatField(default=1.5, verbose_name="% Rủi Ro Mỗi Lệnh")
     max_daily_loss_percent = models.FloatField(default=4.0, verbose_name="% Giới Hạn Lỗ Tối Đa Trong Ngày")
     max_open_trades = models.IntegerField(default=100, verbose_name="Số Lệnh Mở Tối Đa")
+    min_take_profit_usd = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal('1.00'),
+        verbose_name="Số Tiền Min Chốt Lời (USD)"
+    )
     
     # Active Pairs configuration for this wallet
     # JSON list of allowed symbols e.g. ["XAUUSD", "EURUSD"]

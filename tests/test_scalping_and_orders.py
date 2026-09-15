@@ -1,5 +1,6 @@
 import pytest
 from decimal import Decimal
+from datetime import timedelta
 from django.utils import timezone
 from apps.accounts.models import WalletAccount
 from apps.symbols.models import SymbolConfig
@@ -126,12 +127,12 @@ def test_trend_pyramiding_and_anti_burn_lot_sizing():
     plan1 = AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, forecast, is_pyramiding=False)
     assert plan1 is not None
     assert plan1.calculated_lot >= 0.01
-    assert "Trend" in plan1.rationale
+    assert "Lướt" in plan1.rationale
 
     # 2. Lệnh 2 nhồi theo Trend (Pyramiding)
     plan2 = AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, forecast, is_pyramiding=True)
     assert plan2 is not None
-    assert "Trend" in plan2.rationale
+    assert "Lướt" in plan2.rationale
     assert plan2.calculated_lot >= 0.01
 
 
@@ -264,15 +265,16 @@ def test_fee_aware_profit_closing_and_breakeven():
 
 
 @pytest.mark.django_db
-def test_dynamic_stop_loss_trend_reversal_and_max_drawdown():
-    """Kiểm tra cơ chế cắt lỗ thông minh: Cắt lỗ khi xu hướng đảo chiều & ngắt lỗ tối đa bảo vệ ví."""
+def test_no_stop_loss_hold_losing_trade():
+    """Không cắt lỗ: lệnh âm được giữ dù trend đảo chiều / drawdown lớn."""
     wallet = WalletAccount.objects.create(
-        name="SL Wallet",
+        name="No SL Wallet",
         account_type="DEMO",
         mt5_login="",
         balance_db=Decimal("1000.00"),
         capital=Decimal("1000.00"),
         is_active=True,
+        max_open_trades=5,
         allowed_symbols_json='["XAUUSD"]'
     )
 
@@ -287,48 +289,197 @@ def test_dynamic_stop_loss_trend_reversal_and_max_drawdown():
         is_active=True
     )
 
-    # 1. Tạo vị thế BUY
-    pos = Position.objects.create(
+    Position.objects.create(
         wallet=wallet,
         ticket="LOCAL-SL-1",
         symbol="XAUUSD",
         position_type="BUY",
         lot_size=0.01,
         open_price=Decimal("2750.00"),
-        current_price=Decimal("2748.00"), # Giá giảm -$2.00 (-20 pips -> Âm < 5U -> Chưa cắt lỗ)
+        current_price=Decimal("2748.00"),
         opened_at=timezone.now()
     )
 
-    # Xu hướng đảo chiều sang BEARISH
     MarketForecast.objects.create(
         symbol="XAUUSD",
         timeframe="M5",
         trend_bias="BEARISH",
         recommended_action="READY_TO_SELL",
         confidence_score=90.0,
-        current_price=Decimal("2748.00")
+        current_price=Decimal("2744.00")
     )
 
-    sym.current_price = Decimal("2748.00")
-    sym.save()
-
-    ExecutionEngine.update_positions_and_pnl()
-
-    # Âm $2.00 (< 5U) -> Vẫn giữ lệnh
-    assert Position.objects.filter(ticket="LOCAL-SL-1").exists()
-
-    # Giá tiếp tục giảm xuống 2744.00 (Âm -$6.00 >= 5U + Trend đảo chiều sang BEARISH -> Kích hoạt cắt lỗ)
     sym.current_price = Decimal("2744.00")
     sym.save()
-
     ExecutionEngine.update_positions_and_pnl()
 
-    # Vị thế bị cắt lỗ do âm >= 5U và xu hướng đảo chiều
-    assert not Position.objects.filter(ticket="LOCAL-SL-1").exists()
-    hist = TradeHistory.objects.filter(ticket="LOCAL-SL-1").first()
+    assert Position.objects.filter(ticket="LOCAL-SL-1").exists()
+    assert not TradeHistory.objects.filter(ticket="LOCAL-SL-1").exists()
+
+
+@pytest.mark.django_db
+def test_wallet_max_open_trades_cap():
+    """Số lệnh đồng thời lấy từ cấu hình ví, không giới hạn theo vốn."""
+    wallet = WalletAccount.objects.create(
+        name="Cap Wallet",
+        account_type="DEMO",
+        mt5_login="",
+        balance_db=Decimal("5000.00"),
+        capital=Decimal("5000.00"),
+        margin_free=Decimal("4500.00"),
+        is_active=True,
+        max_open_trades=2,
+        allowed_symbols_json='["XAUUSD"]'
+    )
+    assert ExecutionEngine.get_max_allowed_positions_for_wallet(wallet) == 2
+
+    Position.objects.create(
+        wallet=wallet, ticket="LOCAL-CAP-1", symbol="XAUUSD",
+        position_type="BUY", lot_size=0.01, open_price=Decimal("2750.00"),
+        current_price=Decimal("2750.00"), opened_at=timezone.now()
+    )
+    Position.objects.create(
+        wallet=wallet, ticket="LOCAL-CAP-2", symbol="XAUUSD",
+        position_type="BUY", lot_size=0.01, open_price=Decimal("2751.00"),
+        current_price=Decimal("2751.00"), opened_at=timezone.now()
+    )
+
+    can_enter, _, reason = ExecutionEngine.can_wallet_open_or_pyramid(wallet, "XAUUSD", "BUY")
+    assert can_enter is False
+    assert "2/2" in reason
+
+    wallet.max_open_trades = 4
+    wallet.save()
+    can_enter2, is_pyr, _ = ExecutionEngine.can_wallet_open_or_pyramid(wallet, "XAUUSD", "BUY")
+    assert can_enter2 is True
+    assert is_pyr is True
+
+
+@pytest.mark.django_db
+def test_min_take_profit_usd_per_wallet():
+    """Chỉ đóng khi lãi ròng đạt min_take_profit_usd của ví."""
+    wallet = WalletAccount.objects.create(
+        name="Min TP Wallet",
+        account_type="DEMO",
+        mt5_login="",
+        balance_db=Decimal("2000.00"),
+        capital=Decimal("2000.00"),
+        is_active=True,
+        min_take_profit_usd=Decimal("5.00"),
+        allowed_symbols_json='["XAUUSD"]'
+    )
+    sym = SymbolConfig.objects.create(
+        symbol="XAUUSD",
+        display_name="Gold",
+        category="METALS",
+        digits=2,
+        point_size=0.01,
+        contract_size=100.0,
+        current_price=Decimal("2750.50"),
+        is_active=True
+    )
+    Position.objects.create(
+        wallet=wallet,
+        ticket="LOCAL-MINTP-1",
+        symbol="XAUUSD",
+        position_type="BUY",
+        lot_size=0.01,
+        open_price=Decimal("2750.00"),
+        current_price=Decimal("2750.50"),
+        opened_at=timezone.now()
+    )
+    ExecutionEngine.update_positions_and_pnl()
+    assert Position.objects.filter(ticket="LOCAL-MINTP-1").exists()
+
+    sym.current_price = Decimal("2756.00")
+    sym.save()
+    ExecutionEngine.update_positions_and_pnl()
+    assert not Position.objects.filter(ticket="LOCAL-MINTP-1").exists()
+    hist = TradeHistory.objects.filter(ticket="LOCAL-MINTP-1").first()
     assert hist is not None
-    assert hist.close_reason == 'TREND_REVERSAL_SL'
-    assert hist.is_win is False
+    assert float(hist.pnl) > 0
+
+
+@pytest.mark.django_db
+def test_plan_uses_live_market_ask_bid():
+    wallet = WalletAccount.objects.create(
+        name="Mkt Wallet",
+        account_type="DEMO",
+        mt5_login="",
+        allowed_symbols_json='["XAUUSD"]',
+        is_active=True
+    )
+    sym = SymbolConfig.objects.create(
+        symbol="XAUUSD",
+        display_name="Gold",
+        category="METALS",
+        digits=2,
+        current_price=Decimal("2750.00"),
+        current_bid=Decimal("2749.80"),
+        current_ask=Decimal("2750.20"),
+        is_active=True
+    )
+    forecast = MarketForecast.objects.create(
+        symbol="XAUUSD", timeframe="M5", trend_bias="BULLISH",
+        confidence_score=80, current_price=Decimal("2750.00")
+    )
+    buy_plan = AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, forecast)
+    assert float(buy_plan.entry_price) == 2750.20
+
+    forecast.trend_bias = "BEARISH"
+    forecast.save()
+    sell_plan = AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, forecast)
+    assert float(sell_plan.entry_price) == 2749.80
+
+
+@pytest.mark.django_db
+def test_purge_failed_and_stale_unfilled_plans():
+    wallet = WalletAccount.objects.create(
+        name="Purge Wallet",
+        account_type="DEMO",
+        mt5_login="",
+        allowed_symbols_json='["XAUUSD"]',
+        is_active=True
+    )
+    failed = TradingPlan.objects.create(
+        wallet=wallet, symbol="XAUUSD", direction="BUY",
+        entry_price=Decimal("2750.00"), entry_zone_low=Decimal("2750.00"),
+        entry_zone_high=Decimal("2750.00"), rationale="fail",
+        status="FAILED"
+    )
+    cancelled = TradingPlan.objects.create(
+        wallet=wallet, symbol="XAUUSD", direction="SELL",
+        entry_price=Decimal("2750.00"), entry_zone_low=Decimal("2750.00"),
+        entry_zone_high=Decimal("2750.00"), rationale="cancel",
+        status="CANCELLED"
+    )
+    stale = TradingPlan.objects.create(
+        wallet=wallet, symbol="XAUUSD", direction="BUY",
+        entry_price=Decimal("2750.00"), entry_zone_low=Decimal("2750.00"),
+        entry_zone_high=Decimal("2750.00"), rationale="stale",
+        status="PENDING_TRIGGER"
+    )
+    TradingPlan.objects.filter(pk=stale.pk).update(created_at=timezone.now() - timedelta(minutes=10))
+    fresh = TradingPlan.objects.create(
+        wallet=wallet, symbol="EURUSD", direction="BUY",
+        entry_price=Decimal("1.08"), entry_zone_low=Decimal("1.08"),
+        entry_zone_high=Decimal("1.08"), rationale="fresh",
+        status="PENDING_TRIGGER"
+    )
+    executing = TradingPlan.objects.create(
+        wallet=wallet, symbol="GBPUSD", direction="BUY",
+        entry_price=Decimal("1.26"), entry_zone_low=Decimal("1.26"),
+        entry_zone_high=Decimal("1.26"), rationale="exec",
+        status="EXECUTING"
+    )
+
+    n = AutoPlanGenerator.purge_dead_plans()
+    assert n >= 3
+    assert not TradingPlan.objects.filter(pk=failed.pk).exists()
+    assert not TradingPlan.objects.filter(pk=cancelled.pk).exists()
+    assert not TradingPlan.objects.filter(pk=stale.pk).exists()
+    assert TradingPlan.objects.filter(pk=fresh.pk).exists()
+    assert TradingPlan.objects.filter(pk=executing.pk).exists()
 
 
 
