@@ -1030,38 +1030,41 @@ def admin_wallet_manage_api(request, wallet_id=None):
         if not symbols or len(symbols) == 0:
             return Response({'error': 'Vui lòng chọn ít nhất một cặp giao dịch cho ví'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if bool(data.get('is_active', True)):
+        want_active = bool(data.get('is_active', True))
+        if want_active:
             other = _other_active_wallet()
             if other:
                 return Response({'error': _active_wallet_busy_error(other)}, status=status.HTTP_400_BAD_REQUEST)
-
-        # 1. Bắt buộc kiểm tra kết nối tới sàn Exness MT5 / Sandbox
-        is_valid, msg, acc_info = ExnessMT5Connector.test_connection(
-            login=mt5_login, 
-            password=mt5_pass, 
-            server=server_name, 
-            account_type=account_type
-        )
-        if not is_valid:
-            return Response({'error': f'Lỗi kết nối sàn Exness: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
 
         if 'Trial' in server_name or 'Demo' in server_name or account_type == 'DEMO':
             detected_type = 'DEMO'
         else:
             detected_type = 'REAL'
 
-        # Đối với ví Real: Tự động lấy số dư thực tế từ sàn MT5 (không bắt buộc nhập tay)
-        # Đối với ví Demo: Lấy số vốn từ form nếu có, hoặc từ thông tin kết nối
-        if detected_type == 'REAL':
+        acc_info = {}
+        # Chỉ kết nối MT5 khi kích hoạt ví; lưu cấu hình inactive chỉ ghi DB.
+        if want_active:
+            is_valid, msg, acc_info = ExnessMT5Connector.test_connection(
+                login=mt5_login,
+                password=mt5_pass,
+                server=server_name,
+                account_type=account_type
+            )
+            if not is_valid:
+                return Response({'error': f'Lỗi kết nối sàn Exness: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if want_active and detected_type == 'REAL':
             init_cap = Decimal(str(acc_info.get('balance', 1000.00)))
         elif 'capital' in data and data['capital'] is not None and str(data['capital']).strip() != '':
             init_cap = Decimal(str(data['capital']))
         elif 'balance' in data and data['balance'] is not None and str(data['balance']).strip() != '':
             init_cap = Decimal(str(data['balance']))
-        else:
+        elif want_active:
             init_cap = Decimal(str(acc_info.get('balance', 1000.00)))
+        else:
+            init_cap = Decimal('1000.00')
 
-        lev_val = int(acc_info.get('leverage', 2000)) if 'acc_info' in locals() and acc_info and acc_info.get('leverage') else 2000
+        lev_val = int(acc_info.get('leverage', 2000)) if acc_info and acc_info.get('leverage') else 2000
         wallet = WalletAccount.objects.create(
             name=name,
             account_type=detected_type,
@@ -1077,35 +1080,38 @@ def admin_wallet_manage_api(request, wallet_id=None):
             max_daily_loss_percent=float(data.get('max_daily_loss_percent', 4.0)),
             max_open_trades=max(1, int(data.get('max_open_trades', 5))),
             min_take_profit_usd=Decimal(str(data.get('min_take_profit_usd', 1.0) or 1.0)),
-            is_active=data.get('is_active', True),
-            bot_status=data.get('bot_status', 'RUNNING')
+            is_active=want_active,
+            bot_status=data.get('bot_status', 'RUNNING' if want_active else 'STOPPED')
         )
         wallet.set_allowed_symbols(symbols)
         wallet.save()
         from apps.core.trading_defaults import activate_wallet_symbols
         activate_wallet_symbols(symbols)
 
-        # Tự động đồng bộ ngay số dư và lệnh trực tiếp từ sàn Exness MT5
-        try:
-            connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
-            if connector.connect():
-                connector.sync_account_info(wallet)
-                connector.sync_positions(wallet)
-        except Exception:
-            pass
+        if want_active:
+            try:
+                connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
+                if connector.connect():
+                    connector.sync_account_info(wallet)
+                    connector.sync_positions(wallet)
+            except Exception:
+                pass
 
-        # Tự động tính toán kế hoạch giao dịch AI mới dựa trên số dư & danh sách cặp cho phép mới
-        created_plans = AutoPlanGenerator.refresh_plans_for_wallet(wallet)
-        BotLog.log(
-            level='INFO',
-            category='PLAN',
-            message=f"Đã sinh {len(created_plans)} kế hoạch giao dịch AI mới cho ví '{wallet.name}' dựa trên số dư ${wallet.balance:,.2f} và {len(wallet.allowed_symbols)} cặp giao dịch cho phép.",
-            wallet=wallet
-        )
-
-        payload = {'success': True, 'message': 'Kết nối và tạo ví Exness thành công', 'wallet_id': wallet.id}
-        if wallet.is_active:
+            created_plans = AutoPlanGenerator.refresh_plans_for_wallet(wallet)
+            BotLog.log(
+                level='INFO',
+                category='PLAN',
+                message=f"Đã sinh {len(created_plans)} kế hoạch giao dịch AI mới cho ví '{wallet.name}' dựa trên số dư ${wallet.balance:,.2f} và {len(wallet.allowed_symbols)} cặp giao dịch cho phép.",
+                wallet=wallet
+            )
+            payload = {'success': True, 'message': 'Kết nối và tạo ví Exness thành công', 'wallet_id': wallet.id}
             payload.update(_algo_warning_fields())
+        else:
+            payload = {
+                'success': True,
+                'message': 'Đã lưu cấu hình ví (chưa kích hoạt — không kết nối MT5)',
+                'wallet_id': wallet.id,
+            }
         return Response(payload)
 
     elif request.method == 'PUT':
@@ -1134,14 +1140,6 @@ def admin_wallet_manage_api(request, wallet_id=None):
         new_login = data.get('mt5_login', wallet.mt5_login).strip()
         new_pass = data.get('mt5_password', '').strip() or wallet.mt5_password
 
-        # Nếu thay đổi thông tin kết nối, kiểm tra lại với sàn và lưu đòn bẩy mới
-        if ('mt5_server' in data or 'mt5_login' in data or ('mt5_password' in data and data['mt5_password'].strip())):
-            is_valid, msg, acc_info = ExnessMT5Connector.test_connection(new_login, new_pass, new_server)
-            if not is_valid:
-                return Response({'error': f'Lỗi kết nối sàn Exness: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
-            if acc_info and acc_info.get('leverage'):
-                wallet.leverage = int(acc_info['leverage'])
-
         if 'name' in data and data['name'].strip(): wallet.name = data['name'].strip()
         if 'capital' in data and data['capital'] is not None and str(data['capital']).strip() != '':
             wallet.capital = Decimal(str(data['capital']))
@@ -1167,29 +1165,41 @@ def admin_wallet_manage_api(request, wallet_id=None):
         if 'is_active' in data: wallet.is_active = bool(data['is_active'])
         if 'bot_status' in data: wallet.bot_status = data['bot_status']
 
+        want_active = bool(wallet.is_active)
+
+        # Chỉ kết nối / kiểm tra MT5 khi ví đang (hoặc sẽ) kích hoạt
+        if want_active and ('mt5_server' in data or 'mt5_login' in data or ('mt5_password' in data and data['mt5_password'].strip())):
+            is_valid, msg, acc_info = ExnessMT5Connector.test_connection(new_login, new_pass, new_server)
+            if not is_valid:
+                return Response({'error': f'Lỗi kết nối sàn Exness: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
+            if acc_info and acc_info.get('leverage'):
+                wallet.leverage = int(acc_info['leverage'])
+
         wallet.save()
 
-        # Tự động đồng bộ lại từ MT5
-        try:
-            connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
-            if connector.connect():
-                connector.sync_account_info(wallet)
-                connector.sync_positions(wallet)
-        except Exception:
-            pass
+        if want_active:
+            try:
+                connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
+                if connector.connect():
+                    connector.sync_account_info(wallet)
+                    connector.sync_positions(wallet)
+            except Exception:
+                pass
 
-        # Xóa các plan AI chưa khớp lệnh cũ & tính toán lại plan mới dựa trên số dư và danh sách cặp cho phép mới
-        created_plans = AutoPlanGenerator.refresh_plans_for_wallet(wallet)
-        BotLog.log(
-            level='INFO',
-            category='PLAN',
-            message=f"Đã làm mới kế hoạch giao dịch AI cho ví '{wallet.name}': Xóa các plan cũ chưa khớp và tạo mới {len(created_plans)} plan theo số dư ${wallet.balance:,.2f} & {len(wallet.allowed_symbols)} cặp giao dịch.",
-            wallet=wallet
-        )
-
-        payload = {'success': True, 'message': 'Cập nhật ví Exness thành công'}
-        if wallet.is_active:
+            created_plans = AutoPlanGenerator.refresh_plans_for_wallet(wallet)
+            BotLog.log(
+                level='INFO',
+                category='PLAN',
+                message=f"Đã làm mới kế hoạch giao dịch AI cho ví '{wallet.name}': Xóa các plan cũ chưa khớp và tạo mới {len(created_plans)} plan theo số dư ${wallet.balance:,.2f} & {len(wallet.allowed_symbols)} cặp giao dịch.",
+                wallet=wallet
+            )
+            payload = {'success': True, 'message': 'Cập nhật ví Exness thành công'}
             payload.update(_algo_warning_fields())
+        else:
+            payload = {
+                'success': True,
+                'message': 'Đã lưu cấu hình ví (chưa kích hoạt — không kết nối MT5)',
+            }
         return Response(payload)
 
     elif request.method == 'DELETE':

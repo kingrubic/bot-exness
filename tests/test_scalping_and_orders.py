@@ -1033,5 +1033,41 @@ def test_api_rejects_activating_second_wallet():
     assert b.is_active is False
 
 
+@pytest.mark.django_db
+def test_inactive_wallet_save_skips_mt5_connection():
+    from django.test import Client
+    from unittest.mock import patch
+    with patch('apps.trading.mt5_connector.ExnessMT5Connector.test_connection') as mock_test, \
+         patch('apps.trading.mt5_connector.ExnessMT5Connector.connect') as mock_connect:
+        res = Client().post('/api/admin/wallets/', {
+            'name': 'Inactive Save',
+            'account_type': 'DEMO',
+            'mt5_login': '555666',
+            'mt5_password': 'secret',
+            'mt5_server': 'Exness-MT5Trial17',
+            'allowed_symbols': ['XAUUSD'],
+            'is_active': False,
+            'capital': 200,
+        }, content_type='application/json')
+        assert res.status_code == 200
+        assert res.json()['success'] is True
+        mock_test.assert_not_called()
+        mock_connect.assert_not_called()
+        w = WalletAccount.objects.get(mt5_login='555666')
+        assert w.is_active is False
+        assert float(w.capital) == 200.0
+
+        mock_test.reset_mock()
+        mock_connect.reset_mock()
+        res2 = Client().put(
+            f'/api/admin/wallets/{w.id}/',
+            data='{"name":"Inactive Updated","is_active":false,"mt5_login":"555666","mt5_server":"Exness-MT5Trial17"}',
+            content_type='application/json',
+        )
+        assert res2.status_code == 200
+        mock_test.assert_not_called()
+        mock_connect.assert_not_called()
+
+
 
 

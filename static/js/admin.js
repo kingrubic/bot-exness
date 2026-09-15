@@ -1543,7 +1543,9 @@ async function saveWallet(e) {
     const origSaveHtml = saveBtn ? saveBtn.innerHTML : '';
     if (saveBtn) {
         saveBtn.disabled = true;
-        saveBtn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span> Đang kết nối và đồng bộ ví...`;
+        saveBtn.innerHTML = wantActive
+            ? `<span class="spinner-border spinner-border-sm me-1"></span> Đang kết nối và đồng bộ ví...`
+            : `<span class="spinner-border spinner-border-sm me-1"></span> Đang lưu cấu hình...`;
     }
 
     const capInput = document.getElementById('wallet-capital') || document.getElementById('wallet-balance');
