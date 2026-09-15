@@ -1034,10 +1034,73 @@ def test_api_rejects_activating_second_wallet():
 
 
 @pytest.mark.django_db
+def test_activate_wallet_calls_login_and_algo():
+    from django.test import Client
+    from unittest.mock import patch
+    w = WalletAccount.objects.create(
+        name='Switch', account_type='DEMO', mt5_login='777888',
+        mt5_password='pw', mt5_server='Exness-MT5Trial17', is_active=False,
+    )
+    with patch('apps.trading.mt5_connector.ExnessMT5Connector.activate_wallet_session', return_value=(
+        True, 'Đã login MT5 #777888',
+        {'balance': 100.0, 'leverage': 500, 'algo_trading': True},
+    )) as mock_act, \
+         patch('apps.trading.mt5_connector.ExnessMT5Connector.connect', return_value=False):
+        res = Client().put(
+            f'/api/admin/wallets/{w.id}/',
+            data='{"is_active": true}',
+            content_type='application/json',
+        )
+        assert res.status_code == 200
+        assert res.json()['success'] is True
+        assert 'login' in res.json()['message'].lower() or res.json().get('algo_required') is False
+        mock_act.assert_called_once()
+        w.refresh_from_db()
+        assert w.is_active is True
+        assert w.leverage == 500
+
+
+@pytest.mark.django_db
+def test_deactivate_wallet_purges_plans_and_skips_new():
+    from apps.plans.models import TradingPlan
+    from apps.plans.planner import AutoPlanGenerator
+    from apps.analysis.models import MarketForecast
+    wallet = WalletAccount.objects.create(
+        name='Deact', account_type='DEMO', mt5_login='909090',
+        is_active=True, balance_db=Decimal('100'), equity_db=Decimal('100'),
+        allowed_symbols_json='["XAUUSD"]',
+    )
+    sym = SymbolConfig.objects.create(
+        symbol='XAUUSD', display_name='Gold', category='METALS',
+        digits=2, point_size=0.01, current_price=Decimal('2700'), is_active=True,
+    )
+    TradingPlan.objects.create(
+        wallet=wallet, symbol='XAUUSD', timeframe='M5', direction='BUY',
+        entry_price=Decimal('2700'), entry_zone_low=Decimal('2700'), entry_zone_high=Decimal('2700'),
+        status='PENDING_TRIGGER', calculated_lot=0.01, rationale='test',
+    )
+    assert TradingPlan.objects.filter(wallet=wallet).count() == 1
+
+    wallet.is_active = False
+    wallet.bot_status = 'STOPPED'
+    wallet.save()
+    assert TradingPlan.objects.filter(wallet=wallet).count() == 0
+
+    fc = MarketForecast.objects.create(
+        symbol='XAUUSD', timeframe='M5', trend_bias='BULLISH',
+        recommended_action='READY_TO_BUY', confidence_score=80,
+        trigger_condition='now', analysis_rationale='test',
+    )
+    assert AutoPlanGenerator.refresh_plans_for_wallet(wallet) == []
+    assert AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, fc) is None
+    assert TradingPlan.objects.filter(wallet=wallet).count() == 0
+
+
+@pytest.mark.django_db
 def test_inactive_wallet_save_skips_mt5_connection():
     from django.test import Client
     from unittest.mock import patch
-    with patch('apps.trading.mt5_connector.ExnessMT5Connector.test_connection') as mock_test, \
+    with patch('apps.trading.mt5_connector.ExnessMT5Connector.activate_wallet_session') as mock_act, \
          patch('apps.trading.mt5_connector.ExnessMT5Connector.connect') as mock_connect:
         res = Client().post('/api/admin/wallets/', {
             'name': 'Inactive Save',
@@ -1051,13 +1114,13 @@ def test_inactive_wallet_save_skips_mt5_connection():
         }, content_type='application/json')
         assert res.status_code == 200
         assert res.json()['success'] is True
-        mock_test.assert_not_called()
+        mock_act.assert_not_called()
         mock_connect.assert_not_called()
         w = WalletAccount.objects.get(mt5_login='555666')
         assert w.is_active is False
         assert float(w.capital) == 200.0
 
-        mock_test.reset_mock()
+        mock_act.reset_mock()
         mock_connect.reset_mock()
         res2 = Client().put(
             f'/api/admin/wallets/{w.id}/',
@@ -1065,7 +1128,7 @@ def test_inactive_wallet_save_skips_mt5_connection():
             content_type='application/json',
         )
         assert res2.status_code == 200
-        mock_test.assert_not_called()
+        mock_act.assert_not_called()
         mock_connect.assert_not_called()
 
 

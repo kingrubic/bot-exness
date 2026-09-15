@@ -175,7 +175,74 @@ class ExnessMT5Connector:
         # 3. Chế độ Standby / Sandbox Simulation (Chỉ khi không thể kết nối MT5 Terminal thật)
         return False, "Chưa tìm thấy kết nối MT5 Terminal đang hoạt động. Vui lòng mở phần mềm Exness MT5 trên máy để đồng bộ số dư và lệnh thực tế.", {}
 
-    def connect(self) -> bool:
+    @classmethod
+    def activate_wallet_session(cls, login, password, server, account_type='DEMO') -> tuple[bool, str, dict]:
+        """Khi kích hoạt ví: mở MT5 → login tài khoản (được phép đổi) → trả account_info."""
+        from apps.trading.mt5_launcher import MT5Launcher
+
+        if not login or not str(login).strip():
+            return False, 'Số tài khoản MT5 không được để trống.', {}
+        if not password or not str(password).strip():
+            return False, 'Mật khẩu MT5 không được để trống.', {}
+        if not server or not str(server).strip():
+            return False, 'Máy chủ Exness không được để trống.', {}
+
+        login_str = str(login).replace('#', '').strip()
+        if not login_str.isdigit():
+            return False, f"Số tài khoản MT5 '{login_str}' không hợp lệ.", {}
+        server_clean = str(server).strip()
+
+        try:
+            MT5Launcher.ensure_terminal_running()
+        except Exception:
+            pass
+
+        if not MT5_AVAILABLE:
+            return cls.test_connection(login_str, password, server_clean, account_type=account_type)
+
+        try:
+            from apps.trading.mt5_session import MT5NativeSession
+            if not MT5NativeSession.ensure():
+                return False, 'Không khởi tạo được kết nối IPC tới MetaTrader 5.', {}
+
+            ok = MT5NativeSession.login(
+                int(login_str), password, server_clean, allow_switch=True
+            )
+            if not ok:
+                err = None
+                try:
+                    import MetaTrader5 as _mt5
+                    err = _mt5.last_error()
+                except Exception:
+                    pass
+                detail = f' Mã lỗi MT5: {err}' if err else ''
+                return False, f'Đăng nhập MT5 #{login_str} thất bại.{detail}', {}
+
+            acc = MT5NativeSession.account()
+            if not acc:
+                return False, 'Đã gửi login nhưng MT5 không trả account_info.', {}
+
+            snap = MT5NativeSession.terminal_snapshot()
+            algo_on = bool(snap.get('trade_allowed'))
+            info = {
+                'login': acc.login,
+                'server': acc.server,
+                'balance': float(acc.balance),
+                'equity': float(acc.equity),
+                'leverage': acc.leverage,
+                'currency': acc.currency,
+                'mode': 'EXNESS_LIVE_MT5',
+                'algo_trading': algo_on,
+            }
+            msg = (
+                f'Đã login MT5 #{acc.login} ({acc.server}) — Số dư: ${acc.balance:,.2f}'
+            )
+            return True, msg, info
+        except Exception as e:
+            logger.warning('activate_wallet_session error: %s', e)
+            return False, f'Lỗi kích hoạt ví trên MT5: {e}', {}
+
+    def connect(self, allow_switch: bool = False) -> bool:
         """Khởi tạo kết nối tới MT5 Terminal (Native hoặc Wine Bridge)."""
         if not self.login:
             return False
@@ -188,7 +255,7 @@ class ExnessMT5Connector:
         if MT5_AVAILABLE:
             try:
                 from apps.trading.mt5_session import MT5NativeSession
-                if MT5NativeSession.login(login_clean, self.password or '', self.server or ''):
+                if MT5NativeSession.login(login_clean, self.password or '', self.server or '', allow_switch=allow_switch):
                     self.is_connected = True
                     return True
                 acc = MT5NativeSession.account()

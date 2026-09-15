@@ -77,7 +77,23 @@ class WalletAccount(models.Model):
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
         if self.is_active and self.pk:
-            type(self).objects.filter(is_active=True).exclude(pk=self.pk).update(is_active=False)
+            others = list(type(self).objects.filter(is_active=True).exclude(pk=self.pk))
+            if others:
+                type(self).objects.filter(pk__in=[o.pk for o in others]).update(
+                    is_active=False, bot_status='STOPPED'
+                )
+                try:
+                    from apps.plans.planner import AutoPlanGenerator
+                    for o in others:
+                        AutoPlanGenerator.purge_all_plans_for_wallet(o)
+                except Exception:
+                    pass
+        if self.pk and not self.is_active:
+            try:
+                from apps.plans.planner import AutoPlanGenerator
+                AutoPlanGenerator.purge_all_plans_for_wallet(self)
+            except Exception:
+                pass
 
     @classmethod
     def get_current(cls):
@@ -98,7 +114,14 @@ class WalletAccount(models.Model):
                             keep = matched
             except Exception:
                 pass
-            cls.objects.filter(is_active=True).exclude(pk=keep.pk).update(is_active=False)
+            cls.objects.filter(is_active=True).exclude(pk=keep.pk).update(is_active=False, bot_status='STOPPED')
+            try:
+                from apps.plans.planner import AutoPlanGenerator
+                for w in active:
+                    if w.pk != keep.pk:
+                        AutoPlanGenerator.purge_all_plans_for_wallet(w)
+            except Exception:
+                pass
         return keep
 
     @property

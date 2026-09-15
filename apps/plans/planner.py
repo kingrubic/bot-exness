@@ -57,6 +57,9 @@ class AutoPlanGenerator:
         # Check if symbol is allowed for this wallet
         if symbol_config.symbol not in wallet.allowed_symbols:
             return None
+        if not getattr(wallet, 'is_active', False):
+            AutoPlanGenerator.purge_all_plans_for_wallet(wallet)
+            return None
         if not AutoPlanGenerator.wallet_has_capital(wallet):
             AutoPlanGenerator.purge_all_plans_for_wallet(wallet)
             return None
@@ -138,6 +141,9 @@ class AutoPlanGenerator:
     def update_or_create_plan_for_wallet(cls, wallet: WalletAccount, symbol_config: SymbolConfig, forecast: MarketForecast, is_pyramiding: bool = False) -> TradingPlan:
         """Làm mới 1 plan hiện tại cho ví+cặp: plan cũ (không EXECUTING) bị xóa, không tích dồn."""
         if symbol_config.symbol not in wallet.allowed_symbols:
+            return None
+        if not getattr(wallet, 'is_active', False):
+            cls.purge_all_plans_for_wallet(wallet)
             return None
         if not cls.wallet_has_capital(wallet):
             cls.purge_all_plans_for_wallet(wallet)
@@ -227,6 +233,9 @@ class AutoPlanGenerator:
         1. Xóa toàn bộ các Trading Plan AI chưa khớp lệnh cũ của ví (status in PENDING_TRIGGER, ANALYZING, CANCELLED).
         2. Tính toán và sinh lại các Trading Plan mới dựa trên số dư hiện tại và danh sách các cặp cho phép mới.
         """
+        if not getattr(wallet, 'is_active', False):
+            cls.purge_all_plans_for_wallet(wallet)
+            return []
         if not cls.wallet_has_capital(wallet):
             cls.purge_all_plans_for_wallet(wallet)
             return []
