@@ -113,9 +113,12 @@ class WalletAccount(models.Model):
     @property
     def allowed_symbols(self):
         try:
-            return json.loads(self.allowed_symbols_json)
+            data = json.loads(self.allowed_symbols_json or '[]')
+            if isinstance(data, list):
+                return [str(s).strip() for s in data if str(s).strip()]
         except Exception:
-            return ["XAUUSD", "BTCUSD", "ETHUSD"]
+            pass
+        return []
 
     @property
     def leverage_display(self):

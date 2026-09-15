@@ -27,6 +27,18 @@ function apiFetch(url, options = {}) {
     return fetch(url, Object.assign({ credentials: 'same-origin' }, options, { headers }));
 }
 
+function fetchLiveTicks() {
+    /* Live feed already polls /api/live-ticks/; keep stub so callers don't throw. */
+}
+
+function showQuickTradeAlert(ok, message) {
+    const alertBox = document.getElementById('quick-trade-alert');
+    if (!alertBox) return;
+    alertBox.classList.remove('d-none', 'alert-danger', 'alert-success');
+    alertBox.classList.add(ok ? 'alert-success' : 'alert-danger');
+    alertBox.textContent = message || '';
+}
+
 function unwrapApiList(payload) {
     if (Array.isArray(payload)) return payload;
     if (payload && Array.isArray(payload.results)) return payload.results;
@@ -784,6 +796,7 @@ function renderOverviewPlans(plans) {
 
     if (cachedOverviewPlans.length === 0) {
         tbody.innerHTML = `<tr><td colspan="12" class="text-center py-4 text-muted"><i class="fa-solid fa-brain text-warning me-2"></i> Chưa có kế hoạch AI nào được khởi tạo</td></tr>`;
+        tbody.dataset.sig = '';
         renderPaginationComponent('pagination-overview-plans', 0, 1, ADMIN_PAGE_SIZE, 'changeOverviewPlansPage');
         return;
     }
@@ -794,6 +807,29 @@ function renderOverviewPlans(plans) {
 
     const startIndex = (currentOverviewPlansPage - 1) * ADMIN_PAGE_SIZE;
     const paged = cachedOverviewPlans.slice(startIndex, startIndex + ADMIN_PAGE_SIZE);
+    const sig = currentOverviewPlansPage + '|' + paged.map(pl => String(pl.id)).join(',');
+    const rowsReady = paged.every(pl => document.getElementById('plan-row-' + pl.id));
+    if (rowsReady && tbody.dataset.sig === sig) {
+        paged.forEach(pl => {
+            const row = document.getElementById('plan-row-' + pl.id);
+            if (!row) return;
+            const priceEl = row.querySelector('.plan-entry');
+            if (priceEl) {
+                const shown = '$' + pl.entry_price;
+                if (priceEl.dataset.val !== shown) {
+                    priceEl.dataset.val = shown;
+                    priceEl.textContent = shown;
+                }
+            }
+            const statusEl = row.querySelector('.plan-status');
+            if (statusEl && statusEl.dataset.st !== pl.status) {
+                statusEl.dataset.st = pl.status;
+                statusEl.textContent = pl.status_display || pl.status;
+            }
+        });
+        return;
+    }
+    tbody.dataset.sig = sig;
 
     tbody.innerHTML = paged.map(pl => {
         let statusBadge = 'bg-secondary';
@@ -803,17 +839,17 @@ function renderOverviewPlans(plans) {
         else if (pl.status === 'CANCELLED') statusBadge = 'bg-danger';
 
         return `
-            <tr>
+            <tr id="plan-row-${pl.id}">
                 <td class="font-monospace font-weight-bold">#${pl.id}</td>
                 <td><small class="font-weight-bold">${pl.wallet_name}</small></td>
                 <td><b>${pl.symbol}</b> <small class="text-muted">[${pl.timeframe}]</small></td>
                 <td><span class="badge ${pl.direction === 'BUY' ? 'badge-buy' : 'badge-sell'}">${pl.direction}</span></td>
-                <td class="font-weight-bold text-primary font-monospace">$${pl.entry_price}</td>
+                <td class="font-weight-bold text-primary font-monospace plan-entry" data-val="$${pl.entry_price}">$${pl.entry_price}</td>
                 <td class="text-danger small font-monospace">$${pl.stop_loss}</td>
                 <td class="text-success small font-monospace">$${pl.take_profit_1} / $${pl.take_profit_2}</td>
                 <td><span class="badge bg-light text-dark border font-monospace">1:${pl.rr_ratio}</span></td>
                 <td><b>${pl.calculated_lot} Lot</b></td>
-                <td><span class="badge ${statusBadge}">${pl.status_display || pl.status}</span></td>
+                <td><span class="badge ${statusBadge} plan-status" data-st="${pl.status}">${pl.status_display || pl.status}</span></td>
                 <td><small class="text-muted text-truncate d-inline-block" style="max-width: 230px;" title="${pl.rationale}">${pl.rationale}</small></td>
                 <td class="text-end text-nowrap">
                     <button type="button" class="btn btn-sm btn-outline-danger btn-action-icon" data-action="delete-plan" data-id="${pl.id}" title="Xóa Kế Hoạch Này">
@@ -2244,11 +2280,6 @@ async function executeManualTrade(orderType) {
     const btnSell = document.getElementById('btn-submit-sell');
     if (btnBuy) btnBuy.disabled = true;
     if (btnSell) btnSell.disabled = true;
-    const alertBox = document.getElementById('quick-trade-alert');
-    if (alertBox) {
-        alertBox.classList.add('d-none');
-        alertBox.innerText = '';
-    }
 
     try {
         const res = await apiFetch('/api/orders/send/', {
@@ -2267,28 +2298,18 @@ async function executeManualTrade(orderType) {
 
         const data = await parseApiJson(res);
         if (data.success) {
-            showToast(data.message, 'success');
-            const modalEl = document.getElementById('modal-quick-trade');
-            if (modalEl && typeof bootstrap !== 'undefined') {
-                const modal = bootstrap.Modal.getInstance(modalEl);
-                if (modal) modal.hide();
-            }
-            refreshAllData();
-            fetchLiveTicks();
+            const msg = data.message || `Đã gửi lệnh ${orderType} thành công`;
+            showQuickTradeAlert(true, msg);
+            showToast(msg, 'success');
+            try {
+                refreshAllData();
+            } catch (e) {}
         } else {
             const err = data.error || 'Lỗi khi gửi lệnh lên MT5';
-            showToast(err, 'error');
-            if (alertBox) {
-                alertBox.innerText = err;
-                alertBox.classList.remove('d-none');
-            }
+            showQuickTradeAlert(false, err);
         }
     } catch (e) {
-        showToast('Lỗi kết nối tới máy chủ MT5', 'error');
-        if (alertBox) {
-            alertBox.innerText = 'Lỗi kết nối tới máy chủ';
-            alertBox.classList.remove('d-none');
-        }
+        showQuickTradeAlert(false, 'Lỗi kết nối tới máy chủ MT5');
     } finally {
         if (btnBuy) btnBuy.disabled = false;
         if (btnSell) btnSell.disabled = false;

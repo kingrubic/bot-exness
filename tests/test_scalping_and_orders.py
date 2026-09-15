@@ -529,6 +529,54 @@ def test_purge_failed_and_stale_unfilled_plans():
     assert TradingPlan.objects.filter(pk=executing.pk).exists()
 
 
+@pytest.mark.django_db
+def test_update_or_create_plan_does_not_accumulate():
+    """Làm mới plan cùng ví+cặp không tạo thêm hàng — plan cũ PENDING bị thay, EXECUTING giữ."""
+    wallet = WalletAccount.objects.create(
+        name="Plan Acc",
+        account_type="DEMO",
+        mt5_login="",
+        allowed_symbols_json='["XAUUSD"]',
+        is_active=True,
+        default_lot_size=0.01,
+    )
+    sym = SymbolConfig.objects.create(
+        symbol="XAUUSD", display_name="Gold", category="METALS",
+        digits=2, point_size=0.01, contract_size=100,
+        current_price=Decimal("2750.00"),
+        current_bid=Decimal("2749.80"),
+        current_ask=Decimal("2750.20"),
+        is_active=True,
+    )
+    forecast = MarketForecast.objects.create(
+        symbol="XAUUSD", timeframe="M5", trend_bias="BULLISH",
+        confidence_score=80, current_price=Decimal("2750.00"),
+        trigger_condition="test", analysis_rationale="test",
+    )
+    p1 = AutoPlanGenerator.update_or_create_plan_for_wallet(wallet, sym, forecast)
+    p2 = AutoPlanGenerator.update_or_create_plan_for_wallet(wallet, sym, forecast)
+    pending = TradingPlan.objects.filter(wallet=wallet, symbol="XAUUSD", status="PENDING_TRIGGER")
+    assert pending.count() == 1
+    assert p1.id == p2.id
+    executing = TradingPlan.objects.create(
+        wallet=wallet, symbol="XAUUSD", direction="BUY",
+        entry_price=Decimal("2750.00"), entry_zone_low=Decimal("2750.00"),
+        entry_zone_high=Decimal("2750.00"), rationale="open",
+        status="EXECUTING",
+    )
+    AutoPlanGenerator.update_or_create_plan_for_wallet(wallet, sym, forecast)
+    assert TradingPlan.objects.filter(pk=executing.pk, status="EXECUTING").exists()
+    assert TradingPlan.objects.filter(wallet=wallet, symbol="XAUUSD", status="PENDING_TRIGGER").count() == 1
+    completed = TradingPlan.objects.create(
+        wallet=wallet, symbol="XAUUSD", direction="BUY",
+        entry_price=Decimal("2750.00"), entry_zone_low=Decimal("2750.00"),
+        entry_zone_high=Decimal("2750.00"), rationale="done",
+        status="COMPLETED",
+    )
+    AutoPlanGenerator.purge_dead_plans()
+    assert not TradingPlan.objects.filter(pk=completed.pk).exists()
+
+
 def test_normalize_mt5_symbol_strips_exness_suffix():
     from apps.trading.mt5_connector import ExnessMT5Connector
     assert ExnessMT5Connector.normalize_symbol('XAUUSDm') == 'XAUUSD'
@@ -543,7 +591,7 @@ def test_normalize_mt5_symbol_strips_exness_suffix():
 
 @pytest.mark.django_db
 def test_default_active_symbols_are_gold_btc_eth():
-    from apps.core.trading_defaults import apply_default_active_symbols, DEFAULT_ACTIVE_SYMBOLS
+    from apps.core.trading_defaults import apply_default_active_symbols
     for name in ('XAUUSD', 'BTCUSD', 'ETHUSD', 'EURUSD'):
         SymbolConfig.objects.create(
             symbol=name, display_name=name, category='FOREX',
@@ -557,9 +605,19 @@ def test_default_active_symbols_are_gold_btc_eth():
     )
     apply_default_active_symbols()
     active = set(SymbolConfig.objects.filter(is_active=True).values_list('symbol', flat=True))
-    assert active == set(DEFAULT_ACTIVE_SYMBOLS)
+    assert 'XAUUSD' in active
     wallet.refresh_from_db()
-    assert set(wallet.allowed_symbols) == {'XAUUSD', 'BTCUSD', 'ETHUSD'}
+    assert set(wallet.allowed_symbols) == {'XAUUSD'}
+
+    empty_wallet = WalletAccount.objects.create(
+        name="Empty Pair Wallet",
+        account_type="DEMO",
+        mt5_login="998878",
+        allowed_symbols_json='[]',
+    )
+    apply_default_active_symbols()
+    empty_wallet.refresh_from_db()
+    assert empty_wallet.allowed_symbols == []
 
 
 @pytest.mark.django_db

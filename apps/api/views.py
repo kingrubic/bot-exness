@@ -51,6 +51,61 @@ def _mt5_today_for_wallets(wallets):
     return snap, login
 
 
+def _history_reason_display(code):
+    return {
+        'TP_HIT': 'Chạm Take Profit (TP Hit)',
+        'MANUAL_CLOSE': 'Đóng Thủ Công (Manual Close)',
+        'TRAILING_TP': 'Chốt Lời Thoái Lui Đỉnh (Trailing TP)',
+        'TREND_REVERSAL': 'Chốt Lời Khi Đảo Chiều Trend',
+    }.get(code, code or '')
+
+
+def _serialize_mt5_history_row(row, wallet):
+    src = row.get('source') or 'USER'
+    return {
+        'id': row.get('ticket'),
+        'ticket': row.get('ticket'),
+        'wallet_id': wallet.id if wallet else None,
+        'wallet_name': wallet.name if wallet else 'MT5',
+        'symbol': row.get('symbol'),
+        'position_type': row.get('position_type'),
+        'lot_size': float(row.get('lot_size') or 0.01),
+        'open_price': float(row.get('open_price') or 0),
+        'close_price': float(row.get('close_price') or 0),
+        'stop_loss': None,
+        'take_profit': None,
+        'pnl': float(row.get('pnl') or 0),
+        'commission': float(row.get('commission') or 0),
+        'swap': float(row.get('swap') or 0),
+        'pips': float(row.get('pips') or 0),
+        'close_reason': row.get('close_reason') or 'TP_HIT',
+        'close_reason_display': _history_reason_display(row.get('close_reason')),
+        'is_win': bool(row.get('is_win')),
+        'source': src,
+        'source_display': 'BOT (Tự Động)' if src == 'BOT' else 'USER (Người Dùng)',
+        'comment': row.get('comment') or '',
+        'opened_at': format_vn_time(row.get('opened_at')),
+        'closed_at': format_vn_time(row.get('closed_at')),
+    }
+
+
+def _mt5_closed_history_for_wallets(wallets, limit=100):
+    """Lịch sử đóng lệnh từ MT5. DB chỉ map ví + BOT/USER."""
+    try:
+        from apps.trading.mt5_session import MT5NativeSession
+        snap, login = _mt5_today_snap()
+        if not MT5NativeSession.available() or not login:
+            return None, None
+        matched = [w for w in wallets if str(getattr(w, 'mt5_login', '') or '') == login]
+        if not matched:
+            return None, None
+        rows = MT5NativeSession.closed_history(days=90, limit=limit)
+        wallet = matched[0]
+        return [_serialize_mt5_history_row(r, wallet) for r in rows], rows
+    except Exception:
+        return None, None
+
+
 def _algo_warning_fields():
     st = _mt5_status_with_wallets(use_cache=False)
     need = bool(st.get('running') and st.get('logged_in') and not st.get('algo_trading'))
@@ -221,9 +276,11 @@ def build_live_ticks_data():
             'total_volume': vol,
         }
 
-    # 4. Plans
+    # 4. Plans — chỉ plan đang sống, không tích COMPLETED/FAILED
     plans = []
-    for pl in TradingPlan.objects.select_related('wallet').all().order_by('-created_at')[:40]:
+    for pl in TradingPlan.objects.filter(
+        status__in=['PENDING_TRIGGER', 'PENDING', 'EXECUTING', 'ANALYZING']
+    ).select_related('wallet').order_by('-updated_at', '-created_at')[:20]:
         plans.append({
             'id': pl.id,
             'wallet_id': pl.wallet_id,
@@ -245,35 +302,58 @@ def build_live_ticks_data():
             'created_at': format_vn_time(pl.created_at),
         })
 
-    # 5. History
-    history = []
-    for h in TradeHistory.objects.select_related('wallet').all().order_by('-closed_at')[:100]:
-        h_source = getattr(h, 'source', 'BOT') or 'BOT'
-        history.append({
-            'id': h.id,
-            'ticket': h.ticket,
-            'wallet_id': h.wallet_id,
-            'wallet_name': h.wallet.name if h.wallet else '',
-            'symbol': h.symbol,
-            'position_type': h.position_type,
-            'lot_size': float(h.lot_size or 0.01),
-            'open_price': float(h.open_price or 0.0),
-            'close_price': float(h.close_price or 0.0),
-            'stop_loss': float(h.stop_loss) if h.stop_loss else None,
-            'take_profit': float(h.take_profit) if h.take_profit else None,
-            'pnl': float(h.pnl or 0.0),
-            'commission': float(h.commission or 0.0),
-            'swap': float(h.swap or 0.0),
-            'pips': float(h.pips or 0.0),
-            'close_reason': h.close_reason,
-            'close_reason_display': h.get_close_reason_display(),
-            'is_win': h.is_win,
-            'source': h_source,
-            'source_display': 'BOT (Tự Động)' if h_source == 'BOT' else 'USER (Người Dùng)',
-            'comment': getattr(h, 'comment', ''),
-            'opened_at': format_vn_time(h.opened_at),
-            'closed_at': format_vn_time(h.closed_at),
-        })
+    # 5. History — giá/lot/PnL từ MT5; DB chỉ BOT/USER + ví
+    history, mt5_raw = _mt5_closed_history_for_wallets(list(WalletAccount.objects.all()), limit=100)
+    if history is None:
+        history = []
+        for h in TradeHistory.objects.select_related('wallet').all().order_by('-closed_at')[:100]:
+            h_source = getattr(h, 'source', 'BOT') or 'BOT'
+            history.append({
+                'id': h.id,
+                'ticket': h.ticket,
+                'wallet_id': h.wallet_id,
+                'wallet_name': h.wallet.name if h.wallet else '',
+                'symbol': h.symbol,
+                'position_type': h.position_type,
+                'lot_size': float(h.lot_size or 0.01),
+                'open_price': float(h.open_price or 0.0),
+                'close_price': float(h.close_price or 0.0),
+                'stop_loss': float(h.stop_loss) if h.stop_loss else None,
+                'take_profit': float(h.take_profit) if h.take_profit else None,
+                'pnl': float(h.pnl or 0.0),
+                'commission': float(h.commission or 0.0),
+                'swap': float(h.swap or 0.0),
+                'pips': float(h.pips or 0.0),
+                'close_reason': h.close_reason,
+                'close_reason_display': h.get_close_reason_display(),
+                'is_win': h.is_win,
+                'source': h_source,
+                'source_display': 'BOT (Tự Động)' if h_source == 'BOT' else 'USER (Người Dùng)',
+                'comment': getattr(h, 'comment', ''),
+                'opened_at': format_vn_time(h.opened_at),
+                'closed_at': format_vn_time(h.closed_at),
+            })
+
+    def _stats_from_mt5_raw(source_name):
+        if not mt5_raw:
+            return _calc_live_source_stats(source_name)
+        qs = [r for r in mt5_raw if r.get('source') == source_name]
+        tot = len(qs)
+        wins = sum(1 for r in qs if float(r.get('pnl') or 0) > 0)
+        losses = sum(1 for r in qs if float(r.get('pnl') or 0) < 0)
+        wr = round((wins / tot) * 100, 1) if tot > 0 else 0.0
+        pnl = float(sum(float(r.get('pnl') or 0) for r in qs))
+        today_pnl = float(mt5_today.get(source_name, 0) or 0) if mt5_today.get('ok') else 0.0
+        vol = round(sum(float(r.get('lot_size') or 0) for r in qs), 2)
+        return {
+            'total_trades': tot,
+            'winning_trades': wins,
+            'losing_trades': losses,
+            'win_rate': wr,
+            'total_profit': round(pnl, 2),
+            'today_pnl': round(today_pnl, 2),
+            'total_volume': vol,
+        }
 
     return {
         'overview': {
@@ -286,8 +366,8 @@ def build_live_ticks_data():
             'active_positions_count': len(positions),
             'active_wallets_count': len([w for w in wallets if w['is_active']]),
             'total_wallets_count': len(wallets),
-            'bot_metrics': _calc_live_source_stats('BOT'),
-            'user_metrics': _calc_live_source_stats('USER'),
+            'bot_metrics': _stats_from_mt5_raw('BOT'),
+            'user_metrics': _stats_from_mt5_raw('USER'),
         },
         'symbols': symbols,
         'positions': positions,
@@ -516,7 +596,9 @@ def wallet_detail_api(request, wallet_id):
 
     # 3. Trading Plans of this wallet
     plans_data = []
-    for p in w.trading_plans.all()[:20]:
+    for p in w.trading_plans.filter(
+        status__in=['PENDING_TRIGGER', 'PENDING', 'EXECUTING', 'ANALYZING']
+    ).order_by('-updated_at', '-created_at')[:20]:
         plans_data.append({
             'id': p.id,
             'symbol': p.symbol,
@@ -563,11 +645,13 @@ def wallet_detail_api(request, wallet_id):
             'opened_at': format_vn_time(pos.opened_at),
         })
 
-    # 5. Closed Trade History of this wallet (100% gốc từ MT5 sàn Exness)
-    history_data = []
-    for h in w.trade_history.all()[:150]:
-        h_source = getattr(h, 'source', 'BOT') or 'BOT'
-        history_data.append({
+    # 5. Closed Trade History — MT5 deals; DB chỉ ví + BOT/USER
+    history_data, _raw = _mt5_closed_history_for_wallets([w], limit=150)
+    if history_data is None:
+        history_data = []
+        for h in w.trade_history.all()[:150]:
+            h_source = getattr(h, 'source', 'BOT') or 'BOT'
+            history_data.append({
             'id': h.id,
             'ticket': h.ticket,
             'symbol': h.symbol,
@@ -881,6 +965,8 @@ def admin_wallet_manage_api(request, wallet_id=None):
         )
         wallet.set_allowed_symbols(symbols)
         wallet.save()
+        from apps.core.trading_defaults import activate_wallet_symbols
+        activate_wallet_symbols(symbols)
 
         # Tự động đồng bộ ngay số dư và lệnh trực tiếp từ sàn Exness MT5
         try:
@@ -919,6 +1005,8 @@ def admin_wallet_manage_api(request, wallet_id=None):
             if not symbols or len(symbols) == 0:
                 return Response({'error': 'Vui lòng chọn ít nhất một cặp giao dịch cho ví'}, status=status.HTTP_400_BAD_REQUEST)
             wallet.set_allowed_symbols(symbols)
+            from apps.core.trading_defaults import activate_wallet_symbols
+            activate_wallet_symbols(symbols)
 
         new_server = data.get('mt5_server', wallet.mt5_server).strip()
         new_login = data.get('mt5_login', wallet.mt5_login).strip()

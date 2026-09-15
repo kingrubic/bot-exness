@@ -547,84 +547,27 @@ class ExnessMT5Connector:
                 logger.warning("history_deals_get trả None — giữ lịch sử DB hiện tại")
             else:
                 MT5NativeSession.mark_history_synced(getattr(wallet, 'id', 0) or 0)
-            if deals:
-                from apps.trading.order_source import classify_order_source, remember_order_source
-                deals_by_pos = {}
-
-                for d in deals:
-                    deal_type_code = int(getattr(d, 'type', -1) or -1)
-                    if deal_type_code not in (0, 1):
-                        continue
-                    pos_id_raw = int(getattr(d, 'position_id', 0) or 0)
-                    if pos_id_raw <= 0:
-                        continue
-                    pos_id = str(pos_id_raw)
-                    if pos_id not in deals_by_pos:
-                        deals_by_pos[pos_id] = {'in': None, 'out': None, 'all': []}
-                    deals_by_pos[pos_id]['all'].append(d)
-                    entry = int(getattr(d, 'entry', 0) or 0)
-                    if entry == 0:
-                        if deals_by_pos[pos_id]['in'] is None:
-                            deals_by_pos[pos_id]['in'] = d
-                    elif entry in (1, 2, 3):
-                        deals_by_pos[pos_id]['out'] = d
-
-                for pos_id, grp in deals_by_pos.items():
-                    out_deal = grp['out']
-                    in_deal = grp['in']
-                    if not out_deal:
-                        continue
-                    target_deal = out_deal or in_deal
-                    sym = str(getattr(target_deal, 'symbol', '') or '').strip()
-                    if not sym:
-                        continue
-
-                    if in_deal:
-                        deal_type = 'BUY' if in_deal.type == 0 else 'SELL'
-                        open_p = float(in_deal.price)
-                        open_t = datetime.fromtimestamp(in_deal.time, tz=dt_timezone.utc) if in_deal.time else timezone.now()
-                    else:
-                        deal_type = 'BUY' if out_deal.type == 1 else 'SELL'
-                        open_p = float(out_deal.price)
-                        open_t = datetime.fromtimestamp(out_deal.time, tz=dt_timezone.utc) if out_deal.time else timezone.now()
-
-                    close_p = float(out_deal.price) if out_deal else open_p
-                    close_t = datetime.fromtimestamp(out_deal.time, tz=dt_timezone.utc) if (out_deal and out_deal.time) else open_t
-
-                    all_prices = [float(getattr(d, 'price', 0.0) or 0.0) for d in grp['all'] if float(getattr(d, 'price', 0.0) or 0.0) > 0]
-                    if open_p == 0.0 and all_prices:
-                        open_p = all_prices[0]
-                    if close_p == 0.0 and all_prices:
-                        close_p = all_prices[-1]
-
-                    total_profit = float(sum(getattr(d, 'profit', 0.0) or 0.0 for d in grp['all']))
-                    total_comm = float(sum(getattr(d, 'commission', 0.0) or 0.0 for d in grp['all']))
-                    total_swap = float(sum(getattr(d, 'swap', 0.0) or 0.0 for d in grp['all']))
-                    net_pnl_val = round(total_profit + total_comm + total_swap, 2)
-
-                    comment = str(target_deal.comment or '').strip()
-                    magic = int(target_deal.magic or 0)
-                    source = classify_order_source(magic, comment, pos_id)
-                    remember_order_source(pos_id, source, magic)
-
+                from apps.trading.order_source import remember_order_source
+                for row in MT5NativeSession.group_closed_deals(deals):
+                    remember_order_source(row['ticket'], row['source'], row.get('magic') or 0)
                     deals_data.append({
-                        'ticket': pos_id,
-                        'symbol': self.normalize_symbol(sym) or sym,
-                        'position_type': deal_type,
-                        'lot_size': float(target_deal.volume),
-                        'open_price': Decimal(str(open_p)),
-                        'close_price': Decimal(str(close_p)),
-                        'pnl': Decimal(str(net_pnl_val)),
-                        'commission': Decimal(str(round(total_comm, 2))),
-                        'swap': Decimal(str(round(total_swap, 2))),
-                        'pips': 0.0,
-                        'close_reason': 'MANUAL_CLOSE' if source == 'USER' else 'TP_HIT',
-                        'is_win': net_pnl_val > 0,
-                        'source': source,
-                        'magic': magic,
-                        'comment': comment,
-                        'opened_at': open_t,
-                        'closed_at': close_t,
+                        'ticket': row['ticket'],
+                        'symbol': row['symbol'],
+                        'position_type': row['position_type'],
+                        'lot_size': row['lot_size'],
+                        'open_price': Decimal(str(row['open_price'])),
+                        'close_price': Decimal(str(row['close_price'])),
+                        'pnl': Decimal(str(row['pnl'])),
+                        'commission': Decimal(str(row['commission'])),
+                        'swap': Decimal(str(row['swap'])),
+                        'pips': row.get('pips') or 0.0,
+                        'close_reason': row['close_reason'],
+                        'is_win': row['is_win'],
+                        'source': row['source'],
+                        'magic': row['magic'],
+                        'comment': row['comment'],
+                        'opened_at': row['opened_at'],
+                        'closed_at': row['closed_at'],
                     })
 
         elif self.bridge_mode or not MT5_AVAILABLE:

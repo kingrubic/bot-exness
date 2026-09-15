@@ -11,7 +11,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -392,6 +392,118 @@ class MT5NativeSession:
             return mt5.history_deals_get(date_from, date_to)
 
     @classmethod
+    def group_closed_deals(cls, deals) -> list[dict]:
+        """Gom deal MT5 theo position_id thành lệnh đã đóng. DB chỉ dùng để gắn BOT/USER."""
+        if not deals:
+            return []
+        try:
+            from apps.trading.order_source import classify_order_source
+        except Exception:
+            classify_order_source = None
+
+        by_pos: dict[str, dict] = {}
+        for d in deals:
+            deal_type = int(getattr(d, 'type', -1) or -1)
+            if deal_type not in (0, 1):
+                continue
+            pos_id_raw = int(getattr(d, 'position_id', 0) or 0)
+            if pos_id_raw <= 0:
+                continue
+            pos_id = str(pos_id_raw)
+            grp = by_pos.setdefault(pos_id, {'in': None, 'outs': [], 'all': []})
+            grp['all'].append(d)
+            entry = int(getattr(d, 'entry', 0) or 0)
+            if entry == 0:
+                if grp['in'] is None:
+                    grp['in'] = d
+            elif entry in (1, 2, 3):
+                grp['outs'].append(d)
+
+        rows = []
+        for pos_id, grp in by_pos.items():
+            outs = grp['outs']
+            if not outs:
+                continue
+            in_deal = grp['in']
+            out_deal = outs[-1]
+            target = out_deal or in_deal
+            raw_sym = str(getattr(target, 'symbol', '') or '').strip()
+            if not raw_sym:
+                continue
+            sym = cls.normalize_symbol(raw_sym) or raw_sym
+
+            prices = [float(getattr(x, 'price', 0) or 0) for x in grp['all'] if float(getattr(x, 'price', 0) or 0) > 0]
+            if in_deal:
+                deal_type = 'BUY' if int(in_deal.type) == 0 else 'SELL'
+                open_p = float(in_deal.price or 0)
+                open_ts = int(in_deal.time or 0)
+            else:
+                deal_type = 'BUY' if int(out_deal.type) == 1 else 'SELL'
+                open_p = prices[0] if prices else float(out_deal.price or 0)
+                open_ts = int(getattr(grp['all'][0], 'time', 0) or out_deal.time or 0)
+            close_p = float(out_deal.price or 0)
+            close_ts = int(out_deal.time or 0)
+            if open_p <= 0 and prices:
+                open_p = prices[0]
+            if close_p <= 0 and prices:
+                close_p = prices[-1]
+
+            total_profit = float(sum(float(getattr(x, 'profit', 0) or 0) for x in grp['all']))
+            total_comm = float(sum(float(getattr(x, 'commission', 0) or 0) for x in grp['all']))
+            total_swap = float(sum(float(getattr(x, 'swap', 0) or 0) for x in grp['all']))
+            net = round(total_profit + total_comm + total_swap, 2)
+            lot = round(sum(float(getattr(x, 'volume', 0) or 0) for x in outs), 2) or float(getattr(out_deal, 'volume', 0) or 0)
+            comment = str(getattr(target, 'comment', '') or '').strip()
+            magic = int(getattr(target, 'magic', 0) or 0)
+            if classify_order_source:
+                source = classify_order_source(magic, comment, pos_id)
+            else:
+                source = 'BOT' if magic == 8882026 else 'USER'
+            open_dt = datetime.fromtimestamp(open_ts, tz=dt_timezone.utc) if open_ts else datetime.now(dt_timezone.utc)
+            close_dt = datetime.fromtimestamp(close_ts, tz=dt_timezone.utc) if close_ts else open_dt
+            rows.append({
+                'ticket': pos_id,
+                'symbol': sym,
+                'position_type': deal_type,
+                'lot_size': lot,
+                'open_price': open_p,
+                'close_price': close_p,
+                'pnl': net,
+                'commission': round(total_comm, 2),
+                'swap': round(total_swap, 2),
+                'pips': 0.0,
+                'close_reason': 'MANUAL_CLOSE' if source == 'USER' else 'TP_HIT',
+                'is_win': net > 0,
+                'source': source,
+                'magic': magic,
+                'comment': comment,
+                'opened_at': open_dt,
+                'closed_at': close_dt,
+            })
+        rows.sort(key=lambda r: r['closed_at'], reverse=True)
+        return rows
+
+    _hist_cache = {'ts': 0.0, 'rows': None}
+
+    @classmethod
+    def closed_history(cls, days: int = 90, limit: int = 200) -> list[dict]:
+        """Lịch sử lệnh đã đóng từ history_deals MT5 (cache 2s)."""
+        empty: list[dict] = []
+        if not cls.available() or not cls.ensure():
+            return empty
+        now = time.time()
+        cached = cls._hist_cache
+        if cached.get('rows') is not None and (now - cached.get('ts', 0)) < 2.0:
+            return cached['rows'][:limit]
+        date_from = datetime.now() - timedelta(days=max(1, int(days)))
+        deals = cls.history_deals(date_from, datetime.now())
+        if deals is None:
+            return cached.get('rows') or empty
+        rows = cls.group_closed_deals(deals)
+        cls._hist_cache = {'ts': now, 'rows': rows}
+        return rows[:limit]
+
+    @classmethod
     def history_from_for_wallet(cls, wallet_id: int) -> datetime:
         prev = cls._history_cursor.get(wallet_id)
         if prev:
@@ -567,13 +679,13 @@ class MT5NativeSession:
     def close_market(cls, ticket: int, symbol: str = '', order_type: str = 'BUY', volume: float = 0.01) -> tuple[bool, str, dict]:
         if ticket <= 0:
             return False, 'Ticket không hợp lệ', {}
+        if not cls.ensure():
+            return False, 'Chưa kết nối sàn Exness MT5. Hãy mở MT5, đăng nhập và bật Algo Trading.', {}
         pos = cls.position_by_ticket(ticket)
         if pos is None:
-            if not cls.ensure():
-                return False, 'Chưa kết nối sàn Exness MT5. Hãy mở MT5, đăng nhập và bật Algo Trading.', {}
             rows = cls.positions()
             if rows is None:
-                return False, 'Không lấy được danh sách vị thế từ MT5. Kiểm tra đăng nhập và Algo Trading.', {}
+                return False, 'Không lấy được danh sách vị thế từ MT5. Kiểm tra đăng nhập và Algo Trading.', {'retryable': True}
             return True, f'Vị thế #{ticket} đã đóng trước đó trên sàn MT5', {'already_closed': True}
 
         broker = pos.symbol
@@ -582,11 +694,12 @@ class MT5NativeSession:
         spec = cls.spec(broker)
         modes = list(spec.get('filling_modes') or [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN])
         last_err = 'MT5 từ chối đóng lệnh'
+        last_code = 0
         with _LOCK:
-            for _ in range(3):
+            for _ in range(6):
                 tick = mt5.symbol_info_tick(broker)
                 if not tick:
-                    return False, f'Chưa có tick {broker} để đóng lệnh.', {}
+                    return False, f'Chưa có tick {broker} để đóng lệnh.', {'retryable': True}
                 price = float(tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask)
                 for f_mode in modes:
                     req = {
@@ -596,7 +709,7 @@ class MT5NativeSession:
                         'volume': real_vol,
                         'type': close_type,
                         'price': price,
-                        'deviation': 50,
+                        'deviation': 300,
                         'magic': int(getattr(pos, 'magic', 0) or 0),
                         'comment': 'Close',
                         'type_time': mt5.ORDER_TIME_GTC,
@@ -605,7 +718,9 @@ class MT5NativeSession:
                     res = mt5.order_send(req)
                     if res is None:
                         last_err = str(mt5.last_error())
+                        last_code = 0
                         continue
+                    last_code = int(res.retcode)
                     if res.retcode in SUCCESS_RETCODES or res.retcode == RET_POSITION_CLOSED:
                         return True, f'Đã đóng thành công lệnh #{ticket} trên Exness MT5', {
                             'deal': str(getattr(res, 'deal', '') or ''),
@@ -616,13 +731,21 @@ class MT5NativeSession:
                         continue
                     if res.retcode in RETRY_RETCODES:
                         last_err = res.comment or str(res.retcode)
-                        time.sleep(0.05)
+                        time.sleep(0.08)
                         break
                     if res.retcode in (RET_AT_DISABLED_CLIENT, RET_AT_DISABLED_SERVER):
-                        return False, 'Algo Trading đang tắt trên MT5. Hãy bật AutoTrading.', {}
+                        return False, 'Algo Trading đang tắt trên MT5. Hãy bật AutoTrading.', {'retryable': False}
+                    if res.retcode == RET_MARKET_CLOSED:
+                        return False, f'Thị trường {broker} đang đóng.', {'retryable': False}
                     last_err = f"{res.comment} (retcode {res.retcode})"
-                    break
-        return False, f'MT5 từ chối đóng lệnh: {last_err}', {}
+                    return False, f'MT5 từ chối đóng lệnh: {last_err}', {'retryable': False, 'retcode': last_code}
+                else:
+                    continue
+        still = cls.position_by_ticket(ticket)
+        if still is None:
+            return True, f'Vị thế #{ticket} đã đóng trên sàn MT5', {'already_closed': True}
+        retryable = last_code in RETRY_RETCODES
+        return False, f'MT5 từ chối đóng lệnh: {last_err}', {'retryable': retryable, 'retcode': last_code}
 
     @classmethod
     def modify_sltp(cls, ticket: int, sl: float, tp: float, symbol: str = '') -> tuple[bool, str]:

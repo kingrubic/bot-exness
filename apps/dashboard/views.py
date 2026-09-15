@@ -73,7 +73,7 @@ def admin_view(request):
 def admin_wallets_view(request):
     """Trang Quản Trị: Quản Lý Danh Sách Ví (Real & Demo)."""
     wallets = WalletAccount.objects.all()
-    symbols = SymbolConfig.objects.filter(is_active=True)
+    symbols = SymbolConfig.objects.all().order_by('category', 'symbol')
     return render(request, 'admin/wallets.html', {
         'wallets': wallets,
         'symbols': symbols,

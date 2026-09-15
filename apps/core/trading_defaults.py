@@ -4,16 +4,25 @@ BOT_MAGIC = 8882026
 
 
 def apply_default_active_symbols():
-    """Chỉ bật mặc định XAUUSD, BTCUSD, ETHUSD. Các cặp khác vẫn có trong danh mục nhưng tắt."""
+    """Catalog mặc định XAU/BTC/ETH khi chưa có ví. Không đè cặp đã lưu trên ví."""
     from apps.symbols.models import SymbolConfig
     from apps.accounts.models import WalletAccount
 
-    SymbolConfig.objects.exclude(symbol__in=DEFAULT_ACTIVE_SYMBOLS).update(is_active=False)
-    for symbol in DEFAULT_ACTIVE_SYMBOLS:
-        SymbolConfig.objects.filter(symbol=symbol).update(is_active=True)
-
+    used = set()
     for wallet in WalletAccount.objects.all():
-        current = set(wallet.allowed_symbols or [])
-        if not current or current <= {'XAUUSD'}:
-            wallet.allowed_symbols_json = DEFAULT_ALLOWED_SYMBOLS_JSON
-            wallet.save(update_fields=['allowed_symbols_json'])
+        used.update(s for s in (wallet.allowed_symbols or []) if s)
+
+    if not used:
+        SymbolConfig.objects.exclude(symbol__in=DEFAULT_ACTIVE_SYMBOLS).update(is_active=False)
+        for symbol in DEFAULT_ACTIVE_SYMBOLS:
+            SymbolConfig.objects.filter(symbol=symbol).update(is_active=True)
+        return
+
+    SymbolConfig.objects.filter(symbol__in=used).update(is_active=True)
+
+
+def activate_wallet_symbols(symbols):
+    from apps.symbols.models import SymbolConfig
+    names = [str(s).strip() for s in (symbols or []) if str(s).strip()]
+    if names:
+        SymbolConfig.objects.filter(symbol__in=names).update(is_active=True)

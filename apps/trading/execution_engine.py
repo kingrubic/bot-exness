@@ -19,6 +19,9 @@ class ExecutionEngine:
     Bộ máy thực thi: chỉ chốt lời khi lãi ròng >= min_take_profit_usd.
     Lệnh lỗ giữ nguyên (gồng) đến khi về lãi.
     """
+    _last_persist = 0.0
+    _close_cooldown: dict[str, float] = {}
+    _closing: set[str] = set()
 
     @classmethod
     def sync_symbol_prices_from_mt5(cls):
@@ -311,8 +314,6 @@ class ExecutionEngine:
 
         return True, True, f"Mở thêm lệnh lướt sóng {forecast_dir} {sym_name} ({total_open_count + 1}/{max_allowed})"
 
-    _last_persist = 0.0
-
     @classmethod
     def persist_mt5_state(cls):
         """Ghi account + positions của tài khoản đang login trên terminal (1 IPC, không reconnect)."""
@@ -375,6 +376,7 @@ class ExecutionEngine:
                 wallet = position.wallet
                 live_p = live_by_ticket.get(str(position.ticket))
                 sym = symbol_map.get(position.symbol)
+                is_local = str(position.ticket).startswith('LOCAL-')
 
                 if live_p:
                     curr_price = Decimal(str(live_p.price_current or 0))
@@ -395,6 +397,9 @@ class ExecutionEngine:
                     if live_p.tp:
                         position.take_profit = Decimal(str(live_p.tp))
                 else:
+                    if not is_local and live_account is not None:
+                        # Ticket đã biến mất trên MT5 — không gửi close (tránh spam từ chối)
+                        continue
                     if not sym:
                         continue
                     curr_price = sym.current_price or Decimal("0.0")
@@ -443,7 +448,7 @@ class ExecutionEngine:
                 if min_tp <= 0:
                     min_tp = 0.01
 
-                if net_pnl >= min_tp:
+                if net_pnl >= min_tp and (is_local or getattr(position, 'source', 'BOT') == 'BOT'):
                     should_close = True
                     close_reason = 'TP_HIT'
                     forecast = MarketForecast.objects.filter(symbol=position.symbol).first()
@@ -490,16 +495,27 @@ class ExecutionEngine:
         connector = None
         res_close = None
 
+        now = time.time()
+        if ticket_str in cls._closing:
+            return False, f'Đang đóng lệnh #{ticket_str}.'
+        until = cls._close_cooldown.get(ticket_str, 0)
+        if reason != 'MANUAL_CLOSE' and now < until:
+            return False, f'Chờ gửi lại đóng lệnh #{ticket_str}.'
+
         if not is_local_sim and wallet and wallet.mt5_login:
-            connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
-            if not connector.connect():
-                return False, "Chưa kết nối MT5 Terminal để đóng lệnh. Hãy mở MT5, đăng nhập và bật Algo Trading."
-            res_close = connector.close_order(
-                ticket=ticket_str,
-                symbol=position.symbol,
-                order_type=position.position_type,
-                volume=float(position.lot_size)
-            )
+            cls._closing.add(ticket_str)
+            try:
+                connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
+                if not connector.connect():
+                    return False, "Chưa kết nối MT5 Terminal để đóng lệnh. Hãy mở MT5, đăng nhập và bật Algo Trading."
+                res_close = connector.close_order(
+                    ticket=ticket_str,
+                    symbol=position.symbol,
+                    order_type=position.position_type,
+                    volume=float(position.lot_size)
+                )
+            finally:
+                cls._closing.discard(ticket_str)
             if res_close is None:
                 return False, "Chưa kết nối MT5 Terminal/Bridge để đóng lệnh."
             if isinstance(res_close, tuple):
@@ -512,6 +528,14 @@ class ExecutionEngine:
                 res_data = {}
 
             if not ok:
+                retryable = bool(res_data.get('retryable')) or any(
+                    k in str(msg).lower() for k in ('requote', '10004', '10020', '10021', '10012', 'off quotes', 'no prices')
+                )
+                wait_s = 8 if 'đang đóng' in str(msg).lower() or 'market closed' in str(msg).lower() else 3
+                cls._close_cooldown[ticket_str] = now + wait_s
+                if retryable:
+                    logger.warning("Đóng lệnh #%s tạm thất bại (sẽ thử lại): %s", ticket_str, msg)
+                    return False, msg
                 BotLog.log(
                     level='ERROR',
                     category='EXECUTION',
@@ -520,6 +544,7 @@ class ExecutionEngine:
                     symbol=position.symbol
                 )
                 return False, f"Sàn Exness MT5 từ chối đóng lệnh: {msg}"
+            cls._close_cooldown.pop(ticket_str, None)
 
         from apps.trading.order_source import remember_order_source
         remember_order_source(ticket_str, getattr(position, 'source', 'USER') or 'USER', getattr(position, 'magic', 0) or 0)
@@ -541,8 +566,7 @@ class ExecutionEngine:
             except Exception:
                 pass
             if linked_plan:
-                linked_plan.status = 'COMPLETED'
-                linked_plan.save()
+                AutoPlanGenerator.discard_plan(linked_plan)
             BotLog.log(
                 level='INFO',
                 category='EXECUTION',
@@ -621,8 +645,7 @@ class ExecutionEngine:
         
         # Cập nhật trạng thái Plan nếu có
         if position.plan:
-            position.plan.status = 'COMPLETED'
-            position.plan.save()
+            AutoPlanGenerator.discard_plan(position.plan)
 
         position.delete()
         return True, f"Đã đóng thành công lệnh #{ticket_str}"
@@ -671,7 +694,7 @@ class ExecutionEngine:
                 needed_symbols = set(SymbolConfig.objects.filter(is_active=True).values_list('symbol', flat=True)[:5])
 
             forecasts = {}
-            for sym_config in SymbolConfig.objects.filter(symbol__in=needed_symbols, is_active=True):
+            for sym_config in SymbolConfig.objects.filter(symbol__in=needed_symbols):
                 try:
                     forecast = TechnicalAnalyzer.generate_market_analysis(sym_config)
                     if forecast:
