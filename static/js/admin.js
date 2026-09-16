@@ -949,11 +949,98 @@ function _horizonDir(h) {
 function _waitConditionText(h) {
     const raw = String((h && (h.trigger || h.structure)) || '').trim();
     if (!raw) return 'Chưa đủ tín hiệu nến để vào lệnh.';
-    // Bỏ tiền tố dài trùng ý “đang chờ”
     return raw
         .replace(/^Xu hướng tăng \(EMA50>EMA200\) nhưng\s*/i, '')
         .replace(/^Xu hướng gần nhất giảm[^.]*\.\s*/i, '')
         .trim() || raw;
+}
+
+function _pickTriggerField(text, patterns) {
+    const s = String(text || '');
+    for (const re of patterns) {
+        const m = s.match(re);
+        if (m && m[1] != null) return String(m[1]).trim();
+    }
+    return null;
+}
+
+/** Tách trigger dài thành lưới field + câu tóm tắt ngắn. */
+function _parseHorizonDetail(h, ready, dir) {
+    const raw = String((h && (h.trigger || h.structure)) || '');
+    const zone = (h && h.target_zone) || '';
+    const fields = [];
+
+    const close = _pickTriggerField(raw, [/Close\s*=\s*([0-9.]+)/i, /giá\s*([0-9.]+)/i]);
+    const tp = _pickTriggerField(raw, [/TP[=≈]?\s*([0-9.]+)/i, /TP hướng\s*(?:S1|R1)?[≈=]?\s*([0-9.]+)/i]);
+    const sl = _pickTriggerField(raw, [
+        /SL dưới S1[≈=]?\s*([0-9.]+)/i,
+        /SL trên R1[≈=]?\s*([0-9.]+)/i,
+        /SL[^\d]*([0-9.]+)/i,
+    ]);
+    const ema9 = _pickTriggerField(raw, [/EMA9\s*=\s*([0-9.]+)/i]);
+    const ema21 = _pickTriggerField(raw, [/EMA21\s*=\s*([0-9.]+)/i]);
+    const rsi = _pickTriggerField(raw, [/RSI\s*=\s*([0-9.]+)/i]);
+    const macd = _pickTriggerField(raw, [/MACD\s*=\s*(-?[0-9.]+)/i]);
+    const r1 = _pickTriggerField(raw, [/R1\s*=\s*([0-9.]+)/i]);
+    const s1 = _pickTriggerField(raw, [/S1\s*=\s*([0-9.]+)/i]);
+    const struct = _pickTriggerField(raw, [/Struct\s*=\s*([A-Z]+)/i]);
+    const emaCross = /EMA9\s*>\s*EMA21/i.test(raw) ? 'EMA9 > EMA21'
+        : (/EMA9\s*<\s*EMA21/i.test(raw) ? 'EMA9 < EMA21' : null);
+
+    if (ready && dir && dir !== '—' && dir !== 'CHƯA VÀO') {
+        fields.push({ k: 'Hành động', v: 'MARKET ' + dir, tone: dir === 'BUY' ? 'up' : 'down' });
+    }
+    if (close) fields.push({ k: 'Close', v: close, tone: '' });
+    if (emaCross) fields.push({ k: 'EMA', v: emaCross, tone: emaCross.includes('>') ? 'up' : 'down' });
+    if (tp) fields.push({ k: 'TP', v: tp, tone: 'up' });
+    if (sl) fields.push({ k: 'SL', v: sl, tone: 'down' });
+    if (zone && !tp) fields.push({ k: 'Vùng', v: zone, tone: '' });
+    if (ema9) fields.push({ k: 'EMA9', v: ema9, tone: '' });
+    if (ema21) fields.push({ k: 'EMA21', v: ema21, tone: '' });
+    if (rsi) fields.push({ k: 'RSI', v: rsi, tone: Number(rsi) >= 60 ? 'up' : (Number(rsi) <= 40 ? 'down' : 'mid') });
+    if (macd) fields.push({ k: 'MACD', v: macd, tone: Number(macd) > 0 ? 'up' : (Number(macd) < 0 ? 'down' : 'mid') });
+    if (r1) fields.push({ k: 'R1', v: r1, tone: 'res' });
+    if (s1) fields.push({ k: 'S1', v: s1, tone: 'sup' });
+    if (struct) fields.push({ k: 'Struct', v: struct, tone: struct === 'BULLISH' ? 'up' : (struct === 'BEARISH' ? 'down' : 'mid') });
+
+    let summary = _waitConditionText(h);
+    // Rút gọn: bỏ chuỗi technical dump phía sau dấu | hoặc Struct=
+    summary = summary
+        .split(/\s\|\s/)[0]
+        .replace(/\.\s*Struct=.*$/i, '.')
+        .replace(/\.\s*EMA9=.*$/i, '.')
+        .trim();
+    if (summary.length > 140) summary = summary.slice(0, 137) + '...';
+
+    return { fields, summary };
+}
+
+function _detailPanelHtml(parsed, waiting) {
+    const { fields, summary } = parsed;
+    const grid = fields.length ? `
+        <div class="np-detail-grid">
+            ${fields.map(f => `
+                <div class="np-detail-item ${f.tone ? ('tone-' + f.tone) : ''}">
+                    <span>${_escHtml(f.k)}</span>
+                    <b>${_escHtml(f.v)}</b>
+                </div>`).join('')}
+        </div>` : '';
+    if (waiting) {
+        // Chỉ hiện câu chờ khi chưa tách được field (tránh text dài trùng grid)
+        const showSummary = summary && (!fields.length || !/Close\s*=|TP[=≈]|EMA9/i.test(summary));
+        return `
+        <div class="np-detail np-detail-wait">
+            <div class="np-detail-label"><i class="fa-solid fa-hourglass-half"></i> Đang chờ điều kiện</div>
+            ${showSummary ? `<p class="np-detail-summary">${_escHtml(summary)}</p>` : ''}
+            ${grid}
+        </div>`;
+    }
+    // Ready: chỉ lưới field, không lặp lại chuỗi trigger dài
+    return `
+    <div class="np-detail np-detail-go">
+        <div class="np-detail-label"><i class="fa-solid fa-bolt"></i> Chi tiết lệnh</div>
+        ${grid || (summary ? `<p class="np-detail-summary soft">${_escHtml(summary)}</p>` : '')}
+    </div>`;
 }
 
 function _horizonBlock(title, h, isExec, isLongRef) {
@@ -965,23 +1052,35 @@ function _horizonBlock(title, h, isExec, isLongRef) {
     const waiting = !isLongRef && (act === 'WAIT_FOR_PULLBACK' || act === 'MONITORING' || act === 'BREAKOUT_PENDING');
     const dirCls = dir === 'BUY' ? 'is-buy' : (dir === 'SELL' ? 'is-sell' : 'is-hold');
     const biasCls = bias === 'BULLISH' ? 'is-buy' : (bias === 'BEARISH' ? 'is-sell' : '');
-    const cond = _waitConditionText(h);
     const zone = (h && h.target_zone) || '';
+    const parsed = _parseHorizonDetail(h, ready, dir);
 
     if (isLongRef) {
+        const longFields = [];
+        if (zone) longFields.push({ k: 'Vùng mục tiêu', v: zone, tone: '' });
+        const r1 = _pickTriggerField(h && h.trigger, [/R1\s*=\s*([0-9.]+)/i]);
+        const s1 = _pickTriggerField(h && h.trigger, [/S1\s*=\s*([0-9.]+)/i]);
+        const ema50 = _pickTriggerField(h && h.trigger, [/EMA50[≈=]\s*([0-9.]+)/i]);
+        if (r1) longFields.push({ k: 'R1', v: r1, tone: 'res' });
+        if (s1) longFields.push({ k: 'S1', v: s1, tone: 'sup' });
+        if (ema50) longFields.push({ k: 'EMA50', v: ema50, tone: '' });
+        const longParsed = {
+            fields: longFields.length ? longFields : parsed.fields.filter(f => ['R1', 'S1', 'Vùng', 'MACD', 'EMA50'].includes(f.k) || f.k === 'Vùng'),
+            summary: parsed.summary,
+        };
         return `
         <div class="np-horizon ${bias === 'BULLISH' ? 'hz-bull' : (bias === 'BEARISH' ? 'hz-bear' : 'hz-side')}">
             <div class="np-hz-top">
                 <strong>${_escHtml(title)}</strong>
-                <span class="np-hz-exec" style="background:#f1f5f9;color:#475569">Tham chiếu</span>
+                <span class="np-hz-exec np-hz-ref">Tham chiếu</span>
             </div>
             <div class="np-hz-row">
                 <div><span>Xu hướng</span><b class="${biasCls}">${_biasText(bias)}</b></div>
-                <div><span>Vùng giá</span><b class="font-monospace" style="font-size:0.9rem">${_escHtml(zone || '—')}</b></div>
+                <div><span>Vùng giá</span><b class="font-monospace np-hz-zone">${_escHtml(zone || '—')}</b></div>
                 <div><span>Tin cậy</span><b>${conf.toFixed(0)}%</b></div>
-                <div><span>Ghi chú</span><b style="font-size:0.85rem;font-weight:600;color:#64748b">Không khớp lệnh</b></div>
+                <div><span>Ghi chú</span><b class="np-hz-muted">Không khớp lệnh</b></div>
             </div>
-            <p class="np-hz-cond">${_escHtml(cond || 'Theo dõi vùng R1/S1 và EMA50/200.')}</p>
+            ${_detailPanelHtml(longParsed, true)}
         </div>`;
     }
 
@@ -998,13 +1097,8 @@ function _horizonBlock(title, h, isExec, isLongRef) {
             <div><span>Tin cậy</span><b>${conf.toFixed(0)}%</b></div>
             <div><span>Trạng thái</span><b class="${waiting ? 'is-hold' : dirCls}">${_escHtml(statusText)}</b></div>
         </div>
-        ${waiting ? `
-        <div class="np-hz-wait">
-            <div class="np-hz-wait-label"><i class="fa-solid fa-hourglass-half me-1"></i>Đang chờ điều kiện:</div>
-            <p class="np-hz-wait-text">${_escHtml(cond)}</p>
-        </div>` : `
-        <p class="np-hz-cond">${_escHtml(cond)}</p>
-        <p class="np-hz-ready">Còn slot → MARKET ${dir} ngay</p>`}
+        ${_detailPanelHtml(parsed, waiting)}
+        ${ready ? `<p class="np-hz-ready"><i class="fa-solid fa-circle-check me-1"></i>Còn slot → MARKET ${dir} ngay</p>` : ''}
     </div>`;
 }
 
@@ -1090,23 +1184,38 @@ function renderBotThinkBoard(forecasts, plans, timestamp, positions) {
         const cardKey = [fc.symbol, shortH.bias, shortH.action, longH.bias, longH.action, fc.updated_at].join(':');
         const changed = prevSig && prevSig.length && !prevSig.split('|').includes(cardKey);
 
-        const techBits = [
-            ind.rsi != null ? ('RSI ' + _fmtInd(ind.rsi, 1)) : null,
-            ind.macd_hist != null ? ('MACD ' + _fmtInd(ind.macd_hist, 4)) : null,
-            ind.ema9 != null ? ('EMA9 ' + _fmtInd(ind.ema9, 2)) : null,
-            ind.ema21 != null ? ('EMA21 ' + _fmtInd(ind.ema21, 2)) : null,
-            ind.ema50 != null ? ('EMA50 ' + _fmtInd(ind.ema50, 2)) : null,
-            ind.ema200 != null ? ('EMA200 ' + _fmtInd(ind.ema200, 2)) : null,
-            ind.atr != null ? ('ATR ' + _fmtInd(ind.atr, 2)) : null,
-            r1 != null ? ('R1 ' + _fmtInd(r1, 2)) : null,
-            s1 != null ? ('S1 ' + _fmtInd(s1, 2)) : null,
-        ].filter(Boolean);
+        const rsiN = ind.rsi != null ? Number(ind.rsi) : null;
+        const macdN = ind.macd_hist != null ? Number(ind.macd_hist) : null;
+        const metrics = [
+            { k: 'RSI', v: ind.rsi != null ? _fmtInd(ind.rsi, 1) : null, tone: rsiN == null ? '' : (rsiN >= 60 ? 'up' : (rsiN <= 40 ? 'down' : 'mid')) },
+            { k: 'MACD', v: ind.macd_hist != null ? _fmtInd(ind.macd_hist, 4) : null, tone: macdN == null ? '' : (macdN > 0 ? 'up' : (macdN < 0 ? 'down' : 'mid')) },
+            { k: 'EMA9', v: ind.ema9 != null ? _fmtInd(ind.ema9, 2) : null, tone: '' },
+            { k: 'EMA21', v: ind.ema21 != null ? _fmtInd(ind.ema21, 2) : null, tone: '' },
+            { k: 'EMA50', v: ind.ema50 != null ? _fmtInd(ind.ema50, 2) : null, tone: '' },
+            { k: 'EMA200', v: ind.ema200 != null ? _fmtInd(ind.ema200, 2) : null, tone: '' },
+            { k: 'ATR', v: ind.atr != null ? _fmtInd(ind.atr, 2) : null, tone: 'mid' },
+            { k: 'R1', v: r1 != null ? _fmtInd(r1, 2) : null, tone: 'res' },
+            { k: 'S1', v: s1 != null ? _fmtInd(s1, 2) : null, tone: 'sup' },
+            { k: 'Giá tín hiệu', v: ind.signal_price != null ? _fmtInd(ind.signal_price, 2) : (fc.current_price != null ? _fmtInd(fc.current_price, 2) : null), tone: '' },
+        ].filter(m => m.v != null);
+
+        const metricsHtml = metrics.length ? `
+            <div class="np-metrics">
+                <div class="np-metrics-head">Chỉ số kỹ thuật</div>
+                <div class="np-metrics-grid">
+                    ${metrics.map(m => `
+                        <div class="np-metric ${m.tone ? ('tone-' + m.tone) : ''}">
+                            <span class="np-metric-k">${_escHtml(m.k)}</span>
+                            <span class="np-metric-v">${_escHtml(m.v)}</span>
+                        </div>`).join('')}
+                </div>
+            </div>` : '';
 
         const holdNote = symPos.length
-            ? `<div class="np-hold-note">Đang mở ${symPos.length}× ${symPos.map(p => p.position_type).join('/')} · PnL ${(symPos.reduce((s, p) => s + (Number(p.floating_pnl) || 0), 0)).toFixed(2)}</div>`
+            ? `<div class="np-hold-note"><i class="fa-solid fa-briefcase me-1"></i>Đang mở ${symPos.length}× ${symPos.map(p => p.position_type).join('/')} · PnL ${(symPos.reduce((s, p) => s + (Number(p.floating_pnl) || 0), 0)).toFixed(2)}</div>`
             : '';
         const planNote = plan
-            ? `<div class="np-plan-note">Plan chờ #${plan.id}: MARKET <b class="${plan.direction === 'SELL' ? 'is-sell' : 'is-buy'}">${plan.direction}</b> @ $${_fmtInd(plan.entry_price, 2)} · ${plan.calculated_lot} Lot</div>`
+            ? `<div class="np-plan-note"><i class="fa-solid fa-clipboard-list me-1"></i>Plan chờ #${plan.id}: MARKET <b class="${plan.direction === 'SELL' ? 'is-sell' : 'is-buy'}">${plan.direction}</b> @ $${_fmtInd(plan.entry_price, 2)} · ${plan.calculated_lot} Lot</div>`
             : '';
 
         return `
@@ -1122,7 +1231,7 @@ function renderBotThinkBoard(forecasts, plans, timestamp, positions) {
                 ${_horizonBlock('Ngắn hạn · vào lệnh', shortH, true, false)}
                 ${_horizonBlock('Dài hạn · xu hướng / vùng giá', longH, false, true)}
             </div>
-            <div class="np-tech">${techBits.map(t => `<span>${_escHtml(t)}</span>`).join('')}</div>
+            ${metricsHtml}
             ${planNote}
             ${holdNote}
         </article>`;
