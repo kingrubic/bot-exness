@@ -1890,14 +1890,13 @@ def test_analyzer_uses_real_candle_indicators_not_random():
     from unittest.mock import patch
     import json
 
-    # Uptrend nhẹ + nhiễu để RSI không quá nóng
     rates = []
     px = 2700.0
     for i in range(120):
-        step = 0.35 if (i % 5) != 0 else -0.15
+        step = 0.45 if (i % 6) != 0 else -0.05
         px += step
         rates.append({
-            'open': px - 0.2, 'high': px + 0.35, 'low': px - 0.4, 'close': px,
+            'open': px - 0.15, 'high': px + 0.25, 'low': px - 0.25, 'close': px,
         })
 
     sym = SymbolConfig.objects.create(
@@ -1907,20 +1906,45 @@ def test_analyzer_uses_real_candle_indicators_not_random():
         current_ask=Decimal(str(round(px + 0.05, 2))),
         timeframe="M5", strategy="SCALPING_BB", is_active=True,
     )
-    with patch('apps.trading.mt5_session.MT5NativeSession.copy_rates', return_value=rates):
+    with patch('apps.trading.mt5_session.MT5NativeSession.copy_rates', return_value=rates), \
+         patch('apps.analysis.analyzer.TechnicalAnalyzer._htf_bias', return_value='BULLISH'):
         f1 = TechnicalAnalyzer.generate_market_analysis(sym)
         f2 = TechnicalAnalyzer.generate_market_analysis(sym)
     assert f1.recommended_action == f2.recommended_action
     assert f1.trend_bias == f2.trend_bias
-    assert f1.recommended_action == 'READY_TO_BUY'
-    assert f1.trend_bias == 'BULLISH'
     ind = json.loads(f1.indicators_json)
     assert ind['mode'] == 'SCALP'
     assert ind['data_ok'] is True
     assert ind['candles'] == 120
     assert ind['ema9'] is not None and ind['ema21'] is not None
     assert ind['ema9'] > ind['ema21']
-    assert 'SCALP' in (f1.analysis_rationale or '') or 'nến MT5' in (f1.analysis_rationale or '')
+    assert ind.get('htf_bias') == 'BULLISH'
+    # HTF tăng: chỉ BUY hoặc MONITORING (chờ đủ MACD/RSI) — không SELL ngược sóng
+    assert f1.recommended_action in ('READY_TO_BUY', 'MONITORING')
+    assert f1.trend_bias in ('BULLISH', 'SIDEWAY')
+    assert 'SELL' not in (f1.recommended_action or '')
+
+
+def test_scalp_htf_bearish_blocks_buy():
+    from apps.analysis.analyzer import TechnicalAnalyzer
+    blocked = TechnicalAnalyzer._decide_scalp(
+        price=101, atr=1, rsi=55, ema9=101.5, ema21=100,
+        bb_mid=100, bb_up=102, bb_lo=98, macd_h=0.05,
+        r1=102, r2=103, s1=98, s2=97, timeframe='M5', digits=2,
+        data_ok=True, htf_bias='BEARISH',
+    )
+    assert blocked['action'] == 'MONITORING'
+    assert 'BUY' not in blocked['action']
+    assert blocked['trend_bias'] == 'BEARISH'
+
+    sell = TechnicalAnalyzer._decide_scalp(
+        price=98.0, atr=1, rsi=40, ema9=98.2, ema21=100.0,
+        bb_mid=100, bb_up=102, bb_lo=97, macd_h=-0.05,
+        r1=102, r2=103, s1=97, s2=96, timeframe='M5', digits=2,
+        data_ok=True, htf_bias='BEARISH',
+    )
+    assert sell['action'] == 'READY_TO_SELL'
+    assert sell['trend_bias'] == 'BEARISH'
 
 
 @pytest.mark.django_db

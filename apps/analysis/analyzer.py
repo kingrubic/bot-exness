@@ -136,9 +136,8 @@ def _extract_ohlc(rates) -> tuple[list[float], list[float], list[float], list[fl
 class TechnicalAnalyzer:
     """
     Phân tích thật từ nến MT5:
-    - Lướt sóng (SCALPING_BB / M1-M5): EMA9/21 + RSI + BB — vào nhanh theo momentum.
-    - Dài hạn / trend (SMC_TREND, H1+): EMA50/200 + MACD — chỉ vào khi rõ xu hướng;
-      kéo dài bằng trail SL (ví cấu hình), không random chỉ báo.
+    - Lướt sóng (SCALPING_BB / M1-M5): EMA9/21 + RSI + MACD, lọc HTF — không BUY ngược downtrend.
+    - Dài hạn / trend (SMC_TREND, H1+): EMA50/200 + MACD; trail SL theo ví.
     """
 
     @staticmethod
@@ -160,6 +159,35 @@ class TechnicalAnalyzer:
             logger.debug("copy_rates %s %s: %s", symbol, timeframe, e)
         return None
 
+    @staticmethod
+    def _htf_bias(symbol: str, scalp_tf: str) -> str | None:
+        """Xu hướng khung lớn: M1→M5, M5→M15, khác→H1. Chặn vào ngược sóng."""
+        tf = str(scalp_tf or 'M5').upper()
+        htf = {'M1': 'M5', 'M5': 'M15', 'M15': 'H1'}.get(tf, 'H1')
+        rates = TechnicalAnalyzer._load_rates(symbol, htf, 220)
+        _o, _h, _l, closes = _extract_ohlc(rates or [])
+        if len(closes) < 60:
+            return None
+        ema50_s = _ema(closes, 50)
+        ema200_s = _ema(closes, 200)
+        ema50 = ema50_s[-1] if ema50_s else None
+        ema200 = ema200_s[-1] if ema200_s else None
+        px = closes[-1]
+        macd_h = _macd_hist(closes)
+        if ema50 is None:
+            return None
+        if ema200 is not None:
+            if ema50 > ema200 and px > ema50:
+                return 'BULLISH'
+            if ema50 < ema200 and px < ema50:
+                return 'BEARISH'
+            return 'SIDEWAY'
+        if px > ema50 and (macd_h is None or macd_h >= 0):
+            return 'BULLISH'
+        if px < ema50 and (macd_h is None or macd_h <= 0):
+            return 'BEARISH'
+        return 'SIDEWAY'
+
     @classmethod
     def generate_market_analysis(cls, symbol_config: SymbolConfig) -> MarketForecast:
         symbol = symbol_config.symbol
@@ -178,9 +206,10 @@ class TechnicalAnalyzer:
         bid = _f(symbol_config.current_bid or symbol_config.current_price)
         ask = _f(symbol_config.current_ask or symbol_config.current_price)
         mid_px = (bid + ask) / 2.0 if bid > 0 and ask > 0 else _f(symbol_config.current_price)
-        price = closes[-1] if closes else mid_px
-        if mid_px > 0:
-            price = mid_px
+        # Tín hiệu theo giá ĐÓNG nến — không dùng mid Ask/Bid (dễ lệch BUY khi spread)
+        close_px = closes[-1] if closes else mid_px
+        price = close_px if close_px > 0 else mid_px
+        live_px = mid_px if mid_px > 0 else price
 
         spread = _f(symbol_config.current_spread_pips)
         if spread <= 0 and bid > 0 and ask > 0:
@@ -215,6 +244,7 @@ class TechnicalAnalyzer:
             s2 = price - atr * 2
 
         data_ok = len(closes) >= 50 and ema21 is not None and rsi is not None
+        htf_bias = cls._htf_bias(symbol, analysis_tf) if scalp and data_ok else None
 
         if scalp:
             result = cls._decide_scalp(
@@ -222,6 +252,7 @@ class TechnicalAnalyzer:
                 bb_mid=bb_mid, bb_up=bb_up, bb_lo=bb_lo,
                 macd_h=macd_h, r1=r1, r2=r2, s1=s1, s2=s2,
                 timeframe=analysis_tf, digits=digits, data_ok=data_ok,
+                htf_bias=htf_bias,
             )
         else:
             result = cls._decide_swing(
@@ -230,13 +261,13 @@ class TechnicalAnalyzer:
                 timeframe=analysis_tf, digits=digits, data_ok=data_ok,
             )
 
-        # Persist ATR / scan meta
+        # Persist ATR / scan meta — UI dùng live; tín hiệu vẫn theo close
         try:
             symbol_config.atr_value = round(atr, digits)
             if spread > 0:
                 symbol_config.current_spread_pips = spread
-            if price > 0:
-                symbol_config.current_price = Decimal(str(round(price, digits)))
+            if live_px > 0:
+                symbol_config.current_price = Decimal(str(round(live_px, digits)))
             symbol_config.last_scanned_at = timezone.now()
             symbol_config.save(update_fields=[
                 'atr_value', 'current_spread_pips', 'current_price', 'last_scanned_at'
@@ -248,6 +279,8 @@ class TechnicalAnalyzer:
             'mode': 'SCALP' if scalp else 'SWING',
             'strategy': strategy,
             'analysis_tf': analysis_tf,
+            'signal_price': round(price, digits),
+            'htf_bias': htf_bias,
             'rsi': rsi,
             'ema9': round(ema9, digits) if ema9 is not None else None,
             'ema21': round(ema21, digits) if ema21 is not None else None,
@@ -271,7 +304,7 @@ class TechnicalAnalyzer:
                         'timeframe': analysis_tf,
                         'trend_bias': result['trend_bias'],
                         'confidence_score': result['confidence'],
-                        'current_price': Decimal(str(round(price, digits))),
+                        'current_price': Decimal(str(round(live_px if live_px > 0 else price, digits))),
                         'projected_target_zone': result['target_zone'],
                         'next_resistance_1': Decimal(str(round(result['r1'], digits))),
                         'next_resistance_2': Decimal(str(round(result['r2'], digits))),
@@ -294,7 +327,7 @@ class TechnicalAnalyzer:
 
     @staticmethod
     def _decide_scalp(**kw) -> dict:
-        """Lướt sóng: EMA9/21 + RSI + BB — vào MARKET khi có momentum rõ."""
+        """EMA9/21 + RSI + MACD; chặn BUY khi HTF giảm / SELL khi HTF tăng."""
         price = kw['price']
         atr = kw['atr']
         rsi = kw['rsi']
@@ -304,6 +337,7 @@ class TechnicalAnalyzer:
         macd_h = kw['macd_h']
         r1, r2, s1, s2 = kw['r1'], kw['r2'], kw['s1'], kw['s2']
         tf, digits, data_ok = kw['timeframe'], kw['digits'], kw['data_ok']
+        htf_bias = kw.get('htf_bias')
 
         if not data_ok or ema9 is None or ema21 is None or rsi is None:
             return {
@@ -317,23 +351,46 @@ class TechnicalAnalyzer:
                 'r1': r1, 'r2': r2, 's1': s1, 's2': s2,
             }
 
-        bull = ema9 > ema21 and price >= ema21 and rsi >= 45
-        bear = ema9 < ema21 and price <= ema21 and rsi <= 55
-        # Bounce scalping tại BB — chỉ khi EMA sideway (không đảo chiều momentum EMA)
+        bull = (
+            ema9 > ema21
+            and price >= ema9
+            and 48 <= rsi <= 72
+            and (macd_h is None or macd_h >= 0)
+        )
+        bear = (
+            ema9 < ema21
+            and price <= ema9
+            and 28 <= rsi <= 52
+            and (macd_h is None or macd_h <= 0)
+        )
+
         if not bull and not bear:
-            if bb_lo is not None and price <= bb_lo and rsi < 35:
+            if (
+                bb_lo is not None and price <= bb_lo and rsi < 32
+                and ema9 >= ema21 and htf_bias != 'BEARISH'
+            ):
                 bull = True
-            elif bb_up is not None and price >= bb_up and rsi > 65:
+            elif (
+                bb_up is not None and price >= bb_up and rsi > 68
+                and ema9 <= ema21 and htf_bias != 'BULLISH'
+            ):
                 bear = True
 
+        if htf_bias == 'BEARISH' and bull:
+            bull = False
+        if htf_bias == 'BULLISH' and bear:
+            bear = False
+
+        htf_note = f" HTF={htf_bias or 'n/a'}."
+
         if bull and not bear:
-            conf = 70.0
+            conf = 72.0
             if macd_h is not None and macd_h > 0:
                 conf += 8
-            if 48 <= rsi <= 70:
+            if 50 <= rsi <= 68:
                 conf += 5
-            elif rsi > 80:
-                conf -= 6
+            if htf_bias == 'BULLISH':
+                conf += 6
             conf = min(92.0, max(55.0, conf))
             t_lo = round(price + atr * 0.6, digits)
             t_hi = round(price + atr * 1.4, digits)
@@ -341,28 +398,27 @@ class TechnicalAnalyzer:
                 'trend_bias': 'BULLISH',
                 'action': 'READY_TO_BUY',
                 'confidence': round(conf, 1),
-                'structure': f"{tf} Scalp Momentum: EMA9>EMA21 + RSI={rsi}",
+                'structure': f"{tf} Scalp BUY: EMA9>EMA21 + MACD≥0 + RSI={rsi}",
                 'trigger': (
-                    f"LƯỚT SÓNG BUY MARKET tại Ask. EMA9={round(ema9, digits)} > EMA21={round(ema21, digits)}. "
-                    f"Chốt nhanh theo min TP ví; có thể pyramid cùng hướng."
+                    f"LƯỚT SÓNG BUY MARKET tại Ask. Close={round(price, digits)}, "
+                    f"EMA9={round(ema9, digits)} > EMA21={round(ema21, digits)}.{htf_note}"
                 ),
                 'rationale': (
-                    f"[SCALP {tf} từ nến MT5] Giá {round(price, digits)} trên EMA21, "
-                    f"EMA9 cắt trên EMA21, RSI={rsi}. "
-                    f"ATR={round(atr, digits)}. Mục tiêu ngắn {t_lo}-{t_hi}."
+                    f"[SCALP {tf} nến đóng] Uptrend ngắn: close≥EMA9>EMA21, RSI={rsi}, "
+                    f"MACD_hist={macd_h}.{htf_note} Không BUY nếu HTF giảm."
                 ),
                 'target_zone': f"{t_lo} - {t_hi}",
                 'r1': r1, 'r2': r2, 's1': s1, 's2': s2,
             }
 
         if bear and not bull:
-            conf = 70.0
+            conf = 72.0
             if macd_h is not None and macd_h < 0:
                 conf += 8
-            if 30 <= rsi <= 52:
+            if 32 <= rsi <= 50:
                 conf += 5
-            elif rsi < 20:
-                conf -= 6
+            if htf_bias == 'BEARISH':
+                conf += 6
             conf = min(92.0, max(55.0, conf))
             t_lo = round(price - atr * 1.4, digits)
             t_hi = round(price - atr * 0.6, digits)
@@ -370,16 +426,52 @@ class TechnicalAnalyzer:
                 'trend_bias': 'BEARISH',
                 'action': 'READY_TO_SELL',
                 'confidence': round(conf, 1),
-                'structure': f"{tf} Scalp Momentum: EMA9<EMA21 + RSI={rsi}",
+                'structure': f"{tf} Scalp SELL: EMA9<EMA21 + MACD≤0 + RSI={rsi}",
                 'trigger': (
-                    f"LƯỚT SÓNG SELL MARKET tại Bid. EMA9={round(ema9, digits)} < EMA21={round(ema21, digits)}. "
-                    f"Chốt nhanh theo min TP ví."
+                    f"LƯỚT SÓNG SELL MARKET tại Bid. Close={round(price, digits)}, "
+                    f"EMA9={round(ema9, digits)} < EMA21={round(ema21, digits)}.{htf_note}"
                 ),
                 'rationale': (
-                    f"[SCALP {tf} từ nến MT5] Giá {round(price, digits)} dưới EMA21, "
-                    f"EMA9 cắt dưới EMA21, RSI={rsi}. ATR={round(atr, digits)}."
+                    f"[SCALP {tf} nến đóng] Downtrend ngắn: close≤EMA9<EMA21, RSI={rsi}, "
+                    f"MACD_hist={macd_h}.{htf_note}"
                 ),
                 'target_zone': f"{t_lo} - {t_hi}",
+                'r1': r1, 'r2': r2, 's1': s1, 's2': s2,
+            }
+
+        if htf_bias == 'BEARISH':
+            return {
+                'trend_bias': 'BEARISH',
+                'action': 'MONITORING',
+                'confidence': 58.0,
+                'structure': f"{tf} HTF giảm — chặn BUY ngược sóng",
+                'trigger': (
+                    'Xu hướng khung lớn đang giảm. Không mở BUY; '
+                    'chờ EMA9<EMA21 + MACD≤0 để SELL.'
+                ),
+                'rationale': (
+                    f"[SCALP {tf}] HTF BEARISH lọc ngược sóng. "
+                    f"EMA9={round(ema9, digits)}, EMA21={round(ema21, digits)}, RSI={rsi}."
+                ),
+                'target_zone': f"{round(price - atr, digits)} - {round(price + atr, digits)}",
+                'r1': r1, 'r2': r2, 's1': s1, 's2': s2,
+            }
+
+        if htf_bias == 'BULLISH':
+            return {
+                'trend_bias': 'BULLISH',
+                'action': 'MONITORING',
+                'confidence': 58.0,
+                'structure': f"{tf} HTF tăng — chặn SELL ngược sóng",
+                'trigger': (
+                    'Xu hướng khung lớn đang tăng. Không mở SELL; '
+                    'chờ EMA9>EMA21 + MACD≥0 để BUY.'
+                ),
+                'rationale': (
+                    f"[SCALP {tf}] HTF BULLISH lọc ngược sóng. "
+                    f"EMA9={round(ema9, digits)}, EMA21={round(ema21, digits)}, RSI={rsi}."
+                ),
+                'target_zone': f"{round(price - atr, digits)} - {round(price + atr, digits)}",
                 'r1': r1, 'r2': r2, 's1': s1, 's2': s2,
             }
 
@@ -387,11 +479,11 @@ class TechnicalAnalyzer:
             'trend_bias': 'SIDEWAY',
             'action': 'MONITORING',
             'confidence': 55.0,
-            'structure': f"{tf} Scalp range — chưa có momentum EMA9/21",
-            'trigger': 'Không vào lệnh lướt sóng khi EMA9/21 và RSI chưa đồng thuận.',
+            'structure': f"{tf} Scalp range — chưa có momentum EMA/MACD",
+            'trigger': 'Không vào lệnh khi EMA/MACD/RSI chưa đồng thuận.',
             'rationale': (
                 f"[SCALP {tf}] Sideway: EMA9={round(ema9, digits) if ema9 else '-'}, "
-                f"EMA21={round(ema21, digits) if ema21 else '-'}, RSI={rsi}. Chờ tín hiệu rõ."
+                f"EMA21={round(ema21, digits) if ema21 else '-'}, RSI={rsi}, MACD={macd_h}.{htf_note}"
             ),
             'target_zone': f"{round(price - atr, digits)} - {round(price + atr, digits)}",
             'r1': r1, 'r2': r2, 's1': s1, 's2': s2,
