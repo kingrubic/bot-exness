@@ -892,7 +892,7 @@ def manual_order_send_api(request):
 
     from apps.trading.mt5_connector import ExnessMT5Connector
     connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
-    if not connector.connect():
+    if not connector.connect(allow_switch=True):
         return Response({
             'success': False,
             'error': f'Không thể kết nối tới máy chủ MT5 ({wallet.mt5_server}). Hãy mở MetaTrader 5, đăng nhập tài khoản #{wallet.mt5_login} và bật Algo Trading.'

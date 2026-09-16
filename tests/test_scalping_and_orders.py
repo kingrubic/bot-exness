@@ -1706,5 +1706,68 @@ def test_inactive_wallet_does_not_fake_1000_balance():
     assert float(w.capital) == 0.0
 
 
+@pytest.mark.django_db
+def test_inactive_wallet_does_not_get_mt5_connector():
+    """Ví tắt kích hoạt không được cấp connector — bot không login MT5 cho ví đó."""
+    wallet = WalletAccount.objects.create(
+        name='Off', account_type='DEMO', mt5_login='434232731',
+        mt5_password='secret', mt5_server='Exness-MT5Trial17', is_active=False,
+    )
+    assert ExecutionEngine.mt5_connector_for_wallet(wallet) is None
+
+
+def test_wine_connect_does_not_login_other_account_without_allow_switch():
+    """Wine: terminal đang #20 thì không POST /login sang ví #16 khi allow_switch=False."""
+    from unittest.mock import patch, MagicMock
+    from apps.trading.mt5_connector import ExnessMT5Connector
+
+    conn = ExnessMT5Connector(login='434232731', password='pw', server='Exness-MT5Trial17')
+    mock_get = MagicMock()
+    mock_get.status_code = 200
+    mock_get.json.return_value = {'success': True, 'account_info': {'login': 463974323}}
+    with patch('apps.trading.mt5_connector.MT5_AVAILABLE', False), \
+         patch.object(ExnessMT5Connector, 'is_bridge_reachable', return_value=True), \
+         patch('apps.trading.mt5_connector.requests.get', return_value=mock_get), \
+         patch('apps.trading.mt5_connector.requests.post') as mock_post:
+        assert conn.connect(allow_switch=False) is False
+        mock_post.assert_not_called()
+
+
+def test_wine_connect_does_not_login_empty_session_without_allow_switch():
+    """Wine: chưa có phiên / GET lỗi thì vẫn không tự POST /login nếu không allow_switch."""
+    from unittest.mock import patch, MagicMock
+    from apps.trading.mt5_connector import ExnessMT5Connector
+
+    conn = ExnessMT5Connector(login='434232731', password='pw', server='Exness-MT5Trial17')
+    mock_get = MagicMock()
+    mock_get.status_code = 400
+    mock_get.json.return_value = {'success': False}
+    with patch('apps.trading.mt5_connector.MT5_AVAILABLE', False), \
+         patch.object(ExnessMT5Connector, 'is_bridge_reachable', return_value=True), \
+         patch('apps.trading.mt5_connector.requests.get', return_value=mock_get), \
+         patch('apps.trading.mt5_connector.requests.post') as mock_post:
+        assert conn.connect(allow_switch=False) is False
+        mock_post.assert_not_called()
+
+
+def test_wine_connect_logs_in_only_with_allow_switch():
+    """Wine: chỉ ví đang kích hoạt (allow_switch=True) mới được POST /login."""
+    from unittest.mock import patch, MagicMock
+    from apps.trading.mt5_connector import ExnessMT5Connector
+
+    conn = ExnessMT5Connector(login='463974323', password='pw', server='Exness-MT5Real')
+    mock_get = MagicMock()
+    mock_get.status_code = 200
+    mock_get.json.return_value = {'success': True, 'account_info': {'login': 434232731}}
+    mock_post = MagicMock()
+    mock_post.status_code = 200
+    mock_post.json.return_value = {'success': True}
+    with patch('apps.trading.mt5_connector.MT5_AVAILABLE', False), \
+         patch.object(ExnessMT5Connector, 'is_bridge_reachable', return_value=True), \
+         patch('apps.trading.mt5_connector.requests.get', return_value=mock_get), \
+         patch('apps.trading.mt5_connector.requests.post', return_value=mock_post) as posted:
+        assert conn.connect(allow_switch=True) is True
+        posted.assert_called_once()
+        assert posted.call_args[0][0].endswith('/login')
 
 

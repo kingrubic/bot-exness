@@ -45,7 +45,7 @@ def run_trading_bot_worker():
                     try:
                         from apps.trading.mt5_connector import ExnessMT5Connector
                         connector = ExnessMT5Connector(login=w.mt5_login, password=w.mt5_password, server=w.mt5_server)
-                        if connector.connect():
+                        if connector.connect(allow_switch=True):
                             connector.sync_history_from_mt5(w)
                     except Exception:
                         pass

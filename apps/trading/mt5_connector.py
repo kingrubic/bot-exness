@@ -243,7 +243,11 @@ class ExnessMT5Connector:
             return False, f'Lỗi kích hoạt ví trên MT5: {e}', {}
 
     def connect(self, allow_switch: bool = False) -> bool:
-        """Khởi tạo kết nối tới MT5 Terminal (Native hoặc Wine Bridge)."""
+        """Khởi tạo kết nối tới MT5 Terminal (Native hoặc Wine Bridge).
+
+        Một cửa sổ MT5 = 1 tài khoản. Không tự login ví khác trừ khi allow_switch=True
+        (chỉ dùng khi kích hoạt ví / chu kỳ bot của ví đang bật).
+        """
         if not self.login:
             return False
 
@@ -273,19 +277,32 @@ class ExnessMT5Connector:
             return False
 
         try:
-            # 2.1 Quick check if already logged into the requested account
+            current = 0
             try:
                 chk = requests.get(f"{BRIDGE_URL}/account_info", timeout=0.8)
                 if chk.status_code == 200 and chk.json().get('success'):
-                    acc = chk.json().get('account_info', {})
-                    if int(acc.get('login') or 0) == int(login_clean):
+                    acc = chk.json().get('account_info', {}) or {}
+                    current = int(acc.get('login') or 0)
+                    if current == int(login_clean):
                         self.is_connected = True
                         self.bridge_mode = True
                         return True
             except Exception:
                 pass
 
-            # 2.2 Perform login request
+            if current == int(login_clean) and current:
+                self.is_connected = True
+                self.bridge_mode = True
+                return True
+
+            if not allow_switch:
+                logger.warning(
+                    "MT5 đang #%s — không tự login ví #%s (ví tắt / không cho đổi tài khoản).",
+                    current or '?', login_clean,
+                )
+                self.is_connected = False
+                return False
+
             resp = requests.post(f"{BRIDGE_URL}/login", json={
                 'login': login_clean,
                 'password': self.password,
@@ -300,6 +317,11 @@ class ExnessMT5Connector:
 
         self.is_connected = False
         return False
+
+    @staticmethod
+    def _login_int(raw) -> int:
+        s = str(raw or '').replace('#', '').strip()
+        return int(s) if s.isdigit() else 0
 
     def disconnect(self):
         """Đánh dấu ngắt kết nối logic. Không shutdown() IPC — process Django/bot vẫn cần terminal sống."""
@@ -449,6 +471,8 @@ class ExnessMT5Connector:
 
     def sync_account_info(self, wallet) -> bool:
         """Đồng bộ số dư, vốn (Equity), Lời/Lỗ, Ký quỹ (Margin), Ký quỹ khả dụng (Free Margin) trực tiếp từ Exness MT5."""
+        if wallet is not None and not getattr(wallet, 'is_active', False):
+            return False
         if MT5_AVAILABLE and not self.bridge_mode and self.is_connected:
             from apps.trading.mt5_session import MT5NativeSession
             account_info = MT5NativeSession.account()
@@ -475,14 +499,15 @@ class ExnessMT5Connector:
             if not self.is_bridge_reachable():
                 return False
             try:
-                payload = {
-                    'login': wallet.mt5_login,
-                    'password': wallet.mt5_password,
-                    'server': wallet.mt5_server
-                }
-                resp = requests.post(f"{BRIDGE_URL}/account_info", json=payload, timeout=4)
+                resp = requests.get(f"{BRIDGE_URL}/account_info", timeout=4)
                 if resp.status_code == 200 and resp.json().get('success'):
                     acc = resp.json().get('account_info', {})
+                    if int(acc.get('login') or 0) != int(str(wallet.mt5_login or '0').replace('#', '') or 0):
+                        logger.warning(
+                            "Không sync số dư ví #%s — terminal đang #%s",
+                            wallet.mt5_login, acc.get('login'),
+                        )
+                        return False
                     live_bal = Decimal(str(round(acc.get('balance', 0), 2)))
                     live_eq = Decimal(str(round(acc.get('equity', 0), 2)))
                     live_pnl = Decimal(str(round(acc.get('profit', 0), 2)))
@@ -508,6 +533,10 @@ class ExnessMT5Connector:
     def sync_positions(self, wallet):
         """Đồng bộ toàn bộ các lệnh đang mở realtime từ Exness MT5 vào Database. 100% dữ liệu gốc, không tự tính."""
         from apps.trading.models import Position
+
+        if wallet is not None and not getattr(wallet, 'is_active', False):
+            logger.debug("Bỏ sync_positions — ví #%s đang tắt kích hoạt", getattr(wallet, 'mt5_login', ''))
+            return False
 
         if MT5_AVAILABLE and not self.bridge_mode and self.is_connected:
             from apps.trading.mt5_session import MT5NativeSession
@@ -560,12 +589,7 @@ class ExnessMT5Connector:
 
         if self.bridge_mode or not MT5_AVAILABLE:
             try:
-                payload = {
-                    'login': wallet.mt5_login,
-                    'password': wallet.mt5_password,
-                    'server': wallet.mt5_server
-                }
-                resp = requests.post(f"{BRIDGE_URL}/positions", json=payload, timeout=4)
+                resp = requests.get(f"{BRIDGE_URL}/positions", timeout=4)
                 if resp.status_code == 200 and resp.json().get('success'):
                     live_positions = resp.json().get('positions', [])
                     live_tickets = set()
@@ -619,8 +643,11 @@ class ExnessMT5Connector:
         from apps.trading.models import TradeHistory, Position
 
         deals_data = []
+        if wallet is not None and not getattr(wallet, 'is_active', False):
+            logger.debug("Bỏ sync_history — ví #%s đang tắt kích hoạt", getattr(wallet, 'mt5_login', ''))
+            return
         if not self.is_connected:
-            self.connect()
+            self.connect(allow_switch=True)
 
         if MT5_AVAILABLE and not self.bridge_mode and self.is_connected:
             from apps.trading.mt5_session import MT5NativeSession
@@ -656,12 +683,7 @@ class ExnessMT5Connector:
 
         elif self.bridge_mode or not MT5_AVAILABLE:
             try:
-                payload = {
-                    'login': wallet.mt5_login,
-                    'password': wallet.mt5_password,
-                    'server': wallet.mt5_server
-                }
-                resp = requests.post(f"{BRIDGE_URL}/history_deals", json=payload, timeout=8)
+                resp = requests.get(f"{BRIDGE_URL}/history_deals", timeout=8)
                 if resp.status_code == 200 and resp.json().get('success'):
                     deals = resp.json().get('deals', [])
                     bot_pos_tickets = set(Position.objects.filter(source='BOT').values_list('ticket', flat=True))

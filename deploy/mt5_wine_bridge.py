@@ -186,7 +186,10 @@ def get_account_info():
             login_int = int(login_id)
             acc = mt5.account_info()
             if not acc or acc.login != login_int:
-                mt5.login(login=login_int, password=password, server=server, timeout=20000)
+                logger.info(
+                    "Bỏ qua tự login #%s trên /account_info — chỉ POST /login mới đổi tài khoản.",
+                    login_int,
+                )
         except Exception:
             pass
 
@@ -303,7 +306,10 @@ def get_positions():
             login_int = int(login_id)
             acc = mt5.account_info()
             if not acc or acc.login != login_int:
-                mt5.login(login=login_int, password=password, server=server, timeout=20000)
+                logger.info(
+                    "Bỏ qua tự login #%s trên /positions — giữ phiên MT5 hiện tại.",
+                    login_int,
+                )
         except Exception:
             pass
 
@@ -352,10 +358,12 @@ def get_history_deals():
             login_int = int(login_id)
             acc = mt5.account_info()
             if not acc or acc.login != login_int:
-                logger.info(f"Đang đăng nhập MT5 #{login_int} ({server}) để lấy lịch sử khớp lệnh...")
-                mt5.login(login=login_int, password=password, server=server, timeout=20000)
+                logger.info(
+                    "Bỏ qua tự login #%s khi lấy lịch sử — không đổi tài khoản MT5.",
+                    login_int,
+                )
         except Exception as le:
-            logger.warning(f"Lỗi đăng nhập MT5 khi lấy lịch sử: {le}")
+            logger.warning(f"Lỗi đọc phiên MT5 khi lấy lịch sử: {le}")
 
     from datetime import datetime as dt_now, timedelta
     now = dt_now.now()

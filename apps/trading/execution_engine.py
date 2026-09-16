@@ -49,7 +49,7 @@ class ExecutionEngine:
 
         is_demo = (wallet.account_type in ['DEMO', 'SIMULATION']) or ('Trial' in wallet.mt5_server) or ('Demo' in wallet.mt5_server)
         connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
-        connected_mt5 = connector.connect()
+        connected_mt5 = connector.connect(allow_switch=True)
 
         # Nếu là ví Real mà không kết nối được MT5 -> hủy plan, không giữ FAILED
         if not is_demo and not connected_mt5:
@@ -397,6 +397,8 @@ class ExecutionEngine:
         ticket = str(position.ticket or '')
         if not ticket or ticket.startswith('LOCAL-') or not wallet.mt5_login:
             return True
+        if not getattr(wallet, 'is_active', False):
+            return False
         try:
             slf = float(sl_price)
         except (TypeError, ValueError):
@@ -409,7 +411,7 @@ class ExecutionEngine:
                 conn = ExnessMT5Connector(
                     login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server
                 )
-            if not conn.is_connected and not conn.connect():
+            if not conn.is_connected and not conn.connect(allow_switch=bool(getattr(wallet, 'is_active', False))):
                 logger.warning("Không kết nối MT5 để dời SL #%s", ticket)
                 return False
             tp = float(position.take_profit or 0) or 0.0
@@ -502,6 +504,8 @@ class ExecutionEngine:
     def mt5_connector_for_wallet(cls, wallet: WalletAccount, cache: dict | None = None):
         if not wallet or not getattr(wallet, 'mt5_login', None):
             return None
+        if not getattr(wallet, 'is_active', False):
+            return None
         key = str(wallet.mt5_login)
         if cache is not None and key in cache:
             return cache[key]
@@ -510,7 +514,7 @@ class ExecutionEngine:
             c = ExnessMT5Connector(
                 login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server
             )
-            if c.connect():
+            if c.connect(allow_switch=True):
                 conn = c
         except Exception:
             conn = None
@@ -674,7 +678,7 @@ class ExecutionEngine:
                     connector = ExnessMT5Connector(
                         login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server
                     )
-                    if connector.connect():
+                    if connector.connect(allow_switch=True):
                         connector.sync_positions(wallet)
                 except Exception:
                     pass
@@ -770,7 +774,7 @@ class ExecutionEngine:
             if acc is None:
                 return
             login = str(acc.login)
-            wallet = WalletAccount.objects.filter(mt5_login=login).first()
+            wallet = WalletAccount.objects.filter(mt5_login=login, is_active=True).first()
             if not wallet:
                 return
             wallet.balance = Decimal(str(round(acc.balance, 2)))
@@ -798,7 +802,7 @@ class ExecutionEngine:
             connector = ExnessMT5Connector(
                 login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server
             )
-            if connector.connect():
+            if connector.connect(allow_switch=True):
                 connector.sync_account_info(wallet)
                 connector.sync_positions(wallet)
                 wallet.refresh_from_db()
@@ -844,7 +848,7 @@ class ExecutionEngine:
                             connector = ExnessMT5Connector(
                                 login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server
                             )
-                            if connector.connect():
+                            if connector.connect(allow_switch=True):
                                 connector.sync_account_info(wallet)
                                 connector.sync_positions(wallet)
                         except Exception:
@@ -863,7 +867,7 @@ class ExecutionEngine:
 
             wallets_by_login = {
                 str(w.mt5_login): w
-                for w in WalletAccount.objects.filter(mt5_login__isnull=False).exclude(mt5_login='')
+                for w in WalletAccount.objects.filter(is_active=True, mt5_login__isnull=False).exclude(mt5_login='')
             }
             sl_conn_cache: dict = {}
             symbol_map = {s.symbol: s for s in SymbolConfig.objects.all()}
@@ -920,7 +924,7 @@ class ExecutionEngine:
                                 pass
 
             # --- 2) Cập nhật PnL DB (bỏ qua khi quá nhiều lệnh để không chậm) ---
-            db_qs = Position.objects.select_related('wallet').all()
+            db_qs = Position.objects.select_related('wallet').filter(wallet__is_active=True)
             if live_count > 80:
                 # Chỉ dọn LOCAL + ghost; không bulk_update hàng trăm dòng mỗi tick
                 for position in db_qs:
@@ -974,7 +978,7 @@ class ExecutionEngine:
                     if w and w.mt5_login:
                         try:
                             connector = ExnessMT5Connector(login=w.mt5_login, password=w.mt5_password, server=w.mt5_server)
-                            if connector.connect():
+                            if connector.connect(allow_switch=True):
                                 connector.sync_account_info(w)
                                 connector.sync_positions(w)
                         except Exception:
@@ -1099,7 +1103,7 @@ class ExecutionEngine:
                 if w and w.mt5_login:
                     try:
                         connector = ExnessMT5Connector(login=w.mt5_login, password=w.mt5_password, server=w.mt5_server)
-                        if connector.connect():
+                        if connector.connect(allow_switch=True):
                             connector.sync_account_info(w)
                             connector.sync_positions(w)
                             # History nặng — chỉ sync khi số lệnh còn lại vừa phải
@@ -1136,7 +1140,7 @@ class ExecutionEngine:
             cls._closing.add(ticket_str)
             try:
                 connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
-                if not connector.connect():
+                if not connector.connect(allow_switch=bool(getattr(wallet, 'is_active', False))):
                     return False, "Chưa kết nối MT5 Terminal để đóng lệnh. Hãy mở MT5, đăng nhập và bật Algo Trading."
                 close_comment = 'WebManual' if reason == 'MANUAL_CLOSE' else 'BotClose'
                 close_magic = 0 if reason == 'MANUAL_CLOSE' else 8882026
@@ -1305,9 +1309,11 @@ class ExecutionEngine:
             wallet = WalletAccount.get_current()
         if not wallet:
             return False, 'Chưa có ví đang kích hoạt để đóng lệnh.', {'closed': 0, 'total': 0, 'errors': []}
+        if not getattr(wallet, 'is_active', False):
+            return False, 'Ví đang tắt kích hoạt — không thao tác MT5.', {'closed': 0, 'total': 0, 'errors': []}
 
         connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
-        if wallet.mt5_login and not connector.connect():
+        if wallet.mt5_login and not connector.connect(allow_switch=True):
             return False, 'Chưa kết nối MT5. Mở terminal, đăng nhập và bật Algo Trading.', {
                 'closed': 0, 'total': 0, 'errors': ['MT5 chưa kết nối / Algo tắt'],
             }
@@ -1453,7 +1459,7 @@ class ExecutionEngine:
                 if wallet.mt5_login:
                     try:
                         connector = ExnessMT5Connector(login=wallet.mt5_login, password=wallet.mt5_password, server=wallet.mt5_server)
-                        if connector.connect():
+                        if connector.connect(allow_switch=True):
                             connector.sync_account_info(wallet)
                             connector.sync_positions(wallet)
                     except Exception as me:
