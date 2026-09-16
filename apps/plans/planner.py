@@ -6,8 +6,9 @@ from apps.symbols.models import SymbolConfig
 from apps.analysis.models import MarketForecast
 from apps.plans.models import TradingPlan
 
-# Plan FAILED/CANCELLED xóa ngay. Plan chờ khớp quá lâu cũng xóa (lướt sóng ngắn hạn).
-STALE_PLAN_SECONDS = 180
+# Plan FAILED/CANCELLED xóa ngay. Plan PENDING lệch hướng forecast xóa ngay.
+# Quá STALE_PLAN_SECONDS không được làm mới thì cũng xóa (lướt sóng ngắn hạn).
+STALE_PLAN_SECONDS = 30
 
 class AutoPlanGenerator:
     """
@@ -30,6 +31,69 @@ class AutoPlanGenerator:
         except (TypeError, ValueError):
             eq, bal = 0.0, 0.0
         return max(eq, bal) >= AutoPlanGenerator.EMPTY_WALLET_USD
+
+    @classmethod
+    def wallet_max_open_trades(cls, wallet: WalletAccount) -> int:
+        try:
+            n = int(wallet.max_open_trades or 1)
+        except (TypeError, ValueError):
+            n = 1
+        return max(1, min(n, 500))
+
+    @classmethod
+    def count_open_positions(cls, wallet: WalletAccount) -> int:
+        """Đếm lệnh đang mở: max(DB, MT5) để không lập plan khi đã đủ lệnh."""
+        db_n = 0
+        try:
+            db_n = int(wallet.positions.count())
+        except Exception:
+            db_n = 0
+        live_n = None
+        try:
+            from apps.trading.execution_engine import ExecutionEngine
+            live_n = int(ExecutionEngine.count_open_positions(wallet))
+        except Exception:
+            live_n = None
+        if live_n is None:
+            return db_n
+        return max(db_n, live_n)
+
+    @classmethod
+    def wallet_at_position_cap(cls, wallet: WalletAccount) -> bool:
+        """True khi số lệnh mở đã chạm max_open_trades — không lập plan mới."""
+        return cls.count_open_positions(wallet) >= cls.wallet_max_open_trades(wallet)
+
+    @classmethod
+    def purge_pending_if_at_cap(cls, wallet: WalletAccount | None = None) -> int:
+        """Đủ lệnh thì xóa hết plan đang treo (PENDING), không giữ hàng đợi."""
+        if wallet is None:
+            n = 0
+            pending_wids = set(
+                TradingPlan.objects.filter(
+                    status__in=['PENDING_TRIGGER', 'PENDING', 'ANALYZING']
+                ).values_list('wallet_id', flat=True)
+            )
+            for wid in pending_wids:
+                w = WalletAccount.objects.filter(pk=wid).first()
+                if w:
+                    n += cls.purge_pending_if_at_cap(w)
+            return n
+        if not cls.wallet_at_position_cap(wallet):
+            return 0
+        return cls.purge_pending_plans(wallet)
+
+    @classmethod
+    def purge_pending_plans(cls, wallet: WalletAccount | None = None, symbol: str | None = None) -> int:
+        """Xóa plan đang chờ (chưa khớp). Không giữ hàng đợi lệch hướng."""
+        qs = TradingPlan.objects.filter(status__in=['PENDING_TRIGGER', 'PENDING', 'ANALYZING'])
+        if wallet is not None:
+            qs = qs.filter(wallet=wallet)
+        if symbol:
+            qs = qs.filter(symbol=symbol)
+        n = qs.count()
+        if n:
+            qs.delete()
+        return n
 
     @classmethod
     def purge_all_plans_for_wallet(cls, wallet: WalletAccount) -> int:
@@ -63,6 +127,9 @@ class AutoPlanGenerator:
         if not AutoPlanGenerator.wallet_has_capital(wallet):
             AutoPlanGenerator.purge_all_plans_for_wallet(wallet)
             return None
+        if AutoPlanGenerator.wallet_at_position_cap(wallet):
+            AutoPlanGenerator.purge_pending_plans(wallet)
+            return None
         fields = AutoPlanGenerator._plan_fields(wallet, symbol_config, forecast, is_pyramiding=is_pyramiding)
         if not fields:
             return None
@@ -85,15 +152,23 @@ class AutoPlanGenerator:
 
         lot = float(wallet.default_lot_size or 0.01)
         lot = max(0.01, round(lot, 2))
-        min_tp = float(wallet.min_take_profit_usd or 1.0)
+        min_tp = float(wallet.min_take_profit_usd or 0) if wallet.min_take_profit_usd else 0.0
+        max_sl = float(wallet.max_stop_loss_usd or 0) if getattr(wallet, 'max_stop_loss_usd', None) else 0.0
+        trail_on = bool(getattr(wallet, 'trail_sl_enabled', False))
+        trail_lock = float(getattr(wallet, 'trail_sl_lock_usd', 0) or 0) if trail_on else 0.0
 
         tag_name = "AI Lướt Sóng Ngắn Hạn (Scale-In)" if is_pyramiding else "AI Lướt Sóng Ngắn Hạn"
         max_n = int(wallet.max_open_trades or 1)
+        tp_txt = f"Chốt lời khi lãi ròng >= ${min_tp:.2f}." if min_tp > 0 else "Không tự chốt lời (min TP trống)."
+        sl_txt = f"Cắt lỗ khi lỗ ròng <= -${max_sl:.2f} (SL_HIT)." if max_sl > 0 else "Không tự cắt lỗ USD (max SL trống)."
+        trail_txt = (
+            f" Tự dời SL: khoá ${trail_lock:.2f} (lãi 2× → SL còn 1×; chỉ dời tăng)."
+            if trail_on and trail_lock > 0 else ""
+        )
         rationale = (
             f"{tag_name}: MARKET {direction} {lot} Lot ngay (Ask khi BUY / Bid khi SELL), không chờ vùng entry. "
-            f"Chốt lời khi lãi ròng >= ${min_tp:.2f}. Lệnh lỗ giữ nguyên (gồng) đến khi về lãi. "
-            f"Max daily loss {float(wallet.max_daily_loss_percent or 0):.2f}%/ngày chỉ chặn mở thêm lệnh. "
-            f"Cho phép tối đa {max_n} lệnh mở đồng thời trên ví."
+            f"{tp_txt} {sl_txt}{trail_txt} "
+            f"Cho phép tối đa {max_n} lệnh mở đồng thời trên ví; còn slot thì bot lập plan mới và khớp ngay."
         )
 
         fields = {
@@ -148,6 +223,9 @@ class AutoPlanGenerator:
         if not cls.wallet_has_capital(wallet):
             cls.purge_all_plans_for_wallet(wallet)
             return None
+        if cls.wallet_at_position_cap(wallet):
+            cls.purge_pending_plans(wallet)
+            return None
         try:
             symbol_config.refresh_from_db()
         except Exception:
@@ -172,9 +250,13 @@ class AutoPlanGenerator:
         keep = pending_qs.first()
         if keep:
             pending_qs.exclude(pk=keep.pk).delete()
+            direction_changed = str(keep.direction or '') != str(fields.get('direction') or '')
             for k, v in fields.items():
                 setattr(keep, k, v)
             keep.status = 'PENDING_TRIGGER'
+            if direction_changed:
+                # Đổi BUY↔SELL = kế hoạch mới, không giữ timestamp/hướng cũ.
+                keep.created_at = timezone.now()
             keep.save()
             return keep
 
@@ -195,7 +277,8 @@ class AutoPlanGenerator:
     def purge_dead_plans(cls) -> int:
         """
         Không tích dồn: xóa FAILED/CANCELLED/COMPLETED ngay.
-        Chỉ giữ 1 plan PENDING mới nhất mỗi ví+cặp, và plan EXECUTING (lệnh đang mở).
+        Ví đã đủ lệnh: xóa hết plan PENDING treo. Chỉ giữ EXECUTING (lệnh đang mở).
+        Chưa đủ lệnh: chỉ giữ 1 plan PENDING mới nhất mỗi ví+cặp.
         """
         dead_qs = TradingPlan.objects.filter(status__in=['FAILED', 'CANCELLED', 'COMPLETED'])
         count = dead_qs.count()
@@ -204,10 +287,12 @@ class AutoPlanGenerator:
         cutoff = timezone.now() - timedelta(seconds=STALE_PLAN_SECONDS)
         stale_qs = TradingPlan.objects.filter(
             status__in=['PENDING_TRIGGER', 'PENDING', 'ANALYZING'],
-            created_at__lt=cutoff,
+            updated_at__lt=cutoff,
         )
         count += stale_qs.count()
         stale_qs.delete()
+
+        count += cls.purge_wrong_direction_pending()
 
         pending = list(
             TradingPlan.objects.filter(
@@ -225,13 +310,38 @@ class AutoPlanGenerator:
         if drop_ids:
             count += len(drop_ids)
             TradingPlan.objects.filter(pk__in=drop_ids).delete()
+
+        count += cls.purge_pending_if_at_cap()
         return count
+
+    @classmethod
+    def purge_wrong_direction_pending(cls) -> int:
+        """Xóa plan PENDING còn BUY trong khi forecast đã BEARISH (và ngược lại)."""
+        pending = list(
+            TradingPlan.objects.filter(status__in=['PENDING_TRIGGER', 'PENDING', 'ANALYZING'])
+        )
+        if not pending:
+            return 0
+        symbols = {p.symbol for p in pending}
+        latest = {}
+        for fc in MarketForecast.objects.filter(symbol__in=symbols).order_by('symbol', '-updated_at'):
+            latest.setdefault(fc.symbol, fc)
+        drop_ids = []
+        for p in pending:
+            fc = latest.get(p.symbol)
+            if not fc:
+                continue
+            if cls.direction_from_forecast(fc) != p.direction:
+                drop_ids.append(p.pk)
+        if drop_ids:
+            TradingPlan.objects.filter(pk__in=drop_ids).delete()
+        return len(drop_ids)
 
     @classmethod
     def refresh_plans_for_wallet(cls, wallet: WalletAccount) -> list:
         """
-        1. Xóa toàn bộ các Trading Plan AI chưa khớp lệnh cũ của ví (status in PENDING_TRIGGER, ANALYZING, CANCELLED).
-        2. Tính toán và sinh lại các Trading Plan mới dựa trên số dư hiện tại và danh sách các cặp cho phép mới.
+        Không lập sẵn plan cho mọi cặp.
+        Chỉ xóa plan chờ cũ; plan mới chỉ sinh khi còn slot lệnh (try_immediate / refill).
         """
         if not getattr(wallet, 'is_active', False):
             cls.purge_all_plans_for_wallet(wallet)
@@ -240,32 +350,9 @@ class AutoPlanGenerator:
             cls.purge_all_plans_for_wallet(wallet)
             return []
 
-        # 1. Xóa các Plan cũ chưa kích hoạt thành lệnh
         TradingPlan.objects.filter(
             wallet=wallet,
             status__in=['PENDING_TRIGGER', 'PENDING', 'ANALYZING', 'CANCELLED', 'FAILED']
         ).delete()
-
-        # 2. Sinh các Plan mới cho từng cặp trong danh sách allowed_symbols
-        created_plans = []
-        from apps.analysis.analyzer import TechnicalAnalyzer
-
-        for sym_name in wallet.allowed_symbols:
-            sym_config = SymbolConfig.objects.filter(symbol=sym_name).first()
-            if not sym_config:
-                continue
-
-            forecast = MarketForecast.objects.filter(symbol=sym_name).first()
-            if not forecast:
-                forecast = TechnicalAnalyzer.generate_market_analysis(sym_config)
-
-            if forecast:
-                try:
-                    plan = cls.generate_plan_for_wallet(wallet, sym_config, forecast)
-                    if plan:
-                        created_plans.append(plan)
-                except Exception:
-                    pass
-
-        return created_plans
+        return []
 

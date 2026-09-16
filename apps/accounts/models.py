@@ -24,9 +24,9 @@ class WalletAccount(models.Model):
     leverage = models.IntegerField(default=2000, verbose_name="Đòn Bẩy (1:X)")
     
     # Financial Capital & Metrics (Chỉ lưu vốn khi connect, số dư và equity lấy động)
-    capital = models.DecimalField(max_digits=15, decimal_places=2, default=1000.00, verbose_name="Vốn Khi Kết Nối (Capital USD)")
-    balance_db = models.DecimalField(max_digits=15, decimal_places=2, default=1000.00, verbose_name="Số Dư Thực Tế (Balance USD)")
-    equity_db = models.DecimalField(max_digits=15, decimal_places=2, default=1000.00, verbose_name="Vốn Khả Dụng (Equity USD)")
+    capital = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Vốn Khi Kết Nối (Capital USD)")
+    balance_db = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Số Dư Thực Tế (Balance USD)")
+    equity_db = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Vốn Khả Dụng (Equity USD)")
     floating_pnl = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Lãi/Lỗ Tạm Tính (Floating PnL)")
     margin = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Ký Quỹ Đã Dùng (Margin USD)")
     margin_free = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, verbose_name="Ký Quỹ Khả Dụng (Free Margin USD)")
@@ -48,8 +48,17 @@ class WalletAccount(models.Model):
     max_daily_loss_percent = models.FloatField(default=4.0, verbose_name="% Giới Hạn Lỗ Tối Đa Trong Ngày")
     max_open_trades = models.IntegerField(default=5, verbose_name="Số Lệnh Mở Tối Đa")
     min_take_profit_usd = models.DecimalField(
-        max_digits=12, decimal_places=2, default=Decimal('1.00'),
+        max_digits=12, decimal_places=2, null=True, blank=True, default=None,
         verbose_name="Số Tiền Min Chốt Lời (USD)"
+    )
+    max_stop_loss_usd = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True, default=None,
+        verbose_name="Số Tiền Max Cắt Lỗ (USD)"
+    )
+    trail_sl_enabled = models.BooleanField(default=False, verbose_name="Tự động dời SL khi lãi đạt")
+    trail_sl_lock_usd = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True, default=None,
+        verbose_name="Khoá lãi khi dời SL (USD)"
     )
     
     # Active Pairs configuration for this wallet
@@ -181,22 +190,16 @@ class WalletAccount(models.Model):
     def set_allowed_symbols(self, symbols_list):
         self.allowed_symbols_json = json.dumps(symbols_list)
 
+    def _today_history(self, day=None):
+        from apps.core.time_utils import local_day_bounds
+        start, end = local_day_bounds(day)
+        return self.trade_history.filter(closed_at__gte=start, closed_at__lt=end)
+
     def get_today_pnl(self):
-        """Lãi/lỗ đã đóng hôm nay: ưu tiên tổng deal MT5 trong ngày, fallback DB nếu terminal không sẵn sàng."""
+        """Lãi/lỗ đã đóng hôm nay (00:00–24:00 GMT+7) từ lịch sử DB, tách đúng ngày local."""
         from decimal import Decimal
         from django.db.models import Sum
-        try:
-            from apps.trading.mt5_session import MT5NativeSession
-            if self.mt5_login and MT5NativeSession.available():
-                acc = MT5NativeSession.account()
-                if acc and str(acc.login) == str(self.mt5_login):
-                    snap = MT5NativeSession.today_realized_pnl()
-                    if snap.get('ok'):
-                        return Decimal(str(snap['all']))
-        except Exception:
-            pass
-        today = timezone.localdate()
-        agg = self.trade_history.filter(closed_at__date=today).aggregate(tot=Sum('pnl'))
+        agg = self._today_history().aggregate(tot=Sum('pnl'))
         return Decimal(str(round(agg['tot'], 2))) if agg['tot'] is not None else Decimal('0.00')
 
     def calculate_metrics(self):
@@ -217,26 +220,32 @@ class WalletAccount(models.Model):
             self.total_profit = Decimal(str(round(tot_pnl, 2))) if tot_pnl is not None else Decimal('0.00')
             self.today_pnl = self.get_today_pnl()
 
-    def get_performance_breakdown(self):
-        """Tính toán tách bạch toàn bộ chỉ số hiệu suất giữa Lệnh BOT và Lệnh USER."""
+    def get_performance_breakdown(self, *, today_only: bool = False):
+        """Tách BOT / USER. Mặc định cả đời + today_pnl theo ngày VN; today_only = chỉ lệnh đóng hôm nay."""
         from django.db.models import Sum
-        
-        def _calc_stats(qs):
+        from apps.core.time_utils import local_day_bounds
+
+        start, end = local_day_bounds()
+
+        def _calc_stats(qs, daily=False):
             total = qs.count()
             wins = qs.filter(pnl__gt=0).count()
             losses = qs.filter(pnl__lt=0).count()
             winrate = round((wins / total) * 100, 1) if total > 0 else 0.0
-            
+
             tot_pnl = float(qs.aggregate(s=Sum('pnl'))['s'] or 0.0)
             gross_win = float(qs.filter(pnl__gt=0).aggregate(s=Sum('pnl'))['s'] or 0.0)
             gross_loss = abs(float(qs.filter(pnl__lt=0).aggregate(s=Sum('pnl'))['s'] or 0.0))
-            
+
             pf = round(gross_win / gross_loss, 2) if gross_loss > 0 else (round(gross_win, 2) if gross_win > 0 else 1.0)
             tot_vol = round(float(qs.aggregate(v=Sum('lot_size'))['v'] or 0.0), 2)
-            
-            today = timezone.localdate()
-            today_pnl = float(qs.filter(closed_at__date=today).aggregate(s=Sum('pnl'))['s'] or 0.0)
-            
+            if daily:
+                today_pnl = tot_pnl
+            else:
+                today_pnl = float(
+                    qs.filter(closed_at__gte=start, closed_at__lt=end).aggregate(s=Sum('pnl'))['s'] or 0.0
+                )
+
             return {
                 'total_trades': total,
                 'winning_trades': wins,
@@ -250,15 +259,16 @@ class WalletAccount(models.Model):
                 'today_pnl': round(today_pnl, 2),
             }
 
-        all_history = self.trade_history.all()
-        bot_history = all_history.filter(source='BOT')
-        user_history = all_history.filter(source='USER')
-
+        history = self._today_history() if today_only else self.trade_history.all()
         return {
-            'all': _calc_stats(all_history),
-            'bot': _calc_stats(bot_history),
-            'user': _calc_stats(user_history),
+            'all': _calc_stats(history, daily=today_only),
+            'bot': _calc_stats(history.filter(source='BOT'), daily=today_only),
+            'user': _calc_stats(history.filter(source='USER'), daily=today_only),
         }
+
+    def get_daily_breakdown(self):
+        """Báo cáo BOT vs USER trong ngày (GMT+7) — khớp bảng lịch sử hôm nay."""
+        return self.get_performance_breakdown(today_only=True)
 
 
 class ExnessServerMaster(models.Model):

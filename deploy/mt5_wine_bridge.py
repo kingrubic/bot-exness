@@ -428,9 +428,17 @@ def get_history_deals():
             total_vol = float(target_deal.volume)
 
             comment = str(target_deal.comment or '').strip()
-            magic = int(target_deal.magic or 0)
-            is_bot = (magic == 8882026) or comment.upper().startswith('BOT') or comment.upper().startswith('AI') or any(k in comment.lower() for k in ['ai', 'bot', 'autobot', 'scalp', 'bot_auto', 'ai_scalp'])
-            source = 'BOT' if is_bot else 'USER'
+            magic = int(getattr(in_deal, 'magic', 0) or target_deal.magic or 0)
+            close_magic = int(getattr(out_deal, 'magic', 0) or 0) if out_deal else int(target_deal.magic or 0)
+            cu = comment.upper()
+            if any(k in cu for k in ('WEBMANUAL', 'WEB CLOSE', 'WEB-CLOSE', 'CLOSEALL', 'CLOSE ALL', 'MANUAL')):
+                source = 'USER'
+            else:
+                is_bot = (magic == 8882026) or cu.startswith('BOT') or cu.startswith('AI') or any(
+                    k in comment.lower() for k in ['autobot', 'scalp', 'bot_auto', 'ai_scalp']
+                )
+                source = 'BOT' if is_bot else 'USER'
+            deal_reason = int(getattr(out_deal or target_deal, 'reason', -1) or -1)
 
             result.append({
                 'ticket': pos_id,
@@ -445,8 +453,9 @@ def get_history_deals():
                 'swap': total_swap,
                 'time': close_time,
                 'open_time': open_time,
-                'magic': magic,
+                'magic': close_magic if source == 'USER' else magic,
                 'comment': comment,
+                'reason': deal_reason,
                 'source': source
             })
 
@@ -684,8 +693,8 @@ def close_order():
             "type": close_type,
             "price": price,
             "deviation": 100,
-            "magic": 8882026,
-            "comment": "Web Close",
+            "magic": int(data.get('magic') or 0),
+            "comment": str(data.get('comment') or 'WebManual')[:31],
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": f_mode,
         }
@@ -726,42 +735,83 @@ def close_order():
 @app.route('/order_modify', methods=['POST'])
 def modify_order_endpoint():
     """Dời SL và TP trên sàn Exness MT5 để bảo vệ và tối đa hóa lợi nhuận."""
-    data = request.get_json(force=True)
-    ticket = int(data.get('ticket', 0))
-    sl = float(data.get('sl', 0.0))
-    tp = float(data.get('tp', 0.0))
-    symbol = str(data.get('symbol', ''))
+    try:
+        data = request.get_json(force=True) or {}
+        ticket = int(data.get('ticket', 0) or 0)
+        sl = float(data.get('sl', 0.0) or 0.0)
+        tp = float(data.get('tp', 0.0) or 0.0)
+        symbol = str(data.get('symbol', '') or '')
 
-    ok, msg = check_mt5_connection()
-    if not ok:
-        return jsonify({'success': False, 'error': msg}), 503
+        ok, msg = ensure_mt5_init()
+        if not ok:
+            return jsonify({'success': False, 'error': msg}), 503
 
-    pos_list = mt5.positions_get(ticket=ticket)
-    if not pos_list:
-        return jsonify({'success': False, 'error': f'Không tìm thấy vị thế #{ticket} trên MT5'}), 404
+        if ticket <= 0:
+            return jsonify({'success': False, 'error': 'Ticket không hợp lệ'}), 400
 
-    pos = pos_list[0]
-    req = {
-        "action": mt5.TRADE_ACTION_SLTP,
-        "position": ticket,
-        "symbol": pos.symbol,
-        "sl": sl if sl > 0 else 0.0,
-        "tp": tp if tp > 0 else 0.0,
-    }
+        pos = None
+        try:
+            found = mt5.positions_get(ticket=ticket)
+            if found:
+                pos = found[0]
+        except Exception:
+            pos = None
+        if pos is None:
+            all_pos = mt5.positions_get() or []
+            for p in all_pos:
+                if int(getattr(p, 'ticket', 0) or 0) == ticket:
+                    pos = p
+                    break
+        if pos is None:
+            return jsonify({'success': False, 'error': f'Không tìm thấy vị thế #{ticket} trên MT5'}), 404
 
-    res = mt5.order_send(req)
-    if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-        logger.info(f"✅ Đã dời SL ({sl}) và TP ({tp}) thành công cho lệnh #{ticket}")
-        return jsonify({
-            'success': True,
-            'message': f'Đã dời SL ({sl}) và TP ({tp}) thành công cho lệnh #{ticket}',
-            'ticket': str(ticket),
-            'sl': sl,
-            'tp': tp
-        })
+        broker_symbol = pos.symbol or symbol
+        digits = 5
+        try:
+            info = mt5.symbol_info(broker_symbol)
+            if info:
+                digits = int(getattr(info, 'digits', 5) or 5)
+        except Exception:
+            pass
+        sl_r = round(sl, digits) if sl > 0 else 0.0
+        tp_r = round(tp, digits) if tp > 0 else 0.0
 
-    err_msg = res.comment if res else str(mt5.last_error())
-    return jsonify({'success': False, 'error': f'Lỗi MT5 dời SL/TP: {err_msg}'}), 400
+        req = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "position": ticket,
+            "symbol": broker_symbol,
+            "sl": sl_r,
+            "tp": tp_r,
+            "magic": int(getattr(pos, 'magic', 0) or 0),
+        }
+
+        res = mt5.order_send(req)
+        if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+            logger.info(f"✅ Đã dời SL ({sl_r}) và TP ({tp_r}) thành công cho lệnh #{ticket}")
+            return jsonify({
+                'success': True,
+                'message': f'Đã dời SL ({sl_r}) và TP ({tp_r}) thành công cho lệnh #{ticket}',
+                'ticket': str(ticket),
+                'sl': sl_r,
+                'tp': tp_r
+            })
+
+        n_ok, n_msg, n_data = send_via_native_mql5("MODIFY", f"{ticket}|{sl_r}|{tp_r}|{broker_symbol}")
+        if n_ok:
+            logger.info(f"✅ [Native MQL5] Đã dời SL ({sl_r}) TP ({tp_r}) lệnh #{ticket}")
+            return jsonify({
+                'success': True,
+                'message': n_msg or f'Đã dời SL ({sl_r}) thành công cho lệnh #{ticket}',
+                'ticket': str(ticket),
+                'sl': sl_r,
+                'tp': tp_r,
+            })
+
+        err_msg = res.comment if res else str(mt5.last_error())
+        return jsonify({'success': False, 'error': f'Lỗi MT5 dời SL/TP: {err_msg}'}), 400
+    except Exception as e:
+        logger.exception("order_modify crashed")
+        return jsonify({'success': False, 'error': f'Lỗi bridge dời SL/TP: {e}'}), 500
 
 
 if __name__ == '__main__':

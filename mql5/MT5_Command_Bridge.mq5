@@ -151,6 +151,22 @@ void CheckAndProcessCommands()
          res_msg = "Sell failed: " + m_trade.ResultRetcodeDescription();
       }
    }
+   else if(action == "MODIFY")
+   {
+      ulong ticket = (ulong)StringToInteger(parts[1]);
+      double sl = (count > 2) ? StringToDouble(parts[2]) : 0;
+      double tp = (count > 3) ? StringToDouble(parts[3]) : 0;
+      if(m_trade.PositionModify(ticket, sl, tp))
+      {
+         success = true;
+         result_ticket = ticket;
+         res_msg = "Đã dời SL/TP thành công lệnh #" + (string)ticket;
+      }
+      else
+      {
+         res_msg = "Modify failed: " + m_trade.ResultRetcodeDescription();
+      }
+   }
 
    int out_handle = FileOpen("responses.txt", FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
    if(out_handle != INVALID_HANDLE)

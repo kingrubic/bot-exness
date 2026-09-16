@@ -209,7 +209,10 @@ function initGlobalEventListeners() {
 }
 
 async function closeAllPositionsPrompt() {
-    const n = (cachedOverviewPositions || []).length;
+    const nDom = document.querySelectorAll('#tbody-positions tr[id^="pos-row-"]').length;
+    const nBadge = parseInt(document.getElementById('badge-open-count')?.innerText || '0', 10) || 0;
+    const nKpi = parseInt(document.getElementById('kpi-positions-count')?.innerText || '0', 10) || 0;
+    const n = Math.max((cachedOverviewPositions || []).length, nDom, nBadge, nKpi);
     if (!n) {
         showToast('Không có vị thế mở để đóng', 'error');
         return;
@@ -240,9 +243,20 @@ async function closeAllPositionsPrompt() {
 
 // Number & Currency formatting helpers
 function formatMoney(amount) {
-    if (amount === undefined || amount === null || isNaN(amount)) return '$0.00';
+    if (amount === undefined || amount === null || amount === '' || Number.isNaN(Number(amount))) return '—';
     const num = Number(amount);
     return '$' + num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatWalletMoney(wallet, amount) {
+    if (!wallet || !wallet.is_active) return '—';
+    if (amount === undefined || amount === null || amount === '') return '—';
+    return formatMoney(amount);
+}
+
+function formatWalletPnl(wallet, amount, options = {}) {
+    if (!wallet || !wallet.is_active) return '<span class="text-muted">—</span>';
+    return formatPnl(amount, options);
 }
 
 function formatPrice(price, category = '') {
@@ -471,24 +485,30 @@ function handleLiveTicksData(data) {
     // 1. Update Top KPIs
     const ov = data.overview;
     if (ov) {
+        const hasWallet = Boolean(ov.active_wallet_id);
         const kpiBal = document.getElementById('kpi-balance');
-        if (kpiBal) kpiBal.innerText = formatMoney(ov.total_balance);
+        if (kpiBal) kpiBal.innerText = hasWallet ? formatMoney(ov.total_balance) : '—';
 
         const kpiEq = document.getElementById('kpi-equity');
-        if (kpiEq) kpiEq.innerText = formatMoney(ov.total_equity);
+        if (kpiEq) kpiEq.innerText = hasWallet ? formatMoney(ov.total_equity) : '—';
 
         const kpiFloat = document.getElementById('kpi-floating');
-        if (kpiFloat) kpiFloat.innerHTML = formatPnl(ov.total_floating_pnl);
+        if (kpiFloat) kpiFloat.innerHTML = hasWallet ? formatPnl(ov.total_floating_pnl) : '<span class="text-muted">—</span>';
 
         const kpiPosCount = document.getElementById('kpi-positions-count');
         if (kpiPosCount) kpiPosCount.innerText = data.positions ? data.positions.length : (ov.active_positions_count ?? 0);
 
         const kpiToday = document.getElementById('kpi-today');
         if (kpiToday) {
-            const v = Number(ov.total_today_pnl).toFixed(2);
-            if (kpiToday.dataset.val !== v) {
-                kpiToday.dataset.val = v;
-                kpiToday.innerHTML = formatPnl(ov.total_today_pnl);
+            if (!hasWallet) {
+                kpiToday.dataset.val = '';
+                kpiToday.innerHTML = '<span class="text-muted">—</span>';
+            } else {
+                const v = Number(ov.total_today_pnl).toFixed(2);
+                if (kpiToday.dataset.val !== v) {
+                    kpiToday.dataset.val = v;
+                    kpiToday.innerHTML = formatPnl(ov.total_today_pnl);
+                }
             }
         }
 
@@ -562,7 +582,9 @@ function handleLiveTicksData(data) {
     }
 
     if (data.plans) {
-        const sig = (data.plans || []).map(p => p.id + ':' + p.status).join('|');
+        const sig = (data.plans || []).map(p =>
+            [p.id, p.status, p.direction, p.entry_price, p.created_at].join(':')
+        ).join('|');
         if (sig !== lastPlansSig) {
             lastPlansSig = sig;
             renderOverviewPlans(data.plans);
@@ -1052,40 +1074,59 @@ function renderWalletsTable(wallets, forceFullRender = false) {
             const newEq = Number(w.equity);
 
             if (balEl) {
-                const prevBal = Number(balEl.dataset.val);
-                if (prevBal !== newBal) {
-                    balEl.innerText = formatMoney(newBal);
-                    balEl.classList.remove('flash-price-up', 'flash-price-down');
-                    void balEl.offsetWidth;
-                    balEl.classList.add(newBal > prevBal ? 'flash-price-up' : 'flash-price-down');
-                    balEl.dataset.val = newBal;
+                const shown = formatWalletMoney(w, w.balance);
+                const prevBal = balEl.dataset.val;
+                if (prevBal !== String(w.is_active ? newBal : '')) {
+                    balEl.innerText = shown;
+                    balEl.dataset.val = w.is_active ? String(newBal) : '';
+                    if (w.is_active && prevBal !== '') {
+                        const prevNum = Number(prevBal);
+                        if (!Number.isNaN(prevNum) && prevNum !== newBal) {
+                            balEl.classList.remove('flash-price-up', 'flash-price-down');
+                            void balEl.offsetWidth;
+                            balEl.classList.add(newBal > prevNum ? 'flash-price-up' : 'flash-price-down');
+                        }
+                    }
                 }
             }
 
             if (eqEl) {
-                const prevEq = Number(eqEl.dataset.val);
-                if (prevEq !== newEq) {
-                    eqEl.innerText = formatMoney(newEq);
-                    eqEl.classList.remove('flash-price-up', 'flash-price-down');
-                    void eqEl.offsetWidth;
-                    eqEl.classList.add(newEq > prevEq ? 'flash-price-up' : 'flash-price-down');
-                    eqEl.dataset.val = newEq;
+                const shown = formatWalletMoney(w, w.equity);
+                const prevEq = eqEl.dataset.val;
+                if (prevEq !== String(w.is_active ? newEq : '')) {
+                    eqEl.innerText = shown;
+                    eqEl.dataset.val = w.is_active ? String(newEq) : '';
+                    if (w.is_active && prevEq !== '') {
+                        const prevNum = Number(prevEq);
+                        if (!Number.isNaN(prevNum) && prevNum !== newEq) {
+                            eqEl.classList.remove('flash-price-up', 'flash-price-down');
+                            void eqEl.offsetWidth;
+                            eqEl.classList.add(newEq > prevNum ? 'flash-price-up' : 'flash-price-down');
+                        }
+                    }
                 }
             }
 
-            if (floatEl && floatEl.dataset.val !== String(w.floating_pnl)) {
-                floatEl.dataset.val = String(w.floating_pnl);
-                floatEl.innerHTML = formatPnl(w.floating_pnl, { asBadge: true });
+            if (floatEl) {
+                const shown = formatWalletPnl(w, w.floating_pnl, { asBadge: true });
+                const nextVal = w.is_active ? String(w.floating_pnl) : '';
+                if (floatEl.dataset.val !== nextVal) {
+                    floatEl.dataset.val = nextVal;
+                    floatEl.innerHTML = shown;
+                }
             }
 
-            const freeMarginStr = formatMoney(w.margin_free || 0);
+            const freeMarginStr = formatWalletMoney(w, w.margin_free || 0);
             if (freeMarginEl && freeMarginEl.innerText !== freeMarginStr) {
                 freeMarginEl.innerText = freeMarginStr;
             }
 
-            if (todayEl && todayEl.dataset.val !== String(w.today_pnl)) {
-                todayEl.dataset.val = String(w.today_pnl);
-                todayEl.innerHTML = formatPnl(w.today_pnl, { asBadge: true });
+            if (todayEl) {
+                const nextVal = w.is_active ? String(w.today_pnl) : '';
+                if (todayEl.dataset.val !== nextVal) {
+                    todayEl.dataset.val = nextVal;
+                    todayEl.innerHTML = formatWalletPnl(w, w.today_pnl, { asBadge: true });
+                }
             }
 
             if (statusEl && statusEl.dataset.status !== w.bot_status) {
@@ -1112,13 +1153,13 @@ function renderWalletsTable(wallets, forceFullRender = false) {
                     <td><span class="badge bg-light text-dark border font-monospace">${w.mt5_server}</span></td>
                     <td class="font-weight-bold text-dark font-monospace"><span class="badge bg-light text-primary border font-monospace px-2 py-1">${Number(w.default_lot_size || 0.01).toFixed(2)} Lot</span></td>
                     <td class="font-weight-bold font-monospace"><span class="badge bg-light text-dark border px-2 py-1">${Number(w.max_open_trades || 1)} lệnh</span></td>
-                    <td class="font-weight-bold font-monospace"><span class="badge bg-light text-success border px-2 py-1">$${Number(w.min_take_profit_usd || 1).toFixed(2)}</span></td>
-                    <td class="font-weight-bold font-monospace"><span class="badge bg-light text-danger border px-2 py-1">${Number(w.risk_percent || 1.5).toFixed(1)}%</span></td>
-                    <td class="font-weight-bold text-success wallet-cell-balance" data-val="${w.balance}">${formatMoney(w.balance)}</td>
-                    <td class="font-weight-bold text-primary wallet-cell-equity" data-val="${w.equity}">${formatMoney(w.equity)}</td>
-                    <td class="wallet-cell-floating" data-val="${w.floating_pnl}">${formatPnl(w.floating_pnl, { asBadge: true })}</td>
-                    <td class="font-weight-bold text-secondary wallet-cell-freemargin">${formatMoney(w.margin_free || 0)}</td>
-                    <td class="wallet-cell-today" data-val="${w.today_pnl}">${formatPnl(w.today_pnl, { asBadge: true })}</td>
+                    <td class="font-weight-bold font-monospace"><span class="badge bg-light text-success border px-2 py-1">${w.min_take_profit_usd ? ('$' + Number(w.min_take_profit_usd).toFixed(2)) : '—'}</span></td>
+                    <td class="font-weight-bold font-monospace"><span class="badge bg-light text-danger border px-2 py-1">${w.max_stop_loss_usd ? ('$' + Number(w.max_stop_loss_usd).toFixed(2)) : '—'}${w.trail_sl_enabled ? ' · dời SL' : ''}</span></td>
+                    <td class="font-weight-bold text-success wallet-cell-balance" data-val="${w.is_active ? w.balance : ''}">${formatWalletMoney(w, w.balance)}</td>
+                    <td class="font-weight-bold text-primary wallet-cell-equity" data-val="${w.is_active ? w.equity : ''}">${formatWalletMoney(w, w.equity)}</td>
+                    <td class="wallet-cell-floating" data-val="${w.is_active ? w.floating_pnl : ''}">${formatWalletPnl(w, w.floating_pnl, { asBadge: true })}</td>
+                    <td class="font-weight-bold text-secondary wallet-cell-freemargin">${formatWalletMoney(w, w.margin_free || 0)}</td>
+                    <td class="wallet-cell-today" data-val="${w.is_active ? w.today_pnl : ''}">${formatWalletPnl(w, w.today_pnl, { asBadge: true })}</td>
                     <td class="wallet-cell-status" data-status="${w.bot_status}">
                         <span class="badge ${w.bot_status === 'RUNNING' ? 'bg-success' : (w.bot_status === 'PAUSED' ? 'bg-warning text-dark' : 'bg-danger')}">
                             ${w.bot_status_display}
@@ -1304,6 +1345,16 @@ function filterMarketTicker(query) {
     });
 }
 
+function syncTrailSlLockInput() {
+    const on = !!document.getElementById('wallet-trail-sl-enabled')?.checked;
+    const lock = document.getElementById('wallet-trail-sl-lock');
+    if (lock) lock.disabled = !on;
+}
+
+document.addEventListener('change', (e) => {
+    if (e.target && e.target.id === 'wallet-trail-sl-enabled') syncTrailSlLockInput();
+});
+
 async function openAddWalletModal() {
     clearWalletModalError();
     await loadMasterDataForWalletModal();
@@ -1326,7 +1377,11 @@ async function openAddWalletModal() {
     if (passHelp) passHelp.innerText = 'Mật khẩu MT5 giao dịch';
     if (document.getElementById('wallet-default-lot')) document.getElementById('wallet-default-lot').value = '0.01';
     if (document.getElementById('wallet-max-open-trades')) document.getElementById('wallet-max-open-trades').value = '5';
-    if (document.getElementById('wallet-min-take-profit')) document.getElementById('wallet-min-take-profit').value = '1.00';
+    if (document.getElementById('wallet-min-take-profit')) document.getElementById('wallet-min-take-profit').value = '';
+    if (document.getElementById('wallet-max-stop-loss')) document.getElementById('wallet-max-stop-loss').value = '';
+    if (document.getElementById('wallet-trail-sl-enabled')) document.getElementById('wallet-trail-sl-enabled').checked = false;
+    if (document.getElementById('wallet-trail-sl-lock')) document.getElementById('wallet-trail-sl-lock').value = '';
+    syncTrailSlLockInput();
     if (document.getElementById('wallet-bot-status')) document.getElementById('wallet-bot-status').value = 'RUNNING';
     if (document.getElementById('wallet-is-active')) document.getElementById('wallet-is-active').checked = true;
 
@@ -1368,9 +1423,11 @@ async function openEditWalletModal(id) {
     document.getElementById('wallet-mt5-server').value = w.mt5_server;
     if (document.getElementById('wallet-default-lot')) document.getElementById('wallet-default-lot').value = Number(w.default_lot_size || 0.01).toFixed(2);
     if (document.getElementById('wallet-max-open-trades')) document.getElementById('wallet-max-open-trades').value = String(w.max_open_trades || 5);
-    if (document.getElementById('wallet-min-take-profit')) document.getElementById('wallet-min-take-profit').value = Number(w.min_take_profit_usd || 1).toFixed(2);
-    if (document.getElementById('wallet-risk-percent')) document.getElementById('wallet-risk-percent').value = Number(w.risk_percent || 1.5);
-    if (document.getElementById('wallet-max-daily-loss')) document.getElementById('wallet-max-daily-loss').value = Number(w.max_daily_loss_percent || 4);
+    if (document.getElementById('wallet-min-take-profit')) document.getElementById('wallet-min-take-profit').value = w.min_take_profit_usd ? Number(w.min_take_profit_usd).toFixed(2) : '';
+    if (document.getElementById('wallet-max-stop-loss')) document.getElementById('wallet-max-stop-loss').value = w.max_stop_loss_usd ? Number(w.max_stop_loss_usd).toFixed(2) : '';
+    if (document.getElementById('wallet-trail-sl-enabled')) document.getElementById('wallet-trail-sl-enabled').checked = !!w.trail_sl_enabled;
+    if (document.getElementById('wallet-trail-sl-lock')) document.getElementById('wallet-trail-sl-lock').value = w.trail_sl_lock_usd ? Number(w.trail_sl_lock_usd).toFixed(2) : '';
+    syncTrailSlLockInput();
     if (document.getElementById('wallet-bot-status')) document.getElementById('wallet-bot-status').value = w.bot_status || 'RUNNING';
     if (document.getElementById('wallet-is-active')) document.getElementById('wallet-is-active').checked = w.is_active;
 
@@ -1551,7 +1608,11 @@ async function saveWallet(e) {
     }
 
     const capInput = document.getElementById('wallet-capital') || document.getElementById('wallet-balance');
-    const capitalVal = (capInput && capInput.value.trim() !== '') ? parseFloat(capInput.value) : (isReal ? null : 1000);
+    let capitalVal = null;
+    if (capInput && capInput.value.trim() !== '') {
+        const parsed = parseFloat(capInput.value);
+        if (!Number.isNaN(parsed)) capitalVal = parsed;
+    }
 
     const payload = {
         name: name,
@@ -1559,16 +1620,18 @@ async function saveWallet(e) {
         mt5_password: mt5_password,
         mt5_server: mt5_server,
         account_type: account_type,
-        capital: capitalVal,
         default_lot_size: parseFloat(document.getElementById('wallet-default-lot')?.value || 0.01) || 0.01,
         max_open_trades: parseInt(document.getElementById('wallet-max-open-trades')?.value || '5', 10) || 5,
-        min_take_profit_usd: parseFloat(document.getElementById('wallet-min-take-profit')?.value || 1) || 1,
-        risk_percent: parseFloat(document.getElementById('wallet-risk-percent')?.value || 1.5) || 1.5,
-        max_daily_loss_percent: parseFloat(document.getElementById('wallet-max-daily-loss')?.value || 4) || 4,
+        min_take_profit_usd: (document.getElementById('wallet-min-take-profit')?.value || '').trim() === '' ? null : (parseFloat(document.getElementById('wallet-min-take-profit').value) || null),
+        max_stop_loss_usd: (document.getElementById('wallet-max-stop-loss')?.value || '').trim() === '' ? null : (parseFloat(document.getElementById('wallet-max-stop-loss').value) || null),
+        trail_sl_enabled: !!document.getElementById('wallet-trail-sl-enabled')?.checked,
+        trail_sl_lock_usd: (document.getElementById('wallet-trail-sl-lock')?.value || '').trim() === '' ? null : (parseFloat(document.getElementById('wallet-trail-sl-lock').value) || null),
         allowed_symbols: selectedSymbols,
         bot_status: document.getElementById('wallet-bot-status').value,
         is_active: wantActive
     };
+    if (capitalVal !== null) payload.capital = capitalVal;
+    else if (!wantActive) payload.capital = 0;
 
     const url = id ? `/api/admin/wallets/${id}/` : '/api/admin/wallets/';
     const method = id ? 'PUT' : 'POST';

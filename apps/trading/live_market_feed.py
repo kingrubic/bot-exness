@@ -3,6 +3,7 @@ import json
 import time
 import logging
 import urllib.request
+from urllib.error import HTTPError
 from decimal import Decimal
 from django.utils import timezone
 from apps.symbols.models import SymbolConfig
@@ -28,6 +29,13 @@ class LiveMarketFeedService:
     _last_fetch_time = 0
     _cached_prices = {}
     _last_db_flush = 0.0
+    _last_mt5_poll = 0.0
+    _tv_next_ok = 0.0
+    _tv_429_until = 0.0
+    _tv_429_logged = False
+    TV_MIN_INTERVAL_SEC = 15.0
+    TV_429_COOLDOWN_SEC = 90.0
+    MT5_POLL_MIN_SEC = 0.25
 
     TV_BROKER_MAPPINGS = {
         # Forex Major / Minor (Exness ECN / Pro Spreads)
@@ -94,6 +102,9 @@ class LiveMarketFeedService:
                 "columns": ["close", "bid", "ask", "change"]
             }).encode('utf-8')
 
+            now = time.time()
+            if now < cls._tv_429_until or now < cls._tv_next_ok:
+                continue
             try:
                 req = urllib.request.Request(
                     url,
@@ -120,8 +131,22 @@ class LiveMarketFeedService:
                                     'bid': bid_p or close_p,
                                     'ask': ask_p or close_p
                                 }
+                    cls._tv_429_logged = False
+                    cls._tv_next_ok = time.time() + cls.TV_MIN_INTERVAL_SEC
+            except HTTPError as e:
+                if int(getattr(e, 'code', 0) or 0) == 429:
+                    cls._tv_429_until = time.time() + cls.TV_429_COOLDOWN_SEC
+                    cls._tv_next_ok = cls._tv_429_until
+                    if not cls._tv_429_logged:
+                        cls._tv_429_logged = True
+                        logger.warning(
+                            "TradingView scanner 429 — tạm ngưng %ss, dùng giá MT5/cache.",
+                            int(cls.TV_429_COOLDOWN_SEC),
+                        )
+                else:
+                    logger.debug("TradingView scanner %s error: %s", scanner_type, e)
             except Exception as e:
-                logger.debug(f"TradingView scanner {scanner_type} error: {e}")
+                logger.debug("TradingView scanner %s error: %s", scanner_type, e)
 
         return results
 
@@ -139,6 +164,17 @@ class LiveMarketFeedService:
         def _bg_loop():
             while True:
                 try:
+                    from apps.trading.mt5_connector import ExnessMT5Connector
+                    from apps.trading.mt5_session import MT5_AVAILABLE as SESSION_MT5
+                    # Có MT5/Wine thì không cần TradingView
+                    if SESSION_MT5 or ExnessMT5Connector.is_wine_bridge_open():
+                        time.sleep(5.0)
+                        continue
+                    now = time.time()
+                    cooldown = max(cls._tv_429_until, cls._tv_next_ok) - now
+                    if cooldown > 0.2:
+                        time.sleep(min(cooldown, 30.0))
+                        continue
                     active_names = list(SymbolConfig.objects.filter(is_active=True).values_list('symbol', flat=True))
                     if active_names:
                         fresh_feed = cls.fetch_tradingview_broker_feed(active_names)
@@ -146,7 +182,7 @@ class LiveMarketFeedService:
                             cls._network_feed_cache.update(fresh_feed)
                 except Exception:
                     pass
-                time.sleep(0.15)
+                time.sleep(cls.TV_MIN_INTERVAL_SEC)
         t = threading.Thread(target=_bg_loop, daemon=True)
         t.start()
 
@@ -172,9 +208,12 @@ class LiveMarketFeedService:
                 return mt5_updated
 
         if ExnessMT5Connector.is_wine_bridge_open():
+            now = time.time()
+            if now - cls._last_mt5_poll < cls.MT5_POLL_MIN_SEC and cls._cached_prices:
+                return {k: float(v.get('last') or 0) for k, v in cls._cached_prices.items()}
             try:
                 import requests
-                resp = requests.get(f"{BRIDGE_URL}/all_prices", timeout=0.4)
+                resp = requests.get(f"{BRIDGE_URL}/all_prices", timeout=0.8)
                 if resp.status_code == 200 and resp.json().get('success'):
                     mt5_prices = resp.json().get('prices', {})
                     tick_map = {}
@@ -196,11 +235,16 @@ class LiveMarketFeedService:
                             'spread_pips': float(price_info.get('spread_pips') or 0),
                         }
                     if tick_map:
+                        cls._last_mt5_poll = now
                         cls._cached_prices.update(tick_map)
                         cls._flush_ticks_to_db(active_symbols, tick_map)
                         return {k: v['last'] for k, v in tick_map.items()}
             except Exception as me:
                 logger.debug(f"MT5 all_prices fetch error: {me}")
+            # Bridge đang mở: không fallback TradingView (tránh 429). Dùng tick MT5 cache.
+            if cls._cached_prices:
+                return {k: float(v.get('last') or 0) for k, v in cls._cached_prices.items()}
+            return {s.symbol: float(s.current_price or 0) for s in active_symbols}
 
         cls._start_bg_feed_updater()
         broker_feed = cls._network_feed_cache

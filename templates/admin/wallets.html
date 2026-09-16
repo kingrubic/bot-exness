@@ -36,7 +36,7 @@
                     <th>Lot Đánh</th>
                     <th>Số Lệnh Tối Đa</th>
                     <th>Min Chốt Lời</th>
-                    <th>% Rủi Ro / Lệnh</th>
+                    <th>Max Cắt Lỗ</th>
                     <th>Số Dư (Balance)</th>
                     <th>Vốn Khả Dụng (Equity)</th>
                     <th>Lời/Lỗ Thả Nổi (PnL)</th>
@@ -157,28 +157,32 @@
                                     </div>
                                 </div>
                                 <div class="col-sm-6">
-                                    <label class="form-label font-weight-bold small text-secondary mb-1">Min Chốt Lời <span class="text-danger">*</span></label>
+                                    <label class="form-label font-weight-bold small text-secondary mb-1">Min Chốt Lời</label>
                                     <div class="input-group">
-                                        <input type="number" step="0.01" min="0.01" max="100000" class="form-control font-weight-bold text-success" id="wallet-min-take-profit" name="min_take_profit_usd" value="1.00" required>
+                                        <input type="number" step="0.01" min="0.01" max="100000" class="form-control font-weight-bold text-success" id="wallet-min-take-profit" name="min_take_profit_usd" placeholder="Trống = không tự chốt">
                                         <span class="input-group-text">USD</span>
                                     </div>
-                                    <div class="form-text">Chốt khi lãi ròng ≥ mức này</div>
+                                    <div class="form-text">Để trống nếu không muốn bot tự chốt lời</div>
                                 </div>
                                 <div class="col-sm-6">
-                                    <label class="form-label font-weight-bold small text-secondary mb-1">% Rủi Ro / Lệnh <span class="text-danger">*</span></label>
+                                    <label class="form-label font-weight-bold small text-secondary mb-1">Max Cắt Lỗ</label>
                                     <div class="input-group">
-                                        <input type="number" step="0.1" min="0.1" max="100" class="form-control font-weight-bold text-danger" id="wallet-risk-percent" name="risk_percent" value="1.5" required>
-                                        <span class="input-group-text">%</span>
+                                        <input type="number" step="0.01" min="0.01" max="100000" class="form-control font-weight-bold text-danger" id="wallet-max-stop-loss" name="max_stop_loss_usd" placeholder="Trống = không tự cắt">
+                                        <span class="input-group-text">USD</span>
                                     </div>
-                                    <div class="form-text">Tham chiếu vốn; lệnh lỗ không tự cắt</div>
+                                    <div class="form-text">Mỗi lệnh lỗ tới mức này thì đóng SL_HIT; còn slot thì bot mở bù</div>
                                 </div>
                                 <div class="col-sm-6">
-                                    <label class="form-label font-weight-bold small text-secondary mb-1">% Lỗ Tối Đa / Ngày</label>
+                                    <label class="modern-switch d-inline-flex align-items-center mb-2">
+                                        <input type="checkbox" id="wallet-trail-sl-enabled" name="trail_sl_enabled">
+                                        <span class="modern-switch-slider"></span>
+                                        <span class="modern-switch-label ms-2 small font-weight-bold">Tự động dời SL khi lãi đạt</span>
+                                    </label>
                                     <div class="input-group">
-                                        <input type="number" step="0.1" min="0.1" max="100" class="form-control font-weight-bold text-danger" id="wallet-max-daily-loss" name="max_daily_loss_percent" value="4.0">
-                                        <span class="input-group-text">%</span>
+                                        <input type="number" step="0.01" min="0.01" max="100000" class="form-control font-weight-bold" id="wallet-trail-sl-lock" name="trail_sl_lock_usd" placeholder="VD: 1.00" disabled>
+                                        <span class="input-group-text">USD khoá</span>
                                     </div>
-                                    <div class="form-text">Chặn mở thêm sau lỗ ngày; nạp tiền lại trong ngày thì tính từ lần nạp đó</div>
+                                    <div class="form-text">Khoá 1$: lãi 2$ → SL còn 1$; lãi 3$ → SL còn 2$. Chỉ dời tăng, không giảm.</div>
                                 </div>
                                 <div class="col-sm-6">
                                     <label class="form-label font-weight-bold small text-secondary mb-1">Trạng Thái Bot</label>

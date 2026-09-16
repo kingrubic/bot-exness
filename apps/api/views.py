@@ -21,6 +21,32 @@ from django.http import StreamingHttpResponse
 from apps.core.time_utils import format_vn_time
 
 
+def _optional_usd(data, key):
+    """None nếu không gửi / trống / <= 0 — min TP và max SL được phép bỏ trống."""
+    if key not in data:
+        return Ellipsis
+    raw = data.get(key)
+    if raw is None or str(raw).strip() == '':
+        return None
+    try:
+        v = Decimal(str(raw))
+    except Exception:
+        return None
+    if v <= 0:
+        return None
+    return v
+
+
+def _usd_or_none(val):
+    if val is None:
+        return None
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return None
+    return round(v, 2) if v > 0 else None
+
+
 def _mt5_status_with_wallets(use_cache=True):
     from apps.trading.mt5_launcher import MT5Launcher
     data = MT5Launcher.get_runtime_status(probe_api=True, timeout_ms=2000, use_cache=use_cache)
@@ -160,26 +186,13 @@ def _algo_warning_fields():
 
 
 def _wallet_metrics_lite(w, today_bot=0.0, today_user=0.0, today_all=0.0):
-    """KPI nhẹ từ field ví — không aggregate TradeHistory mỗi poll."""
-    tot = int(w.total_trades or 0)
-    wins = int(w.winning_trades or 0)
-    losses = int(w.losing_trades or 0)
-    wr = float(w.win_rate or 0)
-    profit = float(w.total_profit or 0)
-    base = {
-        'total_trades': tot,
-        'winning_trades': wins,
-        'losing_trades': losses,
-        'win_rate': wr,
-        'total_profit': round(profit, 2),
-        'today_pnl': round(float(today_all or 0), 2),
-        'total_volume': 0.0,
+    """Fallback rỗng — báo cáo BOT vs USER phải dùng get_daily_breakdown()."""
+    empty = _empty_source_metrics()
+    return {
+        'all': {**empty, 'today_pnl': round(float(today_all or 0), 2)},
+        'bot': {**empty, 'today_pnl': round(float(today_bot or 0), 2)},
+        'user': {**empty, 'today_pnl': round(float(today_user or 0), 2)},
     }
-    bot = dict(base)
-    bot['today_pnl'] = round(float(today_bot or 0), 2)
-    user = dict(_empty_source_metrics())
-    user['today_pnl'] = round(float(today_user or 0), 2)
-    return {'all': base, 'bot': bot, 'user': user}
 
 
 def build_live_ticks_data():
@@ -298,28 +311,27 @@ def build_live_ticks_data():
                 'is_trailing': p.is_trailing,
             })
 
-    # 3. Wallets — không gọi get_performance_breakdown (rất chậm khi history lớn)
-    mt5_today, _ = _mt5_today_for_wallets([current_wallet] if current_wallet else [])
+    # 3. Wallets — BOT vs USER theo ngày GMT+7 (không gắn all-time vào BOT)
+    from apps.core.time_utils import local_day_bounds
     wallets = []
     tot_bal = tot_eq = tot_fl = tot_td = Decimal('0.00')
     tot_prof = Decimal('0.00')
     tot_trades = tot_wins = 0
+    daily_by_id = {}
     for w in WalletAccount.objects.all().only(
         'id', 'name', 'account_type', 'mt5_login', 'mt5_server', 'currency', 'capital',
         'balance_db', 'equity_db', 'floating_pnl', 'margin', 'margin_free', 'margin_level',
         'leverage', 'today_pnl', 'total_profit', 'win_rate', 'total_trades', 'winning_trades',
-        'losing_trades', 'risk_percent', 'default_lot_size', 'max_open_trades',
-        'min_take_profit_usd', 'max_daily_loss_percent', 'is_active', 'bot_status',
+        'losing_trades', 'default_lot_size', 'max_open_trades',
+        'min_take_profit_usd', 'max_stop_loss_usd', 'trail_sl_enabled', 'trail_sl_lock_usd',
+        'is_active', 'bot_status',
         'allowed_symbols_json',
     ):
-        if mt5_today.get('ok') and mt5_login and str(w.mt5_login or '') == mt5_login:
-            w_today = Decimal(str(mt5_today['all']))
-            tb, tu, ta = mt5_today.get('BOT', 0), mt5_today.get('USER', 0), mt5_today['all']
-        else:
-            w_today = w.today_pnl or Decimal('0')
-            tb = tu = ta = float(w_today)
+        daily = w.get_daily_breakdown()
+        daily_by_id[w.id] = daily
+        w_today = Decimal(str(daily['all']['today_pnl']))
         w_bal, w_eq, w_fl = _live_wallet_money(w, live_acc, mt5_login)
-        breakdown = _wallet_metrics_lite(w, tb, tu, ta)
+        breakdown = daily
         if current_wallet and w.id == current_wallet.id:
             tot_bal, tot_eq, tot_fl, tot_td = w_bal, w_eq, w_fl, w_today
             tot_prof = w.total_profit or Decimal('0')
@@ -350,11 +362,12 @@ def build_live_ticks_data():
             'win_rate': w.win_rate,
             'total_trades': w.total_trades,
             'active_trades_count': p_count,
-            'risk_percent': w.risk_percent,
             'default_lot_size': float(w.default_lot_size or 0.01),
             'max_open_trades': int(w.max_open_trades or 1),
-            'min_take_profit_usd': float(w.min_take_profit_usd or 1),
-            'max_daily_loss_percent': float(w.max_daily_loss_percent or 4),
+            'min_take_profit_usd': _usd_or_none(w.min_take_profit_usd),
+            'max_stop_loss_usd': _usd_or_none(getattr(w, 'max_stop_loss_usd', None)),
+            'trail_sl_enabled': bool(getattr(w, 'trail_sl_enabled', False)),
+            'trail_sl_lock_usd': _usd_or_none(getattr(w, 'trail_sl_lock_usd', None)),
             'is_active': w.is_active,
             'bot_status': w.bot_status,
             'bot_status_display': w.get_bot_status_display(),
@@ -396,11 +409,12 @@ def build_live_ticks_data():
             'created_at': format_vn_time(pl.created_at),
         })
 
-    # 5. History — chỉ lệnh đóng trong ngày (DB)
+    # 5. History — chỉ lệnh đóng trong ngày GMT+7 (DB)
     history = []
     hist_qs = TradeHistory.objects.select_related('wallet').order_by('-closed_at')
     if current_wallet:
-        hist_qs = hist_qs.filter(wallet=current_wallet, closed_at__date=timezone.localdate())
+        day_start, day_end = local_day_bounds()
+        hist_qs = hist_qs.filter(wallet=current_wallet, closed_at__gte=day_start, closed_at__lt=day_end)
     else:
         hist_qs = hist_qs.none()
     for h in hist_qs[:100]:
@@ -431,12 +445,9 @@ def build_live_ticks_data():
             'closed_at': format_vn_time(h.closed_at),
         })
 
-    bot_m = _wallet_metrics_lite(
-        current_wallet,
-        mt5_today.get('BOT', 0) if mt5_today.get('ok') else 0,
-        mt5_today.get('USER', 0) if mt5_today.get('ok') else 0,
-        mt5_today.get('all', 0) if mt5_today.get('ok') else float(tot_td),
-    ) if current_wallet else {'bot': _empty_source_metrics(), 'user': _empty_source_metrics()}
+    bot_m = daily_by_id.get(current_wallet.id) if current_wallet else None
+    if not bot_m:
+        bot_m = {'bot': _empty_source_metrics(), 'user': _empty_source_metrics()}
 
     return {
         'overview': {
@@ -514,39 +525,21 @@ def global_overview_api(request):
         })
 
     mt5_today, mt5_login = _mt5_today_for_wallets([current])
+    daily = current.get_daily_breakdown()
+    total_today = Decimal(str(daily['all']['today_pnl']))
     if mt5_today.get('ok'):
-        total_today = Decimal(str(mt5_today['all']))
-    else:
-        total_today = current.get_today_pnl()
+        # Native chỉ bổ sung PnL hôm nay; số lệnh/winrate vẫn theo ngày GMT+7 trên DB
+        daily['bot']['today_pnl'] = float(mt5_today.get('BOT', daily['bot']['today_pnl']) or 0)
+        daily['user']['today_pnl'] = float(mt5_today.get('USER', daily['user']['today_pnl']) or 0)
+        daily['all']['today_pnl'] = float(mt5_today.get('all', daily['all']['today_pnl']) or 0)
+        total_today = Decimal(str(daily['all']['today_pnl']))
     total_trades = current.total_trades
     total_wins = current.winning_trades
     overall_winrate = round((total_wins / total_trades) * 100, 1) if total_trades > 0 else 0.0
     active_positions_count = Position.objects.filter(wallet=current).count()
 
-    def _calc_global_stats(qs, source_name=''):
-        tot = qs.count()
-        wins = qs.filter(pnl__gt=0).count()
-        losses = qs.filter(pnl__lt=0).count()
-        wr = round((wins / tot) * 100, 1) if tot > 0 else 0.0
-        pnl = float(qs.aggregate(s=Sum('pnl'))['s'] or 0.0)
-        today = timezone.localdate()
-        today_pnl = float(qs.filter(closed_at__date=today).aggregate(s=Sum('pnl'))['s'] or 0.0)
-        if mt5_today.get('ok') and source_name:
-            today_pnl = float(mt5_today.get(source_name, today_pnl) or 0.0)
-        vol = round(float(qs.aggregate(v=Sum('lot_size'))['v'] or 0.0), 2)
-        return {
-            'total_trades': tot,
-            'winning_trades': wins,
-            'losing_trades': losses,
-            'win_rate': wr,
-            'total_profit': round(pnl, 2),
-            'today_pnl': round(today_pnl, 2),
-            'total_volume': vol,
-        }
-
-    hist = TradeHistory.objects.filter(wallet=current)
-    bot_stats = _calc_global_stats(hist.filter(source='BOT'), 'BOT')
-    user_stats = _calc_global_stats(hist.filter(source='USER'), 'USER')
+    bot_stats = daily['bot']
+    user_stats = daily['user']
 
     data = {
         'total_balance': float(current.balance),
@@ -611,11 +604,12 @@ def wallet_list_api(request):
             'win_rate': w.win_rate,
             'total_trades': w.total_trades,
             'active_trades_count': w.positions.count(),
-            'risk_percent': w.risk_percent,
             'default_lot_size': float(w.default_lot_size or 0.01),
             'max_open_trades': int(w.max_open_trades or 1),
-            'min_take_profit_usd': float(w.min_take_profit_usd or 1),
-            'max_daily_loss_percent': float(w.max_daily_loss_percent or 4),
+            'min_take_profit_usd': _usd_or_none(w.min_take_profit_usd),
+            'max_stop_loss_usd': _usd_or_none(getattr(w, 'max_stop_loss_usd', None)),
+            'trail_sl_enabled': bool(getattr(w, 'trail_sl_enabled', False)),
+            'trail_sl_lock_usd': _usd_or_none(getattr(w, 'trail_sl_lock_usd', None)),
             'is_active': w.is_active,
             'bot_status': w.bot_status,
             'bot_status_display': w.get_bot_status_display(),
@@ -666,8 +660,10 @@ def wallet_detail_api(request, wallet_id):
         'losing_trades': w.losing_trades,
         'profit_factor': w.profit_factor,
         'max_drawdown': w.max_drawdown,
-        'risk_percent': w.risk_percent,
-        'max_daily_loss_percent': w.max_daily_loss_percent,
+        'max_stop_loss_usd': _usd_or_none(getattr(w, 'max_stop_loss_usd', None)),
+        'min_take_profit_usd': _usd_or_none(w.min_take_profit_usd),
+        'trail_sl_enabled': bool(getattr(w, 'trail_sl_enabled', False)),
+        'trail_sl_lock_usd': _usd_or_none(getattr(w, 'trail_sl_lock_usd', None)),
         'is_active': w.is_active,
         'bot_status': w.bot_status,
         'bot_status_display': w.get_bot_status_display(),
@@ -759,8 +755,9 @@ def wallet_detail_api(request, wallet_id):
     history_data, _raw = _mt5_closed_history_for_wallets([w], limit=200)
     if history_data is None:
         history_data = []
-        today = timezone.localdate()
-        for h in w.trade_history.filter(closed_at__date=today).order_by('-closed_at')[:200]:
+        from apps.core.time_utils import local_day_bounds
+        day_start, day_end = local_day_bounds()
+        for h in w.trade_history.filter(closed_at__gte=day_start, closed_at__lt=day_end).order_by('-closed_at')[:200]:
             h_source = getattr(h, 'source', 'BOT') or 'BOT'
             history_data.append({
             'id': h.id,
@@ -1070,15 +1067,16 @@ def admin_wallet_manage_api(request, wallet_id=None):
                 return Response({'error': msg}, status=status.HTTP_400_BAD_REQUEST)
 
         if want_active and detected_type == 'REAL':
-            init_cap = Decimal(str(acc_info.get('balance', 1000.00)))
+            init_cap = Decimal(str(acc_info.get('balance', 0) or 0))
         elif 'capital' in data and data['capital'] is not None and str(data['capital']).strip() != '':
             init_cap = Decimal(str(data['capital']))
         elif 'balance' in data and data['balance'] is not None and str(data['balance']).strip() != '':
             init_cap = Decimal(str(data['balance']))
         elif want_active:
-            init_cap = Decimal(str(acc_info.get('balance', 1000.00)))
+            init_cap = Decimal(str(acc_info.get('balance', 0) or 0))
         else:
-            init_cap = Decimal('1000.00')
+            # Chưa kích hoạt / chưa kết nối MT5 — không giả số dư $1000
+            init_cap = Decimal('0.00')
 
         lev_val = int(acc_info.get('leverage', 2000)) if acc_info and acc_info.get('leverage') else 2000
         wallet = WalletAccount.objects.create(
@@ -1092,10 +1090,11 @@ def admin_wallet_manage_api(request, wallet_id=None):
             balance_db=init_cap,
             equity_db=init_cap,
             default_lot_size=float(data.get('default_lot_size', 0.01)),
-            risk_percent=float(data.get('risk_percent', 1.5)),
-            max_daily_loss_percent=float(data.get('max_daily_loss_percent', 4.0)),
             max_open_trades=max(1, min(500, int(data.get('max_open_trades', 5)))),
-            min_take_profit_usd=Decimal(str(data.get('min_take_profit_usd', 1.0) or 1.0)),
+            min_take_profit_usd=_optional_usd(data, 'min_take_profit_usd') if 'min_take_profit_usd' in data else None,
+            max_stop_loss_usd=_optional_usd(data, 'max_stop_loss_usd') if 'max_stop_loss_usd' in data else None,
+            trail_sl_enabled=bool(data.get('trail_sl_enabled', False)),
+            trail_sl_lock_usd=_optional_usd(data, 'trail_sl_lock_usd') if 'trail_sl_lock_usd' in data else None,
             is_active=want_active,
             bot_status=data.get('bot_status', 'RUNNING' if want_active else 'STOPPED')
         )
@@ -1113,11 +1112,12 @@ def admin_wallet_manage_api(request, wallet_id=None):
             except Exception:
                 pass
 
-            created_plans = AutoPlanGenerator.refresh_plans_for_wallet(wallet)
+            AutoPlanGenerator.refresh_plans_for_wallet(wallet)
+            ExecutionEngine.try_immediate_market_entries()
             BotLog.log(
                 level='INFO',
                 category='PLAN',
-                message=f"Đã sinh {len(created_plans)} kế hoạch giao dịch AI mới cho ví '{wallet.name}' dựa trên số dư ${wallet.balance:,.2f} và {len(wallet.allowed_symbols)} cặp giao dịch cho phép.",
+                message=f"Đã kích hoạt ví '{wallet.name}': không lập sẵn hàng đợi kế hoạch. Bot chỉ tạo plan khi còn slot lệnh rồi khớp MARKET ngay.",
                 wallet=wallet
             )
             payload = {
@@ -1181,10 +1181,15 @@ def admin_wallet_manage_api(request, wallet_id=None):
         if 'mt5_login' in data and data['mt5_login'].strip(): wallet.mt5_login = data['mt5_login'].strip()
         if 'mt5_password' in data and data['mt5_password'].strip(): wallet.mt5_password = data['mt5_password'].strip()
         if 'default_lot_size' in data: wallet.default_lot_size = float(data['default_lot_size'])
-        if 'risk_percent' in data: wallet.risk_percent = float(data['risk_percent'])
-        if 'max_daily_loss_percent' in data: wallet.max_daily_loss_percent = float(data['max_daily_loss_percent'])
         if 'max_open_trades' in data: wallet.max_open_trades = max(1, min(500, int(data['max_open_trades'])))
-        if 'min_take_profit_usd' in data: wallet.min_take_profit_usd = Decimal(str(data['min_take_profit_usd'] or 1))
+        if 'min_take_profit_usd' in data:
+            wallet.min_take_profit_usd = _optional_usd(data, 'min_take_profit_usd')
+        if 'max_stop_loss_usd' in data:
+            wallet.max_stop_loss_usd = _optional_usd(data, 'max_stop_loss_usd')
+        if 'trail_sl_enabled' in data:
+            wallet.trail_sl_enabled = bool(data.get('trail_sl_enabled'))
+        if 'trail_sl_lock_usd' in data:
+            wallet.trail_sl_lock_usd = _optional_usd(data, 'trail_sl_lock_usd')
         if 'is_active' in data: wallet.is_active = bool(data['is_active'])
         if 'bot_status' in data: wallet.bot_status = data['bot_status']
         if not wallet.is_active:
@@ -1218,11 +1223,12 @@ def admin_wallet_manage_api(request, wallet_id=None):
             except Exception:
                 pass
 
-            created_plans = AutoPlanGenerator.refresh_plans_for_wallet(wallet)
+            AutoPlanGenerator.refresh_plans_for_wallet(wallet)
+            ExecutionEngine.try_immediate_market_entries()
             BotLog.log(
                 level='INFO',
                 category='PLAN',
-                message=f"Đã làm mới kế hoạch giao dịch AI cho ví '{wallet.name}': Xóa các plan cũ chưa khớp và tạo mới {len(created_plans)} plan theo số dư ${wallet.balance:,.2f} & {len(wallet.allowed_symbols)} cặp giao dịch.",
+                message=f"Đã làm mới ví '{wallet.name}': xóa plan chờ cũ. Plan mới chỉ sinh khi còn slot lệnh rồi khớp ngay.",
                 wallet=wallet
             )
             payload = {

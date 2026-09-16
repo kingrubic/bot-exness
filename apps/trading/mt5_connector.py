@@ -278,7 +278,7 @@ class ExnessMT5Connector:
                 chk = requests.get(f"{BRIDGE_URL}/account_info", timeout=0.8)
                 if chk.status_code == 200 and chk.json().get('success'):
                     acc = chk.json().get('account_info', {})
-                    if acc.get('login') == login_clean:
+                    if int(acc.get('login') or 0) == int(login_clean):
                         self.is_connected = True
                         self.bridge_mode = True
                         return True
@@ -370,7 +370,7 @@ class ExnessMT5Connector:
 
         return {'success': False, 'error': 'Chưa kết nối sàn Exness MT5'}
 
-    def close_order(self, ticket: int, symbol: str, order_type: str, volume: float, comment: str = 'Close') -> tuple[bool, str, dict]:
+    def close_order(self, ticket: int, symbol: str, order_type: str, volume: float, comment: str = 'Close', magic: int = 0) -> tuple[bool, str, dict]:
         """
         Đóng lệnh trên Exness MT5.
         Trả về (success: bool, message: str, data: dict).
@@ -399,7 +399,9 @@ class ExnessMT5Connector:
                     'ticket': ticket_clean,
                     'symbol': symbol,
                     'order_type': order_type,
-                    'volume': volume
+                    'volume': volume,
+                    'comment': comment or 'Close',
+                    'magic': int(magic or 0),
                 }, timeout=10)
                 res_data = resp.json()
                 if resp.status_code == 200 and res_data.get('success'):
@@ -431,11 +433,17 @@ class ExnessMT5Connector:
                     'sl': float(sl),
                     'tp': float(tp),
                     'symbol': symbol
-                }, timeout=1.5)
-                if resp.status_code == 200 and resp.json().get('success'):
-                    return True, resp.json().get('message', 'Đã cập nhật SL/TP thành công')
-            except Exception:
-                pass
+                }, timeout=8)
+                data = {}
+                try:
+                    data = resp.json() or {}
+                except Exception:
+                    data = {}
+                if resp.status_code == 200 and data.get('success'):
+                    return True, data.get('message', 'Đã cập nhật SL/TP thành công')
+                return False, str(data.get('error') or resp.text or 'MT5 dời SL/TP thất bại')
+            except Exception as e:
+                return False, f'Lỗi kết nối Bridge khi dời SL/TP: {e}'
 
         return False, "Không thể kết nối MT5 để dời SL/TP"
 
@@ -678,16 +686,16 @@ class ExnessMT5Connector:
                         deal_magic = int(d.get('magic', 0) or 0)
                         deal_comment = str(d.get('comment', '') or '').strip()
 
-                        # Đối chiếu với DB dựa vào ticket id và magic/comment để xác định nguồn BOT hay USER
-                        is_bot = (
-                            ticket_str in all_bot_tickets or
-                            deal_magic == 8882026 or
-                            d.get('source') == 'BOT' or
-                            deal_comment.upper().startswith('BOT') or
-                            deal_comment.upper().startswith('AI') or
-                            any(k in deal_comment.lower() for k in ['ai', 'bot', 'autobot', 'scalp', 'bot_auto', 'ai_scalp'])
+                        from apps.trading.order_source import classify_order_source, resolve_close_reason
+                        source = classify_order_source(deal_magic, deal_comment, ticket_str)
+                        close_reason = resolve_close_reason(
+                            ticket=ticket_str,
+                            deal_reason=d.get('reason'),
+                            comment=deal_comment,
+                            source=source,
                         )
-                        source = 'BOT' if is_bot else 'USER'
+                        if close_reason == 'MANUAL_CLOSE':
+                            source = 'USER'
 
                         comm_d = float(d.get('commission', 0.0) or 0.0)
                         swap_d = float(d.get('swap', 0.0) or 0.0)
@@ -699,14 +707,6 @@ class ExnessMT5Connector:
                             open_p_val = close_p_val
                         if close_p_val == 0.0 and open_p_val > 0.0:
                             close_p_val = open_p_val
-
-                        from apps.trading.order_source import resolve_close_reason
-                        close_reason = resolve_close_reason(
-                            ticket=ticket_str,
-                            deal_reason=d.get('reason'),
-                            comment=deal_comment,
-                            source=source,
-                        )
 
                         deals_data.append({
                             'ticket': ticket_str,

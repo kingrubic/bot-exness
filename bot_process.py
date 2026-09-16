@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -63,9 +64,13 @@ def _ancestor_pids(pid: int) -> set[int]:
 def _parent_pid(pid: int) -> int:
     if sys.platform != 'win32':
         try:
-            return os.getppid() if pid == os.getpid() else 0
+            with open(f'/proc/{int(pid)}/status', encoding='utf-8') as fh:
+                for line in fh:
+                    if line.startswith('PPid:'):
+                        return int(line.split()[1])
         except Exception:
-            return 0
+            return os.getppid() if pid == os.getpid() else 0
+        return 0
     try:
         out = subprocess.check_output(
             [
@@ -80,9 +85,34 @@ def _parent_pid(pid: int) -> int:
 
 
 def _python_bot_processes() -> list[dict]:
-    """Chỉ python.exe đang chạy run_bot.py — không match PowerShell đang query."""
+    """Chỉ python đang chạy run_bot.py / start_*.py — không match chính process hiện tại."""
     if sys.platform != 'win32':
-        return []
+        rows = []
+        try:
+            r = subprocess.run(
+                ['ps', '-eo', 'pid=,args='],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception:
+            return []
+        markers = ('run_bot.py', 'start_linux.py', 'start_windows.py')
+        for line in (r.stdout or '').splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                continue
+            pid_s, args = parts
+            if not any(m in args for m in markers):
+                continue
+            if 'ps -eo' in args:
+                continue
+            try:
+                rows.append({'ProcessId': int(pid_s)})
+            except ValueError:
+                continue
+        return rows
     ps = (
         "Get-CimInstance Win32_Process | "
         "Where-Object { "
@@ -108,6 +138,8 @@ def _python_bot_processes() -> list[dict]:
 
 def _pids_listening(port: str | int) -> set[int]:
     port = str(port)
+    if sys.platform != 'win32':
+        return _linux_pids_listening(port)
     try:
         r = subprocess.run(
             ['netstat', '-ano', '-p', 'tcp'],
@@ -126,11 +158,48 @@ def _pids_listening(port: str | int) -> set[int]:
     return pids
 
 
+def _linux_pids_listening(port: str) -> set[int]:
+    pids: set[int] = set()
+    commands = (
+        ['ss', '-ltnp'],
+        ['lsof', '-t', f'-iTCP:{port}', '-sTCP:LISTEN'],
+        ['fuser', f'{port}/tcp'],
+    )
+    for cmd in commands:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        except Exception:
+            continue
+        out = (r.stdout or '') + '\n' + (r.stderr or '')
+        if cmd[0] == 'ss':
+            pat = re.compile(rf':{re.escape(port)}\b.*pid=(\d+)')
+            for m in pat.finditer(out):
+                n = int(m.group(1))
+                if n > 0:
+                    pids.add(n)
+        else:
+            for tok in re.findall(r'\d+', out):
+                n = int(tok)
+                if n > 1:
+                    pids.add(n)
+        if pids:
+            return pids
+    return pids
+
+
 def _kill_pid(pid: int) -> None:
-    """Kill đúng PID, không /T — tránh giết cả cây start_windows → run_bot hiện tại."""
+    """Kill đúng PID — tránh giết cả cây start_windows/start_linux → run_bot hiện tại."""
     if pid <= 0 or pid == os.getpid():
         return
-    creation = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+    if sys.platform != 'win32':
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            subprocess.run(['kill', '-TERM', str(pid)], capture_output=True, timeout=5)
+        return
+    creation = subprocess.CREATE_NO_WINDOW
     subprocess.run(
         ['taskkill', '/F', '/PID', str(pid)],
         capture_output=True, timeout=15, creationflags=creation,
@@ -140,6 +209,12 @@ def _kill_pid(pid: int) -> None:
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if sys.platform != 'win32':
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
     try:
         r = subprocess.run(
             ['tasklist', '/FI', f'PID eq {pid}', '/FO', 'CSV', '/NH'],

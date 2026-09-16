@@ -27,7 +27,7 @@
             <div class="d-flex justify-content-between align-items-start">
                 <div>
                     <div class="metric-label">Tổng Số Dư (Balance)</div>
-                    <div class="metric-value text-dark font-weight-bold" id="kpi-balance">${{ tot_bal|floatformat:2 }}</div>
+                    <div class="metric-value text-dark font-weight-bold" id="kpi-balance">{% if current_wallet %}${{ tot_bal|floatformat:2 }}{% else %}—{% endif %}</div>
                     <div class="metric-subtext"><span id="kpi-wallets-count">{% if current_wallet %}{{ current_wallet.name }}{% else %}—{% endif %}</span> · ví đang kích hoạt</div>
                 </div>
                 <div class="card-icon-wrap icon-bg-blue">
@@ -43,7 +43,7 @@
             <div class="d-flex justify-content-between align-items-start">
                 <div>
                     <div class="metric-label">Vốn Khả Dụng (Equity)</div>
-                    <div class="metric-value text-primary font-weight-bold" id="kpi-equity">${{ tot_eq|floatformat:2 }}</div>
+                    <div class="metric-value text-primary font-weight-bold" id="kpi-equity">{% if current_wallet %}${{ tot_eq|floatformat:2 }}{% else %}—{% endif %}</div>
                     <div class="metric-subtext">Đã bao gồm Floating PnL</div>
                 </div>
                 <div class="card-icon-wrap icon-bg-purple">
@@ -59,7 +59,7 @@
             <div class="d-flex justify-content-between align-items-start">
                 <div>
                     <div class="metric-label">Lãi/Lỗ Tạm Tính (Floating)</div>
-                    <div class="metric-value font-weight-bold {% if tot_fl >= 0 %}text-success{% else %}text-danger{% endif %}" id="kpi-floating">{% if tot_fl >= 0 %}+{% endif %}${{ tot_fl|floatformat:2 }}</div>
+                    <div class="metric-value font-weight-bold {% if current_wallet %}{% if tot_fl >= 0 %}text-success{% else %}text-danger{% endif %}{% else %}text-muted{% endif %}" id="kpi-floating">{% if current_wallet %}{% if tot_fl >= 0 %}+{% endif %}${{ tot_fl|floatformat:2 }}{% else %}—{% endif %}</div>
                     <div class="metric-subtext"><span id="kpi-positions-count">{{ all_positions_count }}</span> vị thế đang mở</div>
                 </div>
                 <div class="card-icon-wrap icon-bg-green">
@@ -75,7 +75,7 @@
             <div class="d-flex justify-content-between align-items-start">
                 <div>
                     <div class="metric-label">Đã đóng hôm nay (Closed today)</div>
-                    <div class="metric-value font-weight-bold {% if tot_today >= 0 %}text-success{% else %}text-danger{% endif %}" id="kpi-today">{% if tot_today >= 0 %}+{% endif %}${{ tot_today|floatformat:2 }}</div>
+                    <div class="metric-value font-weight-bold {% if current_wallet %}{% if tot_today >= 0 %}text-success{% else %}text-danger{% endif %}{% else %}text-muted{% endif %}" id="kpi-today">{% if current_wallet %}{% if tot_today >= 0 %}+{% endif %}${{ tot_today|floatformat:2 }}{% else %}—{% endif %}</div>
                     <div class="metric-subtext">Lịch sử MT5, không gồm lãi nổi — Winrate: <span id="kpi-winrate" class="font-weight-bold text-dark">0%</span></div>
                 </div>
                 <div class="card-icon-wrap icon-bg-amber">
@@ -94,7 +94,7 @@
                 <i class="fa-solid fa-chart-pie text-primary fs-5"></i>
                 <h5 class="font-weight-bold text-dark mb-0">Báo Cáo Hiệu Suất: Lệnh BOT vs Lệnh USER</h5>
             </div>
-            <small class="text-muted">Chỉ số của ví đang kích hoạt — không cộng tổng các ví khác</small>
+            <small class="text-muted">Số liệu <strong>trong ngày</strong> (00:00–24:00 GMT+7) của ví đang kích hoạt — BOT và USER tách riêng, không lấy lịch sử ngày cũ</small>
         </div>
         <div class="d-flex align-items-center gap-2">
             <span class="small font-weight-bold text-secondary text-nowrap"><i class="fa-solid fa-wallet me-1"></i> Ví hiện tại:</span>

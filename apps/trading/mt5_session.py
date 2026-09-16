@@ -498,6 +498,8 @@ class MT5NativeSession:
                 )
             else:
                 close_reason = 'MANUAL_CLOSE' if source == 'USER' else 'TP_HIT'
+            if close_reason == 'MANUAL_CLOSE':
+                source = 'USER'
             open_dt = datetime.fromtimestamp(open_ts, tz=dt_timezone.utc) if open_ts else datetime.now(dt_timezone.utc)
             close_dt = datetime.fromtimestamp(close_ts, tz=dt_timezone.utc) if close_ts else open_dt
             rows.append({
@@ -789,7 +791,7 @@ class MT5NativeSession:
                         'type': close_type,
                         'price': price,
                         'deviation': 300,
-                        'magic': int(getattr(pos, 'magic', 0) or 0),
+                        'magic': 0 if str(close_comment).lower().startswith('webmanual') else int(getattr(pos, 'magic', 0) or 0),
                         'comment': close_comment,
                         'type_time': mt5.ORDER_TIME_GTC,
                         'type_filling': f_mode,
@@ -833,6 +835,7 @@ class MT5NativeSession:
         *,
         comment: str = 'BotClose',
         only_profit_ge: float | None = None,
+        only_profit_le: float | None = None,
         max_n: int = 500,
     ) -> dict:
         """
@@ -849,11 +852,14 @@ class MT5NativeSession:
 
         targets = []
         for pos in positions:
-            if only_profit_ge is not None:
+            if only_profit_ge is not None or only_profit_le is not None:
                 pnl = float(getattr(pos, 'profit', 0) or 0)
                 swap = float(getattr(pos, 'swap', 0) or 0)
                 comm = float(getattr(pos, 'commission', 0) or 0)
-                if pnl < only_profit_ge and (pnl + swap + comm) < only_profit_ge:
+                net = pnl + swap + comm
+                if only_profit_ge is not None and pnl < only_profit_ge and net < only_profit_ge:
+                    continue
+                if only_profit_le is not None and pnl > only_profit_le and net > only_profit_le:
                     continue
             targets.append(pos)
             if len(targets) >= max_n:
@@ -899,7 +905,7 @@ class MT5NativeSession:
                         'type': close_type,
                         'price': price,
                         'deviation': 500,
-                        'magic': int(getattr(pos, 'magic', 0) or 0),
+                        'magic': 0 if str(close_comment).lower().startswith('webmanual') else int(getattr(pos, 'magic', 0) or 0),
                         'comment': close_comment,
                         'type_time': mt5.ORDER_TIME_GTC,
                         'type_filling': f_mode,
