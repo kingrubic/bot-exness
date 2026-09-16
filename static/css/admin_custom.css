@@ -1679,9 +1679,24 @@ body.app footer.footer {
 
 /* =========================================================
    Select2 Custom Fintech & Searchable Theme
+   Widget in-form có class thêm `.select2`; flyout trên body bị Select2
+   gỡ class đó. Không được width:100% lên mọi .select2-container — flyout
+   sẽ giãn full trang và lệch khỏi ô select.
    ========================================================= */
-.select2-container {
+span.select2.select2-container {
     width: 100% !important;
+    max-width: 100%;
+    display: block;
+    outline: none;
+}
+select.form-select-sm + span.select2.select2-container {
+    width: auto !important;
+    max-width: 100%;
+    display: inline-block;
+    vertical-align: middle;
+}
+.modal-content {
+    overflow: visible;
 }
 .select2-container--default .select2-selection--single {
     background-color: #ffffff;

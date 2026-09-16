@@ -139,19 +139,40 @@ function initAllSelect2(context) {
         selector.each(function() {
             const $el = jQuery(this);
             const modal = $el.closest('.modal');
-            const hasModal = modal.length > 0;
+            const $modalBody = modal.find('.modal-content');
+            const isCompact = $el.hasClass('form-select-sm');
             const placeholder = $el.attr('placeholder') || $el.find('option:first').text() || 'Chọn một mục...';
-            
-            // Check if already initialized, avoid duplicate wrapper
+            // Flyout gắn body (parent flex/static + page-container relative → lệch toạ độ).
+            // Modal: .modal-content (position:relative, không transform như .modal-dialog).
+            const $parent = modal.length
+                ? ($modalBody.length ? $modalBody : modal)
+                : jQuery(document.body);
+
             if ($el.hasClass('select2-hidden-accessible')) {
                 $el.select2('destroy');
             }
 
             $el.select2({
-                width: '100%',
-                dropdownParent: hasModal ? modal : jQuery(document.body),
+                width: isCompact ? 'resolve' : '100%',
+                dropdownParent: $parent,
                 placeholder: placeholder,
                 allowClear: false
+            });
+
+            const minW = $el.css('min-width');
+            if (isCompact && minW && minW !== '0px') {
+                $el.next('.select2-container').css('min-width', minW);
+            }
+
+            $el.off('select2:open.exnessAlign').on('select2:open.exnessAlign', function () {
+                const inst = jQuery(this).data('select2');
+                if (!inst || !inst.$dropdown || !inst.$container) return;
+                const w = inst.$container.outerWidth(false);
+                // theme.css `width: auto !important` đè inline — phải set important.
+                inst.$dropdown[0].style.setProperty('width', w + 'px', 'important');
+                if (inst.$dropdownContainer && inst.$dropdownContainer[0]) {
+                    inst.$dropdownContainer[0].style.setProperty('width', w + 'px', 'important');
+                }
             });
         });
     }
