@@ -104,17 +104,21 @@ class AutoPlanGenerator:
         return n
 
     @staticmethod
-    def direction_from_forecast(forecast) -> str:
-        """Kế hoạch AI chỉ BUY hoặc SELL — không WAIT / không vùng entry."""
+    def direction_from_forecast(forecast) -> str | None:
+        """BUY/SELL khi sẵn sàng vào; None khi MONITORING / WAIT_FOR_PULLBACK."""
+        action = str(getattr(forecast, 'recommended_action', '') or '').upper()
+        if action in ('MONITORING', 'WAIT_FOR_PULLBACK', 'BREAKOUT_PENDING'):
+            return None
+        if 'SELL' in action:
+            return 'SELL'
+        if 'BUY' in action:
+            return 'BUY'
         bias = str(getattr(forecast, 'trend_bias', '') or '').upper()
         if bias == 'BEARISH':
             return 'SELL'
         if bias == 'BULLISH':
             return 'BUY'
-        action = str(getattr(forecast, 'recommended_action', '') or '').upper()
-        if 'SELL' in action:
-            return 'SELL'
-        return 'BUY'
+        return None
 
     @staticmethod
     def generate_plan_for_wallet(wallet: WalletAccount, symbol_config: SymbolConfig, forecast: MarketForecast, is_pyramiding: bool = False) -> TradingPlan:
@@ -130,6 +134,9 @@ class AutoPlanGenerator:
         if AutoPlanGenerator.wallet_at_position_cap(wallet):
             AutoPlanGenerator.purge_pending_plans(wallet)
             return None
+        if AutoPlanGenerator.direction_from_forecast(forecast) is None:
+            AutoPlanGenerator.purge_pending_plans(wallet, symbol=symbol_config.symbol)
+            return None
         fields = AutoPlanGenerator._plan_fields(wallet, symbol_config, forecast, is_pyramiding=is_pyramiding)
         if not fields:
             return None
@@ -139,15 +146,15 @@ class AutoPlanGenerator:
     @staticmethod
     def _plan_fields(wallet: WalletAccount, symbol_config: SymbolConfig, forecast: MarketForecast, is_pyramiding: bool = False) -> dict:
 
-        # 1. Chỉ BUY hoặc SELL — vào MARKET ngay, không chờ hồi / vùng entry
         direction = AutoPlanGenerator.direction_from_forecast(forecast)
+        if not direction:
+            return {}
 
         try:
             symbol_config.refresh_from_db()
         except Exception:
             pass
 
-        # Luôn khớp giá MARKET (Ask khi BUY, Bid khi SELL) tại thời điểm lập kế hoạch
         entry_price = AutoPlanGenerator.market_entry_price(symbol_config, direction)
 
         lot = float(wallet.default_lot_size or 0.01)
@@ -157,24 +164,37 @@ class AutoPlanGenerator:
         trail_on = bool(getattr(wallet, 'trail_sl_enabled', False))
         trail_lock = float(getattr(wallet, 'trail_sl_lock_usd', 0) or 0) if trail_on else 0.0
 
-        tag_name = "AI Lướt Sóng Ngắn Hạn (Scale-In)" if is_pyramiding else "AI Lướt Sóng Ngắn Hạn"
+        tf = str(getattr(symbol_config, 'timeframe', '') or 'M15').upper()
+        strat = str(getattr(symbol_config, 'strategy', '') or '').upper()
+        is_scalp = strat == 'SCALPING_BB' or tf in ('M1', 'M5')
+        if is_scalp:
+            tag_name = "Lướt sóng (Scalp EMA9/21)" + (" Scale-In" if is_pyramiding else "")
+        else:
+            tag_name = "Dài hạn / Trend (EMA50/200 + trail SL)" + (" Scale-In" if is_pyramiding else "")
+
         max_n = int(wallet.max_open_trades or 1)
         tp_txt = f"Chốt lời khi lãi ròng >= ${min_tp:.2f}." if min_tp > 0 else "Không tự chốt lời (min TP trống)."
         sl_txt = f"Cắt lỗ khi lỗ ròng <= -${max_sl:.2f} (SL_HIT)." if max_sl > 0 else "Không tự cắt lỗ USD (max SL trống)."
         trail_txt = (
-            f" Tự dời SL: khoá ${trail_lock:.2f} (lãi 2× → SL còn 1×; chỉ dời tăng)."
-            if trail_on and trail_lock > 0 else ""
+            f" Tự dời SL: khoá ${trail_lock:.2f} (lãi ≥2× khoá → SL giữ lãi; chỉ dời tăng)."
+            if trail_on and trail_lock > 0 else
+            " Chưa bật dời SL — bật trail_sl trên ví để giữ sóng dài."
         )
+        fc_note = ''
+        try:
+            fc_note = f" Forecast: {forecast.trend_bias}/{forecast.recommended_action} ({forecast.confidence_score}%)."
+        except Exception:
+            pass
         rationale = (
-            f"{tag_name}: MARKET {direction} {lot} Lot ngay (Ask khi BUY / Bid khi SELL), không chờ vùng entry. "
+            f"{tag_name}: MARKET {direction} {lot} Lot (Ask/Bid), phân tích từ nến MT5 thật.{fc_note} "
             f"{tp_txt} {sl_txt}{trail_txt} "
-            f"Cho phép tối đa {max_n} lệnh mở đồng thời trên ví; còn slot thì bot lập plan mới và khớp ngay."
+            f"Tối đa {max_n} lệnh mở trên ví."
         )
 
         fields = {
             'wallet': wallet,
             'symbol': symbol_config.symbol,
-            'timeframe': symbol_config.timeframe,
+            'timeframe': getattr(forecast, 'timeframe', None) or symbol_config.timeframe,
             'direction': direction,
             'entry_price': entry_price,
             'entry_zone_low': entry_price,
@@ -225,6 +245,9 @@ class AutoPlanGenerator:
             return None
         if cls.wallet_at_position_cap(wallet):
             cls.purge_pending_plans(wallet)
+            return None
+        if cls.direction_from_forecast(forecast) is None:
+            cls.purge_pending_plans(wallet, symbol=symbol_config.symbol)
             return None
         try:
             symbol_config.refresh_from_db()
@@ -324,14 +347,16 @@ class AutoPlanGenerator:
             return 0
         symbols = {p.symbol for p in pending}
         latest = {}
-        for fc in MarketForecast.objects.filter(symbol__in=symbols).order_by('symbol', '-updated_at'):
+        for fc in MarketForecast.objects.filter(symbol__in=symbols).order_by('symbol', '-updated_at', '-id'):
             latest.setdefault(fc.symbol, fc)
         drop_ids = []
         for p in pending:
             fc = latest.get(p.symbol)
             if not fc:
                 continue
-            if cls.direction_from_forecast(fc) != p.direction:
+            want = cls.direction_from_forecast(fc)
+            # None = MONITORING/WAIT — xóa plan treo; lệch hướng cũng xóa
+            if want is None or want != p.direction:
                 drop_ids.append(p.pk)
         if drop_ids:
             TradingPlan.objects.filter(pk__in=drop_ids).delete()

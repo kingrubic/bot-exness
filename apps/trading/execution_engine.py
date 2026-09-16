@@ -1,6 +1,7 @@
 import logging
 import time
 import traceback
+import uuid
 from decimal import Decimal
 from django.utils import timezone
 from apps.accounts.models import WalletAccount
@@ -158,7 +159,7 @@ class ExecutionEngine:
                 return None
             else:
                 # Chỉ khi ví hoàn toàn không cấu hình MT5 (ví mô phỏng nội bộ)
-                ticket = f"LOCAL-{time.time_ns()}"
+                ticket = f"LOCAL-{time.time_ns()}-{uuid.uuid4().hex[:6]}"
                 exec_price = plan.entry_price
                 exec_volume = float(plan.calculated_lot)
 
@@ -702,6 +703,10 @@ class ExecutionEngine:
                         continue
                     sym_config, forecast = item
                     forecast_dir = AutoPlanGenerator.direction_from_forecast(forecast)
+                    if not forecast_dir:
+                        # MONITORING / WAIT_FOR_PULLBACK — chưa đủ tín hiệu nến, không vào lệnh
+                        AutoPlanGenerator.purge_pending_plans(wallet, symbol=sym_name)
+                        continue
                     can_enter, is_pyramiding, _reason = cls.can_wallet_open_or_pyramid(
                         wallet, sym_name, forecast_dir
                     )

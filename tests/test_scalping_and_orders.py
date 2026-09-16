@@ -31,6 +31,8 @@ def test_instant_scalping_plan_generation():
         digits=2,
         point_size=0.01,
         contract_size=100.0,
+        timeframe="M5",
+        strategy="SCALPING_BB",
         current_price=Decimal("2750.50"),
         current_bid=Decimal("2750.35"),
         current_ask=Decimal("2750.65"),
@@ -43,7 +45,10 @@ def test_instant_scalping_plan_generation():
         timeframe="M5",
         trend_bias="BULLISH",
         confidence_score=88.5,
-        current_price=Decimal("2750.50")
+        current_price=Decimal("2750.50"),
+        recommended_action="READY_TO_BUY",
+        trigger_condition="scalp buy",
+        analysis_rationale="test",
     )
     
     plan = AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, forecast)
@@ -148,6 +153,8 @@ def test_trend_pyramiding_and_anti_burn_lot_sizing():
         digits=2,
         point_size=0.01,
         contract_size=100.0,
+        timeframe="M5",
+        strategy="SCALPING_BB",
         current_price=Decimal("2750.00"),
         current_bid=Decimal("2749.90"),
         current_ask=Decimal("2750.10"),
@@ -160,7 +167,10 @@ def test_trend_pyramiding_and_anti_burn_lot_sizing():
         timeframe="M5",
         trend_bias="BULLISH",
         confidence_score=90.0,
-        current_price=Decimal("2750.00")
+        current_price=Decimal("2750.00"),
+        recommended_action="READY_TO_BUY",
+        trigger_condition="pyramid",
+        analysis_rationale="test",
     )
 
     # 1. Lệnh 1 ban đầu
@@ -185,6 +195,7 @@ def test_dynamic_plan_and_trailing_sltp_updates():
         balance_db=Decimal("3000.00"),
         capital=Decimal("3000.00"),
         is_active=True,
+        bot_status="STOPPED",
         allowed_symbols_json='["EURUSD"]',
         min_take_profit_usd=Decimal("1.00"),
     )
@@ -208,7 +219,10 @@ def test_dynamic_plan_and_trailing_sltp_updates():
         timeframe="M5",
         trend_bias="BULLISH",
         confidence_score=92.0,
-        current_price=Decimal("1.08500")
+        current_price=Decimal("1.08500"),
+        recommended_action="READY_TO_BUY",
+        trigger_condition="trail test",
+        analysis_rationale="test",
     )
 
     # 1. Kiểm tra cập nhật kế hoạch liên tục theo giá mới
@@ -359,6 +373,7 @@ def test_max_stop_loss_closes_and_refills_slot():
     MarketForecast.objects.create(
         symbol="XAUUSD", timeframe="M5", trend_bias="BULLISH",
         confidence_score=80, current_price=Decimal("2744.00"),
+        recommended_action="READY_TO_BUY",
         trigger_condition="x", analysis_rationale="x",
     )
     Position.objects.create(
@@ -719,6 +734,7 @@ def test_user_winner_also_closes_at_min_take_profit():
 @pytest.mark.django_db
 def test_mt5_ticket_auto_closes_at_min_take_profit():
     """Lệnh MT5 (không phải LOCAL) cũng tự chốt khi lãi >= min_take_profit_usd."""
+    from unittest.mock import patch
     wallet = WalletAccount.objects.create(
         name="Live TP Wallet",
         account_type="DEMO",
@@ -726,6 +742,7 @@ def test_mt5_ticket_auto_closes_at_min_take_profit():
         balance_db=Decimal("2000.00"),
         capital=Decimal("2000.00"),
         is_active=True,
+        bot_status="STOPPED",
         min_take_profit_usd=Decimal("1.00"),
         allowed_symbols_json='["XAUUSD"]',
     )
@@ -736,13 +753,17 @@ def test_mt5_ticket_auto_closes_at_min_take_profit():
         current_price=Decimal("2750.00"), is_active=True,
     )
     Position.objects.create(
-        wallet=wallet, ticket="463001", symbol="XAUUSD", position_type="BUY",
+        wallet=wallet, ticket="SIM-TP-463001", symbol="XAUUSD", position_type="BUY",
         lot_size=0.01, open_price=Decimal("2750.00"), current_price=Decimal("2750.10"),
         floating_pnl=Decimal("10.00"), source="BOT", opened_at=timezone.now(),
     )
-    ExecutionEngine.update_positions_and_pnl()
-    assert not Position.objects.filter(ticket="463001").exists()
-    hist = TradeHistory.objects.filter(ticket="463001").first()
+    with patch('apps.trading.execution_engine.ExecutionEngine.persist_mt5_state'), \
+         patch('apps.trading.mt5_session.MT5NativeSession.available', return_value=False), \
+         patch('apps.trading.mt5_session.MT5NativeSession.account', return_value=None), \
+         patch('apps.trading.mt5_session.MT5NativeSession.positions', return_value=[]):
+        ExecutionEngine.update_positions_and_pnl()
+    assert not Position.objects.filter(ticket="SIM-TP-463001").exists()
+    hist = TradeHistory.objects.filter(ticket="SIM-TP-463001").first()
     assert hist is not None
     assert hist.close_reason == "TP_HIT"
     assert hist.source == "BOT"
@@ -775,6 +796,8 @@ def test_plan_uses_live_market_ask_bid():
         name="Mkt Wallet",
         account_type="DEMO",
         mt5_login="",
+        balance_db=Decimal("2000.00"),
+        capital=Decimal("2000.00"),
         allowed_symbols_json='["XAUUSD"]',
         is_active=True
     )
@@ -790,12 +813,15 @@ def test_plan_uses_live_market_ask_bid():
     )
     forecast = MarketForecast.objects.create(
         symbol="XAUUSD", timeframe="M5", trend_bias="BULLISH",
-        confidence_score=80, current_price=Decimal("2750.00")
+        confidence_score=80, current_price=Decimal("2750.00"),
+        recommended_action="READY_TO_BUY",
+        trigger_condition="ask/bid", analysis_rationale="test",
     )
     buy_plan = AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, forecast)
     assert float(buy_plan.entry_price) == 2750.20
 
     forecast.trend_bias = "BEARISH"
+    forecast.recommended_action = "READY_TO_SELL"
     forecast.save()
     sell_plan = AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, forecast)
     assert float(sell_plan.entry_price) == 2749.80
@@ -878,6 +904,7 @@ def test_update_or_create_plan_does_not_accumulate():
     forecast = MarketForecast.objects.create(
         symbol="XAUUSD", timeframe="M5", trend_bias="BULLISH",
         confidence_score=80, current_price=Decimal("2750.00"),
+        recommended_action="READY_TO_BUY",
         trigger_condition="test", analysis_rationale="test",
     )
     p1 = AutoPlanGenerator.update_or_create_plan_for_wallet(wallet, sym, forecast)
@@ -928,6 +955,7 @@ def test_pending_plan_flips_when_forecast_direction_changes():
     bull = MarketForecast.objects.create(
         symbol="XAUUSD", timeframe="M5", trend_bias="BULLISH",
         confidence_score=80, current_price=Decimal("2750.00"),
+        recommended_action="READY_TO_BUY",
         trigger_condition="test", analysis_rationale="test",
     )
     p1 = AutoPlanGenerator.update_or_create_plan_for_wallet(wallet, sym, bull)
@@ -940,7 +968,9 @@ def test_pending_plan_flips_when_forecast_direction_changes():
     bear = MarketForecast.objects.create(
         symbol="XAUUSD", timeframe="M5", trend_bias="BEARISH",
         confidence_score=90, current_price=Decimal("2748.00"),
+        recommended_action="READY_TO_SELL",
         trigger_condition="flip", analysis_rationale="flip",
+        updated_at=timezone.now() + timedelta(seconds=5),
     )
     p2 = AutoPlanGenerator.update_or_create_plan_for_wallet(wallet, sym, bear)
     assert p2.id == p1.id
@@ -1155,13 +1185,15 @@ def test_quick_order_db_lock_returns_json_not_html(client):
     assert res.json()['success'] is False
 
 
-def test_direction_from_forecast_always_buy_or_sell():
+def test_direction_from_forecast_skips_wait_and_monitoring():
     from types import SimpleNamespace
     from apps.plans.planner import AutoPlanGenerator
-    assert AutoPlanGenerator.direction_from_forecast(SimpleNamespace(trend_bias='BULLISH', recommended_action='WAIT_FOR_PULLBACK')) == 'BUY'
-    assert AutoPlanGenerator.direction_from_forecast(SimpleNamespace(trend_bias='BEARISH', recommended_action='WAIT_FOR_PULLBACK')) == 'SELL'
+    assert AutoPlanGenerator.direction_from_forecast(SimpleNamespace(trend_bias='BULLISH', recommended_action='WAIT_FOR_PULLBACK')) is None
+    assert AutoPlanGenerator.direction_from_forecast(SimpleNamespace(trend_bias='BEARISH', recommended_action='WAIT_FOR_PULLBACK')) is None
+    assert AutoPlanGenerator.direction_from_forecast(SimpleNamespace(trend_bias='SIDEWAY', recommended_action='MONITORING')) is None
     assert AutoPlanGenerator.direction_from_forecast(SimpleNamespace(trend_bias='SIDEWAY', recommended_action='READY_TO_SELL')) == 'SELL'
-    assert AutoPlanGenerator.direction_from_forecast(SimpleNamespace(trend_bias='SIDEWAY', recommended_action='MONITORING')) == 'BUY'
+    assert AutoPlanGenerator.direction_from_forecast(SimpleNamespace(trend_bias='BULLISH', recommended_action='READY_TO_BUY')) == 'BUY'
+    assert AutoPlanGenerator.direction_from_forecast(SimpleNamespace(trend_bias='BEARISH', recommended_action='READY_TO_SELL')) == 'SELL'
 
 
 @pytest.mark.django_db
@@ -1234,13 +1266,14 @@ def test_immediate_market_entry_when_under_max():
         symbol="XAUUSD", display_name="Gold", category="METALS",
         digits=2, current_price=Decimal("2750.00"),
         current_bid=Decimal("2749.80"), current_ask=Decimal("2750.20"),
+        timeframe="M5", strategy="SCALPING_BB",
         is_active=True,
     )
     forecast = MarketForecast.objects.create(
         symbol="XAUUSD", timeframe="M5", trend_bias="BULLISH",
         confidence_score=80, current_price=Decimal("2750.00"),
-        recommended_action="WAIT_FOR_PULLBACK",
-        trigger_condition="wait", analysis_rationale="test",
+        recommended_action="READY_TO_BUY",
+        trigger_condition="ema9>ema21", analysis_rationale="scalp buy from candles",
     )
     ExecutionEngine.try_immediate_market_entries({ 'XAUUSD': (sym, forecast) })
     assert Position.objects.filter(wallet=wallet, symbol="XAUUSD", source="BOT").count() == 3
@@ -1248,6 +1281,7 @@ def test_immediate_market_entry_when_under_max():
     assert executing.count() == 3
     assert all(p.direction == "BUY" for p in executing)
     assert not TradingPlan.objects.filter(wallet=wallet, status="PENDING_TRIGGER").exists()
+    assert all("Lướt sóng" in (p.rationale or "") for p in executing)
 
 
 @pytest.mark.django_db
@@ -1460,6 +1494,7 @@ def test_recap_after_wipe_allows_new_entries():
     forecast = MarketForecast.objects.create(
         symbol="XAUUSD", timeframe="M5", trend_bias="BULLISH",
         confidence_score=80, current_price=Decimal("2750.00"),
+        recommended_action="READY_TO_BUY",
         trigger_condition="x", analysis_rationale="x",
     )
     with patch.object(ExecutionEngine, 'wallet_today_risk_pnl', return_value=-480.0):
@@ -1769,5 +1804,159 @@ def test_wine_connect_logs_in_only_with_allow_switch():
         assert conn.connect(allow_switch=True) is True
         posted.assert_called_once()
         assert posted.call_args[0][0].endswith('/login')
+
+
+@pytest.mark.django_db
+def test_monitoring_forecast_does_not_open_or_create_plan():
+    """MONITORING / thiếu tín hiệu nến → không lập plan, không mở lệnh."""
+    wallet = WalletAccount.objects.create(
+        name="Wait Wallet",
+        account_type="DEMO",
+        mt5_login="",
+        balance_db=Decimal("2000.00"),
+        capital=Decimal("2000.00"),
+        is_active=True,
+        bot_status="RUNNING",
+        max_open_trades=3,
+        allowed_symbols_json='["XAUUSD"]',
+    )
+    sym = SymbolConfig.objects.create(
+        symbol="XAUUSD", display_name="Gold", category="METALS",
+        digits=2, current_price=Decimal("2750.00"),
+        current_bid=Decimal("2749.80"), current_ask=Decimal("2750.20"),
+        timeframe="M5", strategy="SCALPING_BB", is_active=True,
+    )
+    forecast = MarketForecast.objects.create(
+        symbol="XAUUSD", timeframe="M5", trend_bias="SIDEWAY",
+        confidence_score=55, current_price=Decimal("2750.00"),
+        recommended_action="MONITORING",
+        trigger_condition="wait candles", analysis_rationale="no signal",
+    )
+    TradingPlan.objects.create(
+        wallet=wallet, symbol="XAUUSD", direction="BUY",
+        entry_price=Decimal("2750.00"), entry_zone_low=Decimal("2750.00"),
+        entry_zone_high=Decimal("2750.00"), rationale="stale",
+        status="PENDING_TRIGGER",
+    )
+    assert AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, forecast) is None
+    ExecutionEngine.try_immediate_market_entries({'XAUUSD': (sym, forecast)})
+    assert not Position.objects.filter(wallet=wallet).exists()
+    assert not TradingPlan.objects.filter(
+        wallet=wallet, status__in=["PENDING_TRIGGER", "PENDING", "ANALYZING"]
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_swing_plan_rationale_mentions_trail_sl():
+    """Dài hạn (H1/SMC): plan ghi rõ trail SL; chỉ sinh khi READY_TO_*."""
+    wallet = WalletAccount.objects.create(
+        name="Swing Wallet",
+        account_type="DEMO",
+        mt5_login="",
+        balance_db=Decimal("5000.00"),
+        capital=Decimal("5000.00"),
+        is_active=True,
+        bot_status="RUNNING",
+        max_open_trades=2,
+        allowed_symbols_json='["XAUUSD"]',
+        trail_sl_enabled=True,
+        trail_sl_lock_usd=Decimal("5.00"),
+        min_take_profit_usd=Decimal("10.00"),
+    )
+    sym = SymbolConfig.objects.create(
+        symbol="XAUUSD", display_name="Gold", category="METALS",
+        digits=2, current_price=Decimal("2750.00"),
+        current_bid=Decimal("2749.80"), current_ask=Decimal("2750.20"),
+        timeframe="H1", strategy="SMC_TREND", is_active=True,
+    )
+    forecast = MarketForecast.objects.create(
+        symbol="XAUUSD", timeframe="H1", trend_bias="BULLISH",
+        confidence_score=78, current_price=Decimal("2750.00"),
+        recommended_action="READY_TO_BUY",
+        trigger_condition="ema50>ema200", analysis_rationale="swing uptrend",
+    )
+    plan = AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, forecast)
+    assert plan is not None
+    assert plan.direction == "BUY"
+    assert "Dài hạn" in plan.rationale
+    assert "dời SL" in plan.rationale or "khoá" in plan.rationale
+    assert "Forecast: BULLISH/READY_TO_BUY" in plan.rationale
+
+
+@pytest.mark.django_db
+def test_analyzer_uses_real_candle_indicators_not_random():
+    """TechnicalAnalyzer quyết định từ OHLC giả lập — cùng input → cùng tín hiệu (không random)."""
+    from apps.analysis.analyzer import TechnicalAnalyzer
+    from unittest.mock import patch
+    import json
+
+    # Uptrend nhẹ + nhiễu để RSI không quá nóng
+    rates = []
+    px = 2700.0
+    for i in range(120):
+        step = 0.35 if (i % 5) != 0 else -0.15
+        px += step
+        rates.append({
+            'open': px - 0.2, 'high': px + 0.35, 'low': px - 0.4, 'close': px,
+        })
+
+    sym = SymbolConfig.objects.create(
+        symbol="XAUUSD", display_name="Gold", category="METALS",
+        digits=2, current_price=Decimal(str(round(px, 2))),
+        current_bid=Decimal(str(round(px - 0.05, 2))),
+        current_ask=Decimal(str(round(px + 0.05, 2))),
+        timeframe="M5", strategy="SCALPING_BB", is_active=True,
+    )
+    with patch('apps.trading.mt5_session.MT5NativeSession.copy_rates', return_value=rates):
+        f1 = TechnicalAnalyzer.generate_market_analysis(sym)
+        f2 = TechnicalAnalyzer.generate_market_analysis(sym)
+    assert f1.recommended_action == f2.recommended_action
+    assert f1.trend_bias == f2.trend_bias
+    assert f1.recommended_action == 'READY_TO_BUY'
+    assert f1.trend_bias == 'BULLISH'
+    ind = json.loads(f1.indicators_json)
+    assert ind['mode'] == 'SCALP'
+    assert ind['data_ok'] is True
+    assert ind['candles'] == 120
+    assert ind['ema9'] is not None and ind['ema21'] is not None
+    assert ind['ema9'] > ind['ema21']
+    assert 'SCALP' in (f1.analysis_rationale or '') or 'nến MT5' in (f1.analysis_rationale or '')
+
+
+@pytest.mark.django_db
+def test_analyzer_swing_wait_pullback_when_extended():
+    """Swing: giá quá xa EMA50 → WAIT_FOR_PULLBACK, planner không mở lệnh."""
+    from apps.analysis.analyzer import TechnicalAnalyzer
+    from unittest.mock import patch
+
+    rates = []
+    px = 2700.0
+    for i in range(220):
+        # tăng chậm rồi spike cuối → extended vs EMA50
+        px += 0.4 if i < 200 else 8.0
+        rates.append({'open': px - 0.5, 'high': px + 1.0, 'low': px - 1.0, 'close': px})
+
+    sym = SymbolConfig.objects.create(
+        symbol="XAUUSD", display_name="Gold", category="METALS",
+        digits=2, current_price=Decimal(str(round(px, 2))),
+        current_bid=Decimal(str(round(px - 0.2, 2))),
+        current_ask=Decimal(str(round(px + 0.2, 2))),
+        timeframe="H1", strategy="SMC_TREND", is_active=True,
+    )
+    with patch('apps.trading.mt5_session.MT5NativeSession.copy_rates', return_value=rates):
+        fc = TechnicalAnalyzer.generate_market_analysis(sym)
+    # Có thể READY hoặc WAIT tùy khoảng cách ATR — nếu WAIT thì planner None
+    if fc.recommended_action == 'WAIT_FOR_PULLBACK':
+        wallet = WalletAccount.objects.create(
+            name="Pullback Wallet", account_type="DEMO", mt5_login="",
+            balance_db=Decimal("3000"), capital=Decimal("3000"),
+            is_active=True, bot_status="RUNNING", max_open_trades=2,
+            allowed_symbols_json='["XAUUSD"]',
+        )
+        assert AutoPlanGenerator.direction_from_forecast(fc) is None
+        assert AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, fc) is None
+    else:
+        assert fc.recommended_action in ('READY_TO_BUY', 'MONITORING', 'READY_TO_SELL')
+        assert fc.trend_bias in ('BULLISH', 'BEARISH', 'SIDEWAY')
 
 

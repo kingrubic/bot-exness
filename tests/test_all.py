@@ -41,6 +41,8 @@ class ExnessAutoTradeTestCase(TestCase):
             account_type='REAL',
             mt5_login='50239182',
             capital=Decimal('10000.00'),
+            balance_db=Decimal('10000.00'),
+            equity_db=Decimal('10000.00'),
             risk_percent=1.5,
             allowed_symbols_json='["XAUUSD"]',
             is_active=True,
@@ -54,12 +56,21 @@ class ExnessAutoTradeTestCase(TestCase):
         self.assertIsNotNone(forecast)
         self.assertEqual(forecast.symbol, 'XAUUSD')
         self.assertIn(forecast.trend_bias, ['BULLISH', 'BEARISH', 'SIDEWAY'])
-        self.assertTrue(forecast.confidence_score >= 60.0)
+        # Không có nến MT5 → MONITORING (confidence thấp hơn); có nến → ≥60
+        self.assertTrue(forecast.confidence_score >= 40.0)
         self.assertTrue(len(forecast.projected_target_zone) > 0)
         self.assertTrue(len(forecast.trigger_condition) > 0)
         self.assertTrue(len(forecast.analysis_rationale) > 0)
         self.assertTrue(float(forecast.next_resistance_1) > 0)
         self.assertTrue(float(forecast.next_support_1) > 0)
+        self.assertIn(forecast.recommended_action, [
+            'READY_TO_BUY', 'READY_TO_SELL', 'MONITORING', 'WAIT_FOR_PULLBACK', 'BREAKOUT_PENDING'
+        ])
+        # indicators_json lưu mode SCALP/SWING từ nến (không random)
+        import json
+        ind = json.loads(forecast.indicators_json or '{}')
+        self.assertIn(ind.get('mode'), ['SCALP', 'SWING'])
+        self.assertIn('candles', ind)
 
     def test_plan_generator_creates_valid_plan(self):
         """Kiểm tra AutoPlanGenerator tính toán đúng tỷ lệ R:R và Lot size an toàn."""
