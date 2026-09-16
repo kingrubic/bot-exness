@@ -98,7 +98,7 @@ function setUiPointerBusy(on) {
 }
 
 document.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('.btn-action-icon, button.btn-outline-danger, #tbody-positions, #tbody-plans, #tbody-wallets, #modal-quick-trade')) {
+    if (e.target.closest('.btn-action-icon, button.btn-outline-danger, #tbody-positions, #bot-think-board, #tbody-wallets, #modal-quick-trade')) {
         setUiPointerBusy(true);
     }
 });
@@ -671,8 +671,12 @@ function handleLiveTicksData(data) {
     }
 
     // 3. Update Active Positions (patch in-place so close buttons stay clickable)
-    if (data.positions) {
-        renderOverviewPositions(data.positions);
+    try {
+        if (data.positions) {
+            renderOverviewPositions(data.positions);
+        }
+    } catch (e) {
+        console.error('renderOverviewPositions', e);
     }
 
     // 4. Update Wallets if on Wallets Page or Dashboard
@@ -683,14 +687,35 @@ function handleLiveTicksData(data) {
         syncActiveWalletScope(data);
     }
 
-    if (data.plans) {
-        const sig = (data.plans || []).map(p =>
-            [p.id, p.status, p.direction, p.entry_price, p.created_at].join(':')
-        ).join('|');
-        if (sig !== lastPlansSig) {
-            lastPlansSig = sig;
-            renderOverviewPlans(data.plans);
+    try {
+        if (data.forecasts || data.plans) {
+        const fcSig = (data.forecasts || []).map(f => {
+            const ind = f.indicators || {};
+            const s = ind.short_term || {};
+            const l = ind.long_term || {};
+            return [
+                f.symbol, f.trend_bias, f.recommended_action, f.confidence_score, f.updated_at,
+                s.bias, s.action, s.confidence, l.bias, l.action, l.confidence,
+                ind.macd_hist, ind.rsi
+            ].join(':');
+        }).join('|');
+            const plSig = (data.plans || []).map(p =>
+                [p.id, p.status, p.direction, p.entry_price, p.calculated_lot, p.updated_at || p.created_at].join(':')
+            ).join('|');
+            const posSig = (data.positions || []).map(p =>
+                [p.ticket, p.symbol, p.position_type, p.floating_pnl].join(':')
+            ).join('|');
+            const sig = fcSig + '||' + plSig + '||' + posSig;
+            if (sig !== lastPlansSig) {
+                lastPlansSig = sig;
+                renderBotThinkBoard(data.forecasts || [], data.plans || [], data.timestamp, data.positions || []);
+            } else {
+                const clock = document.getElementById('bot-think-clock');
+                if (clock && data.timestamp) clock.textContent = 'Cập nhật ' + data.timestamp;
+            }
         }
+    } catch (e) {
+        console.error('renderBotThinkBoard', e);
     }
 
     if (Array.isArray(data.history)) {
@@ -718,18 +743,25 @@ async function refreshOverviewDeepData() {
         const current = list.find(w => w.is_active) || list[0];
 
         if (!current) {
-            renderOverviewPlans([]);
+            renderBotThinkBoard([], [], '');
             rawOverviewHistory = [];
             filterOverviewHistory(false);
+            try { renderOverviewPositions([]); } catch (e) {}
             return;
         }
 
-        const detailRes = await fetch(`/api/wallets/${current.id}/`);
+        const [detailRes, liveRes] = await Promise.all([
+            fetch(`/api/wallets/${current.id}/`),
+            fetch('/api/live-ticks/'),
+        ]);
         const detail = await detailRes.json();
+        let live = {};
+        try { live = await liveRes.json(); } catch (_) { live = {}; }
         const plans = (detail.plans || []).map(pl => ({...pl, wallet_name: current.name, wallet_id: current.id}));
         const history = (detail.history || []).map(h => ({...h, wallet_name: current.name, wallet_id: current.id}));
+        const forecasts = live.forecasts || cachedOverviewForecasts || [];
 
-        renderOverviewPlans(plans);
+        renderBotThinkBoard(forecasts, plans, live.timestamp || '', live.positions || []);
         rawOverviewHistory = history;
         currentReportScope = String(current.id);
         syncActiveWalletScope({ wallets: list, overview: { active_wallet_id: current.id, active_wallet_name: current.name } });
@@ -749,16 +781,6 @@ let cachedOverviewHistory = [];
 function changeOverviewPosPage(page) {
     currentOverviewPosPage = page;
     renderOverviewPositions(cachedOverviewPositions);
-}
-
-function changeOverviewPlansPage(page) {
-    currentOverviewPlansPage = page;
-    renderOverviewPlans(cachedOverviewPlans);
-}
-
-function changeOverviewHistPage(page) {
-    currentOverviewHistPage = page;
-    renderOverviewHistory(cachedOverviewHistory);
 }
 
 function updatePositionsTotals(positions) {
@@ -876,79 +898,241 @@ function patchOverviewPositionRows(paged) {
     });
 }
 
-function renderOverviewPlans(plans) {
+function changeOverviewPlansPage(page) {
+    currentOverviewPlansPage = page;
+    renderBotThinkBoard(cachedOverviewForecasts, cachedOverviewPlans);
+}
+
+let cachedOverviewForecasts = [];
+
+function _escHtml(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function _fmtInd(v, digits) {
+    if (v === null || v === undefined || v === '') return '—';
+    const n = Number(v);
+    if (Number.isNaN(n)) return String(v);
+    return n.toFixed(digits == null ? 2 : digits);
+}
+
+function _actionLabel(action) {
+    const a = String(action || '').toUpperCase();
+    if (a === 'READY_TO_BUY') return 'Sẵn sàng BUY';
+    if (a === 'READY_TO_SELL') return 'Sẵn sàng SELL';
+    if (a === 'WAIT_FOR_PULLBACK') return 'Chờ hồi';
+    if (a === 'BREAKOUT_PENDING') return 'Chờ phá vỡ';
+    if (a === 'MONITORING') return 'Đang theo dõi';
+    return a || '—';
+}
+
+function _biasText(bias) {
+    const b = String(bias || '').toUpperCase();
+    if (b === 'BULLISH') return 'TĂNG';
+    if (b === 'BEARISH') return 'GIẢM';
+    return 'ĐI NGANG';
+}
+
+function _horizonDir(h) {
+    if (!h) return '—';
+    if (h.direction) return h.direction;
+    const a = String(h.action || '').toUpperCase();
+    if (a === 'READY_TO_BUY') return 'BUY';
+    if (a === 'READY_TO_SELL') return 'SELL';
+    return 'CHƯA VÀO';
+}
+
+function _waitConditionText(h) {
+    const raw = String((h && (h.trigger || h.structure)) || '').trim();
+    if (!raw) return 'Chưa đủ tín hiệu nến để vào lệnh.';
+    // Bỏ tiền tố dài trùng ý “đang chờ”
+    return raw
+        .replace(/^Xu hướng tăng \(EMA50>EMA200\) nhưng\s*/i, '')
+        .replace(/^Xu hướng gần nhất giảm[^.]*\.\s*/i, '')
+        .trim() || raw;
+}
+
+function _horizonBlock(title, h, isExec, isLongRef) {
+    const bias = String((h && h.bias) || 'SIDEWAY').toUpperCase();
+    const dir = _horizonDir(h);
+    const act = String((h && h.action) || 'MONITORING').toUpperCase();
+    const conf = Math.max(0, Math.min(100, Number((h && h.confidence) || 0)));
+    const ready = act === 'READY_TO_BUY' || act === 'READY_TO_SELL';
+    const waiting = !isLongRef && (act === 'WAIT_FOR_PULLBACK' || act === 'MONITORING' || act === 'BREAKOUT_PENDING');
+    const dirCls = dir === 'BUY' ? 'is-buy' : (dir === 'SELL' ? 'is-sell' : 'is-hold');
+    const biasCls = bias === 'BULLISH' ? 'is-buy' : (bias === 'BEARISH' ? 'is-sell' : '');
+    const cond = _waitConditionText(h);
+    const zone = (h && h.target_zone) || '';
+
+    if (isLongRef) {
+        return `
+        <div class="np-horizon ${bias === 'BULLISH' ? 'hz-bull' : (bias === 'BEARISH' ? 'hz-bear' : 'hz-side')}">
+            <div class="np-hz-top">
+                <strong>${_escHtml(title)}</strong>
+                <span class="np-hz-exec" style="background:#f1f5f9;color:#475569">Tham chiếu</span>
+            </div>
+            <div class="np-hz-row">
+                <div><span>Xu hướng</span><b class="${biasCls}">${_biasText(bias)}</b></div>
+                <div><span>Vùng giá</span><b class="font-monospace" style="font-size:0.9rem">${_escHtml(zone || '—')}</b></div>
+                <div><span>Tin cậy</span><b>${conf.toFixed(0)}%</b></div>
+                <div><span>Ghi chú</span><b style="font-size:0.85rem;font-weight:600;color:#64748b">Không khớp lệnh</b></div>
+            </div>
+            <p class="np-hz-cond">${_escHtml(cond || 'Theo dõi vùng R1/S1 và EMA50/200.')}</p>
+        </div>`;
+    }
+
+    const statusText = ready ? ('Sắp ' + dir) : 'Đang chờ điều kiện';
+    return `
+    <div class="np-horizon ${bias === 'BULLISH' ? 'hz-bull' : (bias === 'BEARISH' ? 'hz-bear' : 'hz-side')}${isExec ? ' hz-exec' : ''}">
+        <div class="np-hz-top">
+            <strong>${_escHtml(title)}</strong>
+            ${isExec ? '<span class="np-hz-exec">Bot vào lệnh theo khung này</span>' : ''}
+        </div>
+        <div class="np-hz-row">
+            <div><span>Xu hướng</span><b class="${biasCls}">${_biasText(bias)}</b></div>
+            <div><span>Lệnh tiếp theo</span><b class="${dirCls}">${_escHtml(ready ? dir : 'CHƯA VÀO')}</b></div>
+            <div><span>Tin cậy</span><b>${conf.toFixed(0)}%</b></div>
+            <div><span>Trạng thái</span><b class="${waiting ? 'is-hold' : dirCls}">${_escHtml(statusText)}</b></div>
+        </div>
+        ${waiting ? `
+        <div class="np-hz-wait">
+            <div class="np-hz-wait-label"><i class="fa-solid fa-hourglass-half me-1"></i>Đang chờ điều kiện:</div>
+            <p class="np-hz-wait-text">${_escHtml(cond)}</p>
+        </div>` : `
+        <p class="np-hz-cond">${_escHtml(cond)}</p>
+        <p class="np-hz-ready">Còn slot → MARKET ${dir} ngay</p>`}
+    </div>`;
+}
+
+/** Render board: ngắn hạn + dài hạn (có thể lệch nhau). */
+function renderBotThinkBoard(forecasts, plans, timestamp, positions) {
+    cachedOverviewForecasts = forecasts || [];
     cachedOverviewPlans = plans || [];
-    const tbody = document.getElementById('tbody-plans');
-    if (!tbody) return;
-    if (uiPointerBusy && tbody.querySelector('[data-action="delete-plan"]')) return;
+    const openPositions = positions || cachedOverviewPositions || [];
+    const board = document.getElementById('bot-think-board');
+    if (!board) return;
 
-    if (cachedOverviewPlans.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="12" class="text-center py-4 text-muted"><i class="fa-solid fa-brain text-warning me-2"></i> Chưa có kế hoạch AI nào được khởi tạo</td></tr>`;
-        tbody.dataset.sig = '';
-        renderPaginationComponent('pagination-overview-plans', 0, 1, ADMIN_PAGE_SIZE, 'changeOverviewPlansPage');
+    const clock = document.getElementById('bot-think-clock');
+    if (clock) {
+        clock.textContent = timestamp
+            ? ('Cập nhật ' + timestamp)
+            : ('Cập nhật ' + new Date().toLocaleTimeString('vi-VN', { hour12: false }));
+    }
+
+    const planBySym = {};
+    (cachedOverviewPlans || []).forEach(p => {
+        if (!planBySym[p.symbol]) planBySym[p.symbol] = p;
+    });
+    const posBySym = {};
+    openPositions.forEach(p => {
+        if (!posBySym[p.symbol]) posBySym[p.symbol] = [];
+        posBySym[p.symbol].push(p);
+    });
+
+    const list = cachedOverviewForecasts.length
+        ? cachedOverviewForecasts
+        : Object.keys(planBySym).map(sym => ({
+            symbol: sym,
+            timeframe: planBySym[sym].timeframe,
+            trend_bias: planBySym[sym].direction === 'SELL' ? 'BEARISH' : 'BULLISH',
+            recommended_action: planBySym[sym].direction === 'SELL' ? 'READY_TO_SELL' : 'READY_TO_BUY',
+            confidence_score: 0,
+            analysis_rationale: planBySym[sym].rationale || '',
+            trigger_condition: '',
+            smc_structure: '',
+            indicators: {},
+            updated_at: planBySym[sym].updated_at || planBySym[sym].created_at || '',
+        }));
+
+    if (!list.length) {
+        board.innerHTML = `
+            <div class="bot-think-empty text-muted text-center py-4">
+                <i class="fa-solid fa-route text-primary me-2"></i>
+                Chưa có kế hoạch tiếp theo — bật bot / đợi chu kỳ phân tích.
+            </div>`;
         return;
     }
 
-    const totalPages = Math.ceil(cachedOverviewPlans.length / ADMIN_PAGE_SIZE) || 1;
-    if (currentOverviewPlansPage > totalPages) currentOverviewPlansPage = totalPages;
-    if (currentOverviewPlansPage < 1) currentOverviewPlansPage = 1;
+    const prevSig = board.dataset.sig || '';
+    const nextSig = list.map(f => {
+        const ind = f.indicators || {};
+        const s = ind.short_term || {};
+        const l = ind.long_term || {};
+        return [f.symbol, s.bias, s.action, s.confidence, l.bias, l.action, l.confidence, f.updated_at].join(':');
+    }).join('|');
 
-    const startIndex = (currentOverviewPlansPage - 1) * ADMIN_PAGE_SIZE;
-    const paged = cachedOverviewPlans.slice(startIndex, startIndex + ADMIN_PAGE_SIZE);
-    const sig = currentOverviewPlansPage + '|' + paged.map(pl => String(pl.id)).join(',');
-    const rowsReady = paged.every(pl => document.getElementById('plan-row-' + pl.id));
-    if (rowsReady && tbody.dataset.sig === sig) {
-        paged.forEach(pl => {
-            const row = document.getElementById('plan-row-' + pl.id);
-            if (!row) return;
-            const priceEl = row.querySelector('.plan-entry');
-            if (priceEl) {
-                const shown = 'MARKET ' + pl.direction + ' @ $' + pl.entry_price;
-                if (priceEl.dataset.val !== shown) {
-                    priceEl.dataset.val = shown;
-                    priceEl.textContent = shown;
-                }
-            }
-            const statusEl = row.querySelector('.plan-status');
-            if (statusEl && statusEl.dataset.st !== pl.status) {
-                statusEl.dataset.st = pl.status;
-                statusEl.textContent = pl.status_display || pl.status;
-            }
-        });
-        return;
-    }
-    tbody.dataset.sig = sig;
+    board.innerHTML = list.map(fc => {
+        const ind = fc.indicators || {};
+        const mode = (ind.mode || 'SCALP').toUpperCase();
+        const shortH = ind.short_term || {
+            bias: ind.struct_bias || fc.trend_bias,
+            action: mode === 'SCALP' ? fc.recommended_action : 'MONITORING',
+            confidence: mode === 'SCALP' ? fc.confidence_score : 0,
+            trigger: fc.trigger_condition,
+            structure: fc.smc_structure,
+        };
+        const longH = ind.long_term || {
+            bias: ind.long_bias || fc.trend_bias,
+            action: mode === 'SWING' ? fc.recommended_action : 'MONITORING',
+            confidence: mode === 'SWING' ? fc.confidence_score : 0,
+            trigger: fc.trigger_condition,
+            structure: fc.smc_structure,
+        };
+        const execShort = true;
+        const r1 = ind.r1 != null ? ind.r1 : fc.next_resistance_1;
+        const s1 = ind.s1 != null ? ind.s1 : fc.next_support_1;
+        const symPos = posBySym[fc.symbol] || [];
+        const plan = planBySym[fc.symbol];
+        const cardKey = [fc.symbol, shortH.bias, shortH.action, longH.bias, longH.action, fc.updated_at].join(':');
+        const changed = prevSig && prevSig.length && !prevSig.split('|').includes(cardKey);
 
-    tbody.innerHTML = paged.map(pl => {
-        let statusBadge = 'bg-secondary';
-        if (pl.status === 'PENDING_TRIGGER') statusBadge = 'bg-warning text-dark';
-        else if (pl.status === 'EXECUTING') statusBadge = 'bg-success';
-        else if (pl.status === 'COMPLETED') statusBadge = 'bg-info';
-        else if (pl.status === 'CANCELLED') statusBadge = 'bg-danger';
+        const techBits = [
+            ind.rsi != null ? ('RSI ' + _fmtInd(ind.rsi, 1)) : null,
+            ind.macd_hist != null ? ('MACD ' + _fmtInd(ind.macd_hist, 4)) : null,
+            ind.ema9 != null ? ('EMA9 ' + _fmtInd(ind.ema9, 2)) : null,
+            ind.ema21 != null ? ('EMA21 ' + _fmtInd(ind.ema21, 2)) : null,
+            ind.ema50 != null ? ('EMA50 ' + _fmtInd(ind.ema50, 2)) : null,
+            ind.ema200 != null ? ('EMA200 ' + _fmtInd(ind.ema200, 2)) : null,
+            ind.atr != null ? ('ATR ' + _fmtInd(ind.atr, 2)) : null,
+            r1 != null ? ('R1 ' + _fmtInd(r1, 2)) : null,
+            s1 != null ? ('S1 ' + _fmtInd(s1, 2)) : null,
+        ].filter(Boolean);
+
+        const holdNote = symPos.length
+            ? `<div class="np-hold-note">Đang mở ${symPos.length}× ${symPos.map(p => p.position_type).join('/')} · PnL ${(symPos.reduce((s, p) => s + (Number(p.floating_pnl) || 0), 0)).toFixed(2)}</div>`
+            : '';
+        const planNote = plan
+            ? `<div class="np-plan-note">Plan chờ #${plan.id}: MARKET <b class="${plan.direction === 'SELL' ? 'is-sell' : 'is-buy'}">${plan.direction}</b> @ $${_fmtInd(plan.entry_price, 2)} · ${plan.calculated_lot} Lot</div>`
+            : '';
 
         return `
-            <tr id="plan-row-${pl.id}">
-                <td class="font-monospace font-weight-bold">#${pl.id}</td>
-                <td><small class="font-weight-bold">${pl.wallet_name}</small></td>
-                <td><b>${pl.symbol}</b> <small class="text-muted">[${pl.timeframe}]</small></td>
-                <td><span class="badge ${pl.direction === 'BUY' ? 'badge-buy' : 'badge-sell'}">${pl.direction}</span></td>
-                <td class="font-weight-bold text-primary font-monospace plan-entry" data-val="MARKET ${pl.direction} @ $${pl.entry_price}">MARKET ${pl.direction} @ $${pl.entry_price}</td>
-                <td class="text-muted small">—</td>
-                <td class="text-success small">Khi lãi ≥ min TP</td>
-                <td><span class="badge bg-light text-dark border font-monospace">MARKET</span></td>
-                <td><b>${pl.calculated_lot} Lot</b></td>
-                <td><span class="badge ${statusBadge} plan-status" data-st="${pl.status}">${pl.status_display || pl.status}</span></td>
-                <td><small class="text-muted text-truncate d-inline-block" style="max-width: 230px;" title="${pl.rationale}">${pl.rationale}</small></td>
-                <td class="text-end text-nowrap">
-                    <button type="button" class="btn btn-sm btn-outline-danger btn-action-icon" data-action="delete-plan" data-id="${pl.id}" title="Xóa Kế Hoạch Này">
-                        <i class="fa-solid fa-trash"></i>
-                    </button>
-                </td>
-            </tr>
-        `;
+        <article class="np-card ${changed ? 'think-flash' : ''}" data-symbol="${_escHtml(fc.symbol)}">
+            <div class="np-top">
+                <div class="np-id">
+                    <strong class="np-pair">${_escHtml(fc.symbol)}</strong>
+                    <span class="np-pill">${_escHtml(fc.timeframe || ind.analysis_tf || 'M5')}</span>
+                </div>
+                <time class="np-time">${_escHtml(fc.updated_at || '—')}</time>
+            </div>
+            <div class="np-dual">
+                ${_horizonBlock('Ngắn hạn · vào lệnh', shortH, true, false)}
+                ${_horizonBlock('Dài hạn · xu hướng / vùng giá', longH, false, true)}
+            </div>
+            <div class="np-tech">${techBits.map(t => `<span>${_escHtml(t)}</span>`).join('')}</div>
+            ${planNote}
+            ${holdNote}
+        </article>`;
     }).join('');
 
-    renderPaginationComponent('pagination-overview-plans', cachedOverviewPlans.length, currentOverviewPlansPage, ADMIN_PAGE_SIZE, 'changeOverviewPlansPage');
+    board.dataset.sig = nextSig;
+}
+
+function renderOverviewPlans(plans) {
+    renderBotThinkBoard(cachedOverviewForecasts, plans || [], '', cachedOverviewPositions);
 }
 
 async function clearAllTradingPlansPrompt() {

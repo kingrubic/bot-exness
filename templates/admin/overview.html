@@ -286,50 +286,22 @@
     <div id="pagination-overview-positions"></div>
 </div>
 
-<!-- AI TRADING PLANS -->
+<!-- BOT THINKING / NEXT ENTRY PLAN -->
 <div class="au-card-clean mb-4">
     <div class="card-title-wrap">
-        <div class="card-title-left d-flex align-items-center gap-2">
-            <i class="fa-solid fa-brain text-warning fs-5"></i>
-            <h5 class="font-weight-bold text-dark mb-0">Kế Hoạch Đang Chờ Vào Lệnh</h5>
-            <span class="badge bg-secondary rounded-pill ms-1" title="Chỉ plan PENDING — không phải hàng đợi sau khi đóng lệnh">AI</span>
-        </div>
-        <div class="card-title-right d-flex align-items-center gap-2">
-            <button class="btn btn-outline-danger btn-sm rounded-pill px-3 shadow-xs font-weight-bold" onclick="clearAllTradingPlansPrompt()">
-                <i class="fa-solid fa-trash-can me-1"></i> Xóa Tất Cả Kế Hoạch
-            </button>
+        <div class="card-title-left d-flex align-items-center gap-2 flex-wrap">
+            <i class="fa-solid fa-route text-primary fs-5"></i>
+            <h5 class="font-weight-bold text-dark mb-0">Kế Hoạch Lệnh Tiếp Theo</h5>
+            <span class="badge bg-success rounded-pill" id="badge-bot-think-live"><span class="realtime-live-dot"></span> LIVE</span>
+            <span class="small text-muted" id="bot-think-clock">—</span>
         </div>
     </div>
-
-    <div class="table-responsive">
-        <table class="table-clean" id="table-ai-plans">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Ví</th>
-                    <th>Cặp / Khung</th>
-                    <th>Hướng</th>
-                    <th>Khớp lệnh</th>
-                    <th>Stop Loss</th>
-                    <th>Chốt lời</th>
-                    <th>Tỷ lệ R:R</th>
-                    <th>Lot Dự Tính</th>
-                    <th>Trạng Thái Plan</th>
-                    <th>Lý Do Phân Tích Kỹ Thuật</th>
-                    <th class="text-end">Thao Tác</th>
-                </tr>
-            </thead>
-            <tbody id="tbody-plans">
-                <tr>
-                    <td colspan="12" class="text-center py-4 text-muted">
-                        <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải kế hoạch AI...
-                    </td>
-                </tr>
-            </tbody>
-        </table>
+    <p class="px-3 mb-2 small text-muted"><strong>Ngắn hạn</strong> = hướng vào lệnh (làm mới liên tục). <strong>Dài hạn</strong> = xu hướng + vùng giá tham chiếu.</p>
+    <div id="bot-think-board" class="bot-think-board px-3 pb-3">
+        <div class="bot-think-empty text-muted text-center py-4">
+            <i class="fa-solid fa-spinner fa-spin me-2"></i> Đang tải kế hoạch lệnh tiếp theo...
+        </div>
     </div>
-    <!-- PAGINATION 20/PAGE -->
-    <div id="pagination-overview-plans"></div>
 </div>
 
 <!-- CLOSED HISTORY FULL WIDTH WITH FILTERS (BỎ NHẬT KÝ KHỎI TỔNG QUAN) -->

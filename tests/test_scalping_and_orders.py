@@ -1927,24 +1927,75 @@ def test_analyzer_uses_real_candle_indicators_not_random():
 
 def test_scalp_htf_bearish_blocks_buy():
     from apps.analysis.analyzer import TechnicalAnalyzer
+    # Struct giảm → không BUY; vào SELL theo ngắn hạn
     blocked = TechnicalAnalyzer._decide_scalp(
         price=101, atr=1, rsi=55, ema9=101.5, ema21=100,
         bb_mid=100, bb_up=102, bb_lo=98, macd_h=0.05,
         r1=102, r2=103, s1=98, s2=97, timeframe='M5', digits=2,
-        data_ok=True, htf_bias='BEARISH',
+        data_ok=True, htf_bias='BEARISH', struct_bias='BEARISH',
     )
-    assert blocked['action'] == 'MONITORING'
-    assert 'BUY' not in blocked['action']
+    assert blocked['action'] != 'READY_TO_BUY'
     assert blocked['trend_bias'] == 'BEARISH'
 
     sell = TechnicalAnalyzer._decide_scalp(
-        price=98.0, atr=1, rsi=40, ema9=98.2, ema21=100.0,
+        price=99.5, atr=1, rsi=40, ema9=99.8, ema21=100.5,
         bb_mid=100, bb_up=102, bb_lo=97, macd_h=-0.05,
         r1=102, r2=103, s1=97, s2=96, timeframe='M5', digits=2,
-        data_ok=True, htf_bias='BEARISH',
+        data_ok=True, htf_bias='BEARISH', struct_bias='BEARISH',
     )
     assert sell['action'] == 'READY_TO_SELL'
     assert sell['trend_bias'] == 'BEARISH'
+
+
+def test_scalp_struct_bearish_blocks_buy_even_if_htf_sideway():
+    """Impulse giảm ngắn hạn → SELL / không BUY."""
+    from apps.analysis.analyzer import TechnicalAnalyzer
+    out = TechnicalAnalyzer._decide_scalp(
+        price=101, atr=1, rsi=55, ema9=101.5, ema21=100,
+        bb_mid=100, bb_up=102, bb_lo=98, macd_h=0.05,
+        r1=102, r2=103, s1=98, s2=97, timeframe='M5', digits=2,
+        data_ok=True, htf_bias='SIDEWAY', struct_bias='BEARISH',
+    )
+    assert out['action'] != 'READY_TO_BUY'
+    assert out['trend_bias'] == 'BEARISH'
+
+
+def test_scalp_near_resistance_blocks_buy():
+    """Giá sát R1 quá gần (<0.25×ATR) → WAIT; còn lại vẫn BUY theo ngắn hạn."""
+    from apps.analysis.analyzer import TechnicalAnalyzer
+    out = TechnicalAnalyzer._decide_scalp(
+        price=101.9, atr=1.0, rsi=58, ema9=101.5, ema21=100.2,
+        bb_mid=100.5, bb_up=103, bb_lo=98, macd_h=0.08,
+        r1=102.0, r2=103.5, s1=98.0, s2=97.0, timeframe='M5', digits=2,
+        data_ok=True, htf_bias='BULLISH', struct_bias='BULLISH',
+    )
+    assert out['action'] == 'WAIT_FOR_PULLBACK'
+
+
+def test_scalp_near_support_blocks_sell():
+    from apps.analysis.analyzer import TechnicalAnalyzer
+    out = TechnicalAnalyzer._decide_scalp(
+        price=98.3, atr=1.0, rsi=40, ema9=98.5, ema21=100.0,
+        bb_mid=100, bb_up=103, bb_lo=97, macd_h=-0.08,
+        r1=103.0, r2=104.0, s1=98.0, s2=96.5, timeframe='M5', digits=2,
+        data_ok=True, htf_bias='BEARISH', struct_bias='BEARISH',
+    )
+    assert out['action'] == 'WAIT_FOR_PULLBACK'
+
+
+def test_swing_macd_negative_blocks_ready_buy():
+    """Uptrend EMA nhưng MACD âm → WAIT, không READY_TO_BUY (case XAUUSD)."""
+    from apps.analysis.analyzer import TechnicalAnalyzer
+    out = TechnicalAnalyzer._decide_swing(
+        price=4336.18, atr=9.59, rsi=46.7,
+        ema50=4331.74, ema200=4306.73, macd_h=-2.04844,
+        r1=4360.54, r2=4370.0, s1=4322.84, s2=4310.0,
+        timeframe='M15', digits=2, data_ok=True, struct_bias='BULLISH',
+    )
+    assert out['trend_bias'] == 'BULLISH'
+    assert out['action'] == 'WAIT_FOR_PULLBACK'
+    assert 'BUY' not in out['action'] or out['action'] == 'WAIT_FOR_PULLBACK'
+    assert 'MACD' in (out['structure'] + out['trigger'])
 
 
 @pytest.mark.django_db

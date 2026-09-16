@@ -378,7 +378,7 @@ def build_live_ticks_data():
 
     winrate = round((tot_wins / tot_trades) * 100, 1) if tot_trades > 0 else 0.0
 
-    # 4. Plans — chỉ hiện kế hoạch ĐANG CHỜ vào lệnh (không liệt kê EXECUTING = đã mở)
+    # 4. Plans chờ + Forecast suy nghĩ bot (realtime)
     plans = []
     plan_qs = TradingPlan.objects.filter(
         status__in=['PENDING_TRIGGER', 'PENDING', 'ANALYZING']
@@ -407,6 +407,43 @@ def build_live_ticks_data():
             'status': pl.status,
             'status_display': pl.get_status_display(),
             'created_at': format_vn_time(pl.created_at),
+            'updated_at': format_vn_time(pl.updated_at),
+        })
+
+    forecasts = []
+    forecast_symbols = []
+    if current_wallet:
+        forecast_symbols = list(current_wallet.allowed_symbols or [])
+    if not forecast_symbols:
+        forecast_symbols = [s['symbol'] for s in symbols[:6]]
+    for sym_name in forecast_symbols:
+        fc = MarketForecast.objects.filter(symbol=sym_name).order_by('-updated_at').first()
+        if not fc:
+            continue
+        try:
+            ind = fc.indicators if isinstance(fc.indicators, dict) else {}
+        except Exception:
+            ind = {}
+        forecasts.append({
+            'symbol': fc.symbol,
+            'timeframe': fc.timeframe,
+            'trend_bias': fc.trend_bias,
+            'trend_bias_display': fc.get_trend_bias_display(),
+            'confidence_score': float(fc.confidence_score or 0),
+            'current_price': float(fc.current_price or 0),
+            'projected_target_zone': fc.projected_target_zone,
+            'next_resistance_1': float(fc.next_resistance_1 or 0),
+            'next_resistance_2': float(fc.next_resistance_2 or 0),
+            'next_support_1': float(fc.next_support_1 or 0),
+            'next_support_2': float(fc.next_support_2 or 0),
+            'trigger_condition': fc.trigger_condition,
+            'smc_structure': fc.smc_structure,
+            'analysis_rationale': fc.analysis_rationale,
+            'recommended_action': fc.recommended_action,
+            'recommended_action_display': fc.get_recommended_action_display(),
+            'indicators': ind,
+            'updated_at': format_vn_time(fc.updated_at),
+            'updated_at_raw': fc.updated_at.isoformat() if fc.updated_at else '',
         })
 
     # 5. History — chỉ lệnh đóng trong ngày GMT+7 (DB)
@@ -477,6 +514,7 @@ def build_live_ticks_data():
         'positions': positions,
         'wallets': wallets,
         'plans': plans,
+        'forecasts': forecasts,
         'history': history,
         'timestamp': format_vn_time(timezone.now(), '%H:%M:%S')
     }
