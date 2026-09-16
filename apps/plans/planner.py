@@ -334,6 +334,17 @@ class AutoPlanGenerator:
             count += len(drop_ids)
             TradingPlan.objects.filter(pk__in=drop_ids).delete()
 
+        # EXECUTING không còn gắn vị thế mở → xóa (sau batch TP/SL dễ sót)
+        from apps.trading.models import Position
+        linked_plan_ids = set(
+            Position.objects.exclude(plan_id=None).values_list('plan_id', flat=True)
+        )
+        orphan_exec = TradingPlan.objects.filter(status='EXECUTING').exclude(pk__in=linked_plan_ids)
+        n_orphan = orphan_exec.count()
+        if n_orphan:
+            orphan_exec.delete()
+            count += n_orphan
+
         count += cls.purge_pending_if_at_cap()
         return count
 

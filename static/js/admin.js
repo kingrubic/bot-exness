@@ -229,6 +229,86 @@ function initGlobalEventListeners() {
     });
 }
 
+function syncWalletBotToggleButton(ov, wallets) {
+    const btn = document.getElementById('btn-toggle-wallet-bot');
+    if (!btn) return;
+
+    const list = wallets || [];
+    const active = list.find(w => w.is_active) || list.find(w => String(w.id) === String(ov && ov.active_wallet_id));
+    const walletId = (ov && ov.active_wallet_id) || (active && active.id) || btn.dataset.walletId || '';
+    const status = (ov && ov.active_wallet_bot_status)
+        || (active && active.bot_status)
+        || btn.dataset.botStatus
+        || 'STOPPED';
+    const isActive = Boolean(active ? active.is_active : (ov && ov.active_wallet_id));
+    const running = Boolean(
+        ov && typeof ov.active_wallet_bot_running === 'boolean'
+            ? ov.active_wallet_bot_running
+            : (isActive && status === 'RUNNING')
+    );
+
+    btn.dataset.walletId = walletId ? String(walletId) : '';
+    btn.dataset.botStatus = status;
+    btn.disabled = !walletId || !isActive;
+
+    if (running) {
+        btn.className = 'btn btn-warning btn-sm rounded-pill px-3 shadow-xs font-weight-bold text-dark';
+        btn.innerHTML = '<i class="fa-solid fa-pause me-1"></i> Tắt Bot';
+        btn.title = 'Tắt bot: không mở lệnh mới (vị thế đang mở giữ nguyên)';
+    } else {
+        btn.className = 'btn btn-success btn-sm rounded-pill px-3 shadow-xs font-weight-bold';
+        btn.innerHTML = '<i class="fa-solid fa-play me-1"></i> Bật Bot';
+        btn.title = isActive
+            ? 'Bật bot: tự phân tích và mở lệnh khi còn slot'
+            : 'Cần kích hoạt ví trước';
+    }
+}
+
+async function toggleActiveWalletBot() {
+    const btn = document.getElementById('btn-toggle-wallet-bot');
+    if (!btn || btn.disabled) return;
+    const walletId = btn.dataset.walletId;
+    if (!walletId) {
+        if (typeof showToast === 'function') showToast('Chưa có ví đang kích hoạt', 'warning');
+        return;
+    }
+    const currentlyRunning = btn.dataset.botStatus === 'RUNNING';
+    const next = currentlyRunning ? 'STOPPED' : 'RUNNING';
+    const label = currentlyRunning ? 'tắt' : 'bật';
+    if (!window.confirm(`Bạn chắc muốn ${label} bot cho ví đang chạy?\n${currentlyRunning ? 'Bot sẽ không mở lệnh mới; vị thế đang mở vẫn giữ.' : 'Bot sẽ bắt đầu vào lệnh theo phân tích nến.'}`)) {
+        return;
+    }
+    btn.disabled = true;
+    try {
+        const res = await apiFetch(`/api/admin/wallets/${walletId}/bot-toggle/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bot_status: next }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.success === false) {
+            throw new Error(data.error || data.message || `HTTP ${res.status}`);
+        }
+        btn.dataset.botStatus = data.bot_status || next;
+        syncWalletBotToggleButton({
+            active_wallet_id: walletId,
+            active_wallet_bot_status: data.bot_status || next,
+            active_wallet_bot_running: Boolean(data.bot_running),
+        }, lastLiveOverviewData && lastLiveOverviewData.wallets);
+        if (typeof showToast === 'function') {
+            showToast(data.message || (currentlyRunning ? 'Đã tắt bot' : 'Đã bật bot'), 'success');
+        }
+    } catch (e) {
+        if (typeof showToast === 'function') showToast(e.message || 'Lỗi bật/tắt bot', 'danger');
+        else alert(e.message || 'Lỗi bật/tắt bot');
+    } finally {
+        const still = document.getElementById('btn-toggle-wallet-bot');
+        if (still && still.dataset.walletId) still.disabled = false;
+    }
+}
+window.toggleActiveWalletBot = toggleActiveWalletBot;
+window.syncWalletBotToggleButton = syncWalletBotToggleButton;
+
 async function closeAllPositionsPrompt() {
     const nDom = document.querySelectorAll('#tbody-positions tr[id^="pos-row-"]').length;
     const nBadge = parseInt(document.getElementById('badge-open-count')?.innerText || '0', 10) || 0;
@@ -506,6 +586,7 @@ function handleLiveTicksData(data) {
     // 1. Update Top KPIs
     const ov = data.overview;
     if (ov) {
+        syncWalletBotToggleButton(ov, data.wallets);
         const hasWallet = Boolean(ov.active_wallet_id);
         const kpiBal = document.getElementById('kpi-balance');
         if (kpiBal) kpiBal.innerText = hasWallet ? formatMoney(ov.total_balance) : '—';

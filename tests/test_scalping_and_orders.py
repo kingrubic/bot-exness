@@ -1960,3 +1960,48 @@ def test_analyzer_swing_wait_pullback_when_extended():
         assert fc.trend_bias in ('BULLISH', 'BEARISH', 'SIDEWAY')
 
 
+@pytest.mark.django_db
+def test_wallet_bot_toggle_api_stops_and_starts(client):
+    """API bật/tắt bot: STOPPED xóa plan chờ; RUNNING lại được."""
+    wallet = WalletAccount.objects.create(
+        name="Toggle Bot Wallet",
+        account_type="DEMO",
+        mt5_login="",
+        balance_db=Decimal("500.00"),
+        capital=Decimal("500.00"),
+        is_active=True,
+        bot_status="RUNNING",
+        max_open_trades=1,
+        allowed_symbols_json='["XAUUSD"]',
+    )
+    TradingPlan.objects.create(
+        wallet=wallet, symbol="XAUUSD", direction="BUY",
+        entry_price=Decimal("2750.00"), entry_zone_low=Decimal("2750.00"),
+        entry_zone_high=Decimal("2750.00"), rationale="pending",
+        status="PENDING_TRIGGER",
+    )
+    res = client.post(
+        f'/api/admin/wallets/{wallet.id}/bot-toggle/',
+        data='{"bot_status":"STOPPED"}',
+        content_type='application/json',
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body['success'] is True
+    assert body['bot_status'] == 'STOPPED'
+    assert body['bot_running'] is False
+    wallet.refresh_from_db()
+    assert wallet.bot_status == 'STOPPED'
+    assert not TradingPlan.objects.filter(wallet=wallet, status='PENDING_TRIGGER').exists()
+
+    res2 = client.post(
+        f'/api/admin/wallets/{wallet.id}/bot-toggle/',
+        data='{"bot_status":"RUNNING"}',
+        content_type='application/json',
+    )
+    assert res2.status_code == 200
+    assert res2.json()['bot_running'] is True
+    wallet.refresh_from_db()
+    assert wallet.bot_status == 'RUNNING'
+
+

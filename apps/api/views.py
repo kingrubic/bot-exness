@@ -378,10 +378,10 @@ def build_live_ticks_data():
 
     winrate = round((tot_wins / tot_trades) * 100, 1) if tot_trades > 0 else 0.0
 
-    # 4. Plans — tối đa 20
+    # 4. Plans — chỉ hiện kế hoạch ĐANG CHỜ vào lệnh (không liệt kê EXECUTING = đã mở)
     plans = []
     plan_qs = TradingPlan.objects.filter(
-        status__in=['PENDING_TRIGGER', 'PENDING', 'EXECUTING', 'ANALYZING']
+        status__in=['PENDING_TRIGGER', 'PENDING', 'ANALYZING']
     ).select_related('wallet').order_by('-updated_at', '-created_at')
     if current_wallet:
         plan_qs = plan_qs.filter(wallet=current_wallet)
@@ -462,6 +462,14 @@ def build_live_ticks_data():
             'total_wallets_count': len(wallets),
             'active_wallet_id': current_wallet.id if current_wallet else None,
             'active_wallet_name': current_wallet.name if current_wallet else '',
+            'active_wallet_bot_status': (
+                current_wallet.bot_status if current_wallet else None
+            ),
+            'active_wallet_bot_running': bool(
+                current_wallet
+                and current_wallet.is_active
+                and current_wallet.bot_status == 'RUNNING'
+            ),
             'bot_metrics': bot_m['bot'],
             'user_metrics': bot_m['user'],
         },
@@ -703,7 +711,7 @@ def wallet_detail_api(request, wallet_id):
     # 3. Trading Plans of this wallet
     plans_data = []
     for p in w.trading_plans.filter(
-        status__in=['PENDING_TRIGGER', 'PENDING', 'EXECUTING', 'ANALYZING']
+        status__in=['PENDING_TRIGGER', 'PENDING', 'ANALYZING']
     ).order_by('-updated_at', '-created_at')[:20]:
         plans_data.append({
             'id': p.id,
@@ -1012,6 +1020,67 @@ def admin_wallet_test_connection_api(request):
         'success': True,
         'message': msg,
         'account_info': acc_info
+    })
+
+
+@api_view(['POST'])
+def admin_wallet_bot_toggle_api(request, wallet_id):
+    """Bật/tắt bot_status của ví (RUNNING ↔ STOPPED). Giữ is_active và vị thế mở."""
+    try:
+        wallet = WalletAccount.objects.get(pk=wallet_id)
+    except WalletAccount.DoesNotExist:
+        return Response({'error': 'Không tìm thấy ví'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not wallet.is_active:
+        return Response(
+            {'error': 'Ví chưa kích hoạt — hãy kích hoạt ví trước khi bật bot.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    data = request.data if hasattr(request, 'data') else {}
+    want = str(data.get('bot_status') or '').upper().strip()
+    if want not in ('RUNNING', 'STOPPED', 'PAUSED'):
+        # Không gửi body → đảo trạng thái
+        want = 'STOPPED' if wallet.bot_status == 'RUNNING' else 'RUNNING'
+
+    wallet.bot_status = want
+    wallet.save(update_fields=['bot_status'])
+
+    purged = 0
+    if want != 'RUNNING':
+        purged = AutoPlanGenerator.purge_pending_plans(wallet)
+        BotLog.log(
+            level='INFO',
+            category='SYSTEM',
+            message=f"Đã TẮT bot ví '{wallet.name}' ({want}). Xóa {purged} plan chờ. Vị thế mở giữ nguyên.",
+            wallet=wallet,
+        )
+        return Response({
+            'success': True,
+            'message': f"Đã tắt bot — không mở lệnh mới (đã xóa {purged} plan chờ)." if purged else 'Đã tắt bot — không mở lệnh mới.',
+            'wallet_id': wallet.id,
+            'bot_status': wallet.bot_status,
+            'bot_status_display': wallet.get_bot_status_display(),
+            'bot_running': False,
+        })
+
+    BotLog.log(
+        level='INFO',
+        category='SYSTEM',
+        message=f"Đã BẬT bot ví '{wallet.name}' (RUNNING). Bot sẽ lập plan khi còn slot.",
+        wallet=wallet,
+    )
+    try:
+        ExecutionEngine.try_immediate_market_entries()
+    except Exception:
+        pass
+    return Response({
+        'success': True,
+        'message': 'Đã bật bot — sẽ vào lệnh theo phân tích khi còn slot.',
+        'wallet_id': wallet.id,
+        'bot_status': wallet.bot_status,
+        'bot_status_display': wallet.get_bot_status_display(),
+        'bot_running': True,
     })
 
 

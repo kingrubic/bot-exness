@@ -28,6 +28,7 @@ urlpatterns = [
     # Admin APIs
     path('admin/wallets/test-connection/', views.admin_wallet_test_connection_api, name='api_admin_wallet_test_connection'),
     path('admin/wallets/', views.admin_wallet_manage_api, name='api_admin_create_wallet'),
+    path('admin/wallets/<int:wallet_id>/bot-toggle/', views.admin_wallet_bot_toggle_api, name='api_admin_wallet_bot_toggle'),
     path('admin/wallets/<int:wallet_id>/', views.admin_wallet_manage_api, name='api_admin_manage_wallet'),
     path('admin/symbols/', views.admin_symbols_api, name='api_admin_symbols'),
     path('admin/symbols/<int:symbol_id>/', views.admin_symbols_api, name='api_admin_manage_symbol'),

@@ -898,7 +898,15 @@ class ExecutionEngine:
                         if closed_tickets:
                             closed_any = True
                             cls._tag_bot_batch_closes(closed_tickets, 'TP_HIT')
+                            # Xóa plan EXECUTING gắn vị thế vừa đóng (tránh tích đống kế hoạch mồ côi)
+                            plan_ids = list(
+                                Position.objects.filter(ticket__in=closed_tickets)
+                                .exclude(plan_id=None)
+                                .values_list('plan_id', flat=True)
+                            )
                             Position.objects.filter(ticket__in=closed_tickets).delete()
+                            if plan_ids:
+                                TradingPlan.objects.filter(pk__in=plan_ids).delete()
                             if batch.get('error'):
                                 logger.warning("Batch tự chốt dừng sớm: %s (đã đóng %s)", batch['error'], len(closed_tickets))
                             try:
@@ -918,7 +926,14 @@ class ExecutionEngine:
                         if sl_tickets:
                             closed_any = True
                             cls._tag_bot_batch_closes(sl_tickets, 'SL_HIT')
+                            plan_ids = list(
+                                Position.objects.filter(ticket__in=sl_tickets)
+                                .exclude(plan_id=None)
+                                .values_list('plan_id', flat=True)
+                            )
                             Position.objects.filter(ticket__in=sl_tickets).delete()
+                            if plan_ids:
+                                TradingPlan.objects.filter(pk__in=plan_ids).delete()
                             if batch_sl.get('error'):
                                 logger.warning("Batch cắt lỗ dừng sớm: %s (đã đóng %s)", batch_sl['error'], len(sl_tickets))
                             try:

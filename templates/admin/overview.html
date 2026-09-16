@@ -242,6 +242,13 @@
                 <span class="small text-muted font-weight-bold">Tổng lãi/lỗ:</span>
                 <span id="positions-total-pnl" class="font-weight-bold">$0.00</span>
             </div>
+            <button type="button" class="btn {% if current_wallet and current_wallet.is_active and current_wallet.bot_status == 'RUNNING' %}btn-warning text-dark{% else %}btn-success{% endif %} btn-sm rounded-pill px-3 shadow-xs font-weight-bold" id="btn-toggle-wallet-bot" onclick="toggleActiveWalletBot()" {% if not current_wallet or not current_wallet.is_active %}disabled{% endif %} data-wallet-id="{% if current_wallet %}{{ current_wallet.id }}{% endif %}" data-bot-status="{% if current_wallet %}{{ current_wallet.bot_status }}{% else %}STOPPED{% endif %}" title="{% if current_wallet and current_wallet.bot_status == 'RUNNING' %}Tắt bot: không mở lệnh mới{% else %}Bật bot tự động{% endif %}">
+                {% if current_wallet and current_wallet.is_active and current_wallet.bot_status == 'RUNNING' %}
+                <i class="fa-solid fa-pause me-1"></i> Tắt Bot
+                {% else %}
+                <i class="fa-solid fa-play me-1"></i> Bật Bot
+                {% endif %}
+            </button>
             <button type="button" class="btn btn-danger btn-sm rounded-pill px-3 shadow-xs font-weight-bold" id="btn-close-all-positions" onclick="closeAllPositionsPrompt()" disabled>
                 <i class="fa-solid fa-xmark me-1"></i> Đóng toàn bộ
             </button>
@@ -284,7 +291,8 @@
     <div class="card-title-wrap">
         <div class="card-title-left d-flex align-items-center gap-2">
             <i class="fa-solid fa-brain text-warning fs-5"></i>
-            <h5 class="font-weight-bold text-dark mb-0">Kế Hoạch Giao Dịch AI Gần Nhất (AI Trading Plans)</h5>
+            <h5 class="font-weight-bold text-dark mb-0">Kế Hoạch Đang Chờ Vào Lệnh</h5>
+            <span class="badge bg-secondary rounded-pill ms-1" title="Chỉ plan PENDING — không phải hàng đợi sau khi đóng lệnh">AI</span>
         </div>
         <div class="card-title-right d-flex align-items-center gap-2">
             <button class="btn btn-outline-danger btn-sm rounded-pill px-3 shadow-xs font-weight-bold" onclick="clearAllTradingPlansPrompt()">
