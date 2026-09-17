@@ -63,6 +63,32 @@ class ExnessMT5Connector:
         except Exception:
             return False
 
+    @classmethod
+    def session_login_matches(cls, wallet) -> bool:
+        """True khi terminal MT5 đang login đúng số tài khoản của ví (không tự login)."""
+        want = str(getattr(wallet, 'mt5_login', '') or '').replace('#', '').strip()
+        if not want:
+            return False
+        current = ''
+        if MT5_AVAILABLE:
+            try:
+                from apps.trading.mt5_session import MT5NativeSession
+                acc = MT5NativeSession.account()
+                if acc:
+                    current = str(getattr(acc, 'login', '') or '')
+            except Exception:
+                current = ''
+        if not current and cls.is_wine_bridge_open():
+            try:
+                resp = requests.get(f"{BRIDGE_URL}/account_info", timeout=1.5)
+                if resp.status_code == 200 and resp.json().get('success'):
+                    acc = resp.json().get('account_info') or {}
+                    current = str(acc.get('login') or '')
+            except Exception:
+                current = ''
+        cur = current.replace('#', '').strip()
+        return bool(cur) and cur == want
+
     @staticmethod
     def normalize_symbol(raw: str) -> str:
         """Chuẩn hóa mã Exness (XAUUSDm / BTCUSDm) về mã gốc XAUUSD / BTCUSD."""
@@ -88,6 +114,34 @@ class ExnessMT5Connector:
             if cand and cand not in out:
                 out.append(cand)
         return out
+
+    _rates_cache: dict = {}
+
+    @classmethod
+    def copy_rates_from_bridge(cls, symbol: str, timeframe: str = 'M15', count: int = 220) -> list:
+        """Lấy nến lịch sử từ Wine MT5 — không chờ nến mới."""
+        key = f"{symbol}|{timeframe}|{int(count)}"
+        now = time.time()
+        hit = cls._rates_cache.get(key)
+        if hit and (now - hit[0]) < 2.0 and hit[1] and len(hit[1]) >= 30:
+            return hit[1]
+        if not cls.is_wine_bridge_open():
+            return []
+        try:
+            resp = requests.get(
+                f"{BRIDGE_URL}/copy_rates",
+                params={'symbol': symbol, 'timeframe': timeframe or 'M15', 'count': int(count)},
+                timeout=12,
+            )
+            if resp.status_code == 200 and resp.json().get('success'):
+                rows = resp.json().get('rates') or []
+                if len(rows) >= 30:
+                    cls._rates_cache[key] = (now, rows)
+                    return rows
+                return rows
+        except Exception as e:
+            logger.debug("Wine copy_rates %s %s: %s", symbol, timeframe, e)
+        return []
 
     @classmethod
     def ensure_native_initialized(cls) -> bool:

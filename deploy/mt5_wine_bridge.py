@@ -822,6 +822,145 @@ def modify_order_endpoint():
         return jsonify({'success': False, 'error': f'Lỗi bridge dời SL/TP: {e}'}), 500
 
 
+def _tf_const(timeframe: str):
+    key = str(timeframe or 'M15').upper()
+    mapping = {
+        'M1': getattr(mt5, 'TIMEFRAME_M1', 1),
+        'M5': getattr(mt5, 'TIMEFRAME_M5', 5),
+        'M15': getattr(mt5, 'TIMEFRAME_M15', 15),
+        'M30': getattr(mt5, 'TIMEFRAME_M30', 30),
+        'H1': getattr(mt5, 'TIMEFRAME_H1', 16385),
+        'H4': getattr(mt5, 'TIMEFRAME_H4', 16388),
+        'D1': getattr(mt5, 'TIMEFRAME_D1', 16408),
+    }
+    return mapping.get(key, getattr(mt5, 'TIMEFRAME_M15', 15)), key
+
+
+def _symbol_rate_candidates(symbol: str) -> list:
+    raw = str(symbol or '').strip()
+    if not raw:
+        return []
+    base = raw
+    if len(base) > 4 and base.upper().endswith('M'):
+        base = base[:-1]
+    out = []
+    for cand in (raw, base, f'{base}m', f'{base}M', f'{base}_i', f'{base}c'):
+        if cand and cand not in out:
+            out.append(cand)
+    return out
+
+
+def _rates_to_dicts(rates) -> list:
+    rows = []
+    if rates is None:
+        return rows
+    for r in rates:
+        try:
+            close = float(r['close'])
+            if close <= 0:
+                continue
+            rows.append({
+                'time': int(r['time']),
+                'open': float(r['open']),
+                'high': float(r['high']),
+                'low': float(r['low']),
+                'close': close,
+            })
+        except Exception:
+            continue
+    return rows
+
+
+@app.route('/copy_rates', methods=['GET', 'POST'])
+def copy_rates():
+    """Kéo nến lịch sử đã có trên terminal — không chờ nến mới đóng."""
+    ok, msg = ensure_mt5_init()
+    if not ok:
+        return jsonify({'success': False, 'error': msg, 'rates': []}), 400
+
+    data = request.get_json(silent=True) or {}
+    symbol = str(request.args.get('symbol') or data.get('symbol') or '').strip()
+    timeframe = str(request.args.get('timeframe') or data.get('timeframe') or 'M15').strip()
+    try:
+        count = int(request.args.get('count') or data.get('count') or 220)
+    except (TypeError, ValueError):
+        count = 220
+    count = max(50, min(count, 500))
+    if not symbol:
+        return jsonify({'success': False, 'error': 'Thiếu symbol', 'rates': []}), 400
+
+    tf, tf_key = _tf_const(timeframe)
+    minutes = {'M1': 1, 'M5': 5, 'M15': 15, 'M30': 30, 'H1': 60, 'H4': 240, 'D1': 1440}.get(tf_key, 15)
+    days = min(max(int(count * minutes / (60 * 24) * 3) + 7, 7), 120)
+
+    from datetime import datetime as dt_now, timedelta
+    best = []
+    broker = None
+    for cand in _symbol_rate_candidates(symbol):
+        try:
+            mt5.symbol_select(cand, True)
+            info = mt5.symbol_info(cand)
+            if not info:
+                continue
+            broker = cand
+            rates = mt5.copy_rates_from_pos(cand, tf, 0, count)
+            rows = _rates_to_dicts(rates)
+            if len(rows) < min(count, 50):
+                date_to = dt_now.now()
+                date_from = date_to - timedelta(days=days)
+                ranged = mt5.copy_rates_range(cand, tf, date_from, date_to)
+                ranged_rows = _rates_to_dicts(ranged)
+                if len(ranged_rows) > len(rows):
+                    rows = ranged_rows
+            if len(rows) > len(best):
+                best = rows
+            if len(best) >= min(count, 50):
+                break
+        except Exception as e:
+            logger.warning("copy_rates %s %s: %s", cand, tf_key, e)
+
+    if len(best) < min(count, 50) and broker:
+        time.sleep(0.35)
+        try:
+            rates = mt5.copy_rates_from_pos(broker, tf, 0, count)
+            rows = _rates_to_dicts(rates)
+            if len(rows) > len(best):
+                best = rows
+            if len(best) < min(count, 50):
+                date_to = dt_now.now()
+                date_from = date_to - timedelta(days=days)
+                ranged = mt5.copy_rates_range(broker, tf, date_from, date_to)
+                ranged_rows = _rates_to_dicts(ranged)
+                if len(ranged_rows) > len(best):
+                    best = ranged_rows
+        except Exception as e:
+            logger.warning("copy_rates retry %s: %s", broker, e)
+
+    if len(best) < 30:
+        err = None
+        try:
+            err = mt5.last_error()
+        except Exception:
+            pass
+        logger.warning("copy_rates thiếu nến %s %s count=%s got=%s err=%s", symbol, tf_key, count, len(best), err)
+        return jsonify({
+            'success': False,
+            'error': f'Chưa lấy được nến lịch sử {symbol} {tf_key} (có {len(best)})',
+            'rates': best,
+            'symbol': broker or symbol,
+            'timeframe': tf_key,
+        }), 404
+
+    logger.info("copy_rates %s %s → %s nến lịch sử", broker or symbol, tf_key, len(best))
+    return jsonify({
+        'success': True,
+        'rates': best[-count:] if len(best) > count else best,
+        'symbol': broker or symbol,
+        'timeframe': tf_key,
+        'count': min(len(best), count),
+    })
+
+
 if __name__ == '__main__':
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 9999
     logger.info(f"🚀 Khởi động MT5 Wine Bridge Server tại http://0.0.0.0:{port}...")

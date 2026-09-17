@@ -1069,9 +1069,11 @@ def admin_wallet_bot_toggle_api(request, wallet_id):
     except WalletAccount.DoesNotExist:
         return Response({'error': 'Không tìm thấy ví'}, status=status.HTTP_404_NOT_FOUND)
 
+    from apps.trading.mt5_connector import ExnessMT5Connector
+
     if not wallet.is_active:
         return Response(
-            {'error': 'Ví chưa kích hoạt — hãy kích hoạt ví trước khi bật bot.'},
+            {'error': 'Ví chưa kích hoạt / chưa login MT5 — hãy kích hoạt ví trước khi bật bot.'},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1080,6 +1082,19 @@ def admin_wallet_bot_toggle_api(request, wallet_id):
     if want not in ('RUNNING', 'STOPPED', 'PAUSED'):
         # Không gửi body → đảo trạng thái
         want = 'STOPPED' if wallet.bot_status == 'RUNNING' else 'RUNNING'
+
+    if want == 'RUNNING':
+        login = str(wallet.mt5_login or '').replace('#', '').strip()
+        if not login:
+            return Response(
+                {'error': 'Chưa có số tài khoản MT5 — không thể bật bot.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not ExnessMT5Connector.session_login_matches(wallet):
+            return Response(
+                {'error': 'Chưa login MT5 tài khoản này. Hãy kích hoạt ví / đăng nhập MT5 trước khi bật bot.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
     wallet.bot_status = want
     wallet.save(update_fields=['bot_status'])
@@ -1203,7 +1218,7 @@ def admin_wallet_manage_api(request, wallet_id=None):
             trail_sl_enabled=bool(data.get('trail_sl_enabled', False)),
             trail_sl_lock_usd=_optional_usd(data, 'trail_sl_lock_usd') if 'trail_sl_lock_usd' in data else None,
             is_active=want_active,
-            bot_status=data.get('bot_status', 'RUNNING' if want_active else 'STOPPED')
+            bot_status='STOPPED',
         )
         wallet.set_allowed_symbols(symbols)
         wallet.save()
@@ -1220,16 +1235,15 @@ def admin_wallet_manage_api(request, wallet_id=None):
                 pass
 
             AutoPlanGenerator.refresh_plans_for_wallet(wallet)
-            ExecutionEngine.try_immediate_market_entries()
             BotLog.log(
                 level='INFO',
                 category='PLAN',
-                message=f"Đã kích hoạt ví '{wallet.name}': không lập sẵn hàng đợi kế hoạch. Bot chỉ tạo plan khi còn slot lệnh rồi khớp MARKET ngay.",
+                message=f"Đã kích hoạt ví '{wallet.name}': login MT5 thành công. Bot đang DỪNG — bấm Bật Bot khi sẵn sàng.",
                 wallet=wallet
             )
             payload = {
                 'success': True,
-                'message': msg if msg else 'Đã kích hoạt ví: login MT5 thành công',
+                'message': (msg + ' Bot đang dừng — bấm Bật Bot khi sẵn sàng.') if msg else 'Đã kích hoạt ví: login MT5 thành công. Bot đang dừng — bấm Bật Bot khi sẵn sàng.',
                 'wallet_id': wallet.id,
             }
             if not acc_info.get('algo_trading'):
@@ -1251,6 +1265,7 @@ def admin_wallet_manage_api(request, wallet_id=None):
             return Response({'error': 'Không tìm thấy ví'}, status=status.HTTP_404_NOT_FOUND)
 
         data = request.data
+        was_active = bool(wallet.is_active)
         if bool(data.get('is_active', False)) and not wallet.is_active:
             other = _other_active_wallet(exclude_id=wallet.id)
             if other:
@@ -1298,8 +1313,10 @@ def admin_wallet_manage_api(request, wallet_id=None):
         if 'trail_sl_lock_usd' in data:
             wallet.trail_sl_lock_usd = _optional_usd(data, 'trail_sl_lock_usd')
         if 'is_active' in data: wallet.is_active = bool(data['is_active'])
-        if 'bot_status' in data: wallet.bot_status = data['bot_status']
         if not wallet.is_active:
+            wallet.bot_status = 'STOPPED'
+        elif not was_active:
+            # Vừa login / kích hoạt — bot mặc định dừng, user tự bật
             wallet.bot_status = 'STOPPED'
 
         want_active = bool(wallet.is_active)
@@ -1331,16 +1348,19 @@ def admin_wallet_manage_api(request, wallet_id=None):
                 pass
 
             AutoPlanGenerator.refresh_plans_for_wallet(wallet)
-            ExecutionEngine.try_immediate_market_entries()
             BotLog.log(
                 level='INFO',
                 category='PLAN',
-                message=f"Đã làm mới ví '{wallet.name}': xóa plan chờ cũ. Plan mới chỉ sinh khi còn slot lệnh rồi khớp ngay.",
+                message=f"Đã làm mới ví '{wallet.name}'. Bot không tự chạy — bấm Bật Bot khi sẵn sàng." if not was_active else f"Đã cập nhật ví '{wallet.name}'.",
                 wallet=wallet
             )
             payload = {
                 'success': True,
-                'message': activate_msg or 'Cập nhật ví Exness thành công',
+                'message': (
+                    (activate_msg or 'Đã login MT5 thành công') + ' Bot đang dừng — bấm Bật Bot khi sẵn sàng.'
+                    if not was_active else
+                    (activate_msg or 'Cập nhật ví Exness thành công')
+                ),
             }
             if not activate_info.get('algo_trading'):
                 payload.update(_algo_warning_fields())

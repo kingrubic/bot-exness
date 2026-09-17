@@ -1643,6 +1643,7 @@ def test_activate_wallet_calls_login_and_algo():
         w.refresh_from_db()
         assert w.is_active is True
         assert w.leverage == 500
+        assert w.bot_status == 'STOPPED'
 
 
 @pytest.mark.django_db
@@ -2037,11 +2038,14 @@ def test_analyzer_swing_wait_pullback_when_extended():
 
 @pytest.mark.django_db
 def test_wallet_bot_toggle_api_stops_and_starts(client):
-    """API bật/tắt bot: STOPPED xóa plan chờ; RUNNING lại được."""
+    """API bật/tắt bot: STOPPED xóa plan chờ; RUNNING cần MT5 đã login."""
+    from unittest.mock import patch
     wallet = WalletAccount.objects.create(
         name="Toggle Bot Wallet",
         account_type="DEMO",
-        mt5_login="",
+        mt5_login="555111",
+        mt5_password="pw",
+        mt5_server="Exness-MT5Trial17",
         balance_db=Decimal("500.00"),
         capital=Decimal("500.00"),
         is_active=True,
@@ -2069,14 +2073,145 @@ def test_wallet_bot_toggle_api_stops_and_starts(client):
     assert wallet.bot_status == 'STOPPED'
     assert not TradingPlan.objects.filter(wallet=wallet, status='PENDING_TRIGGER').exists()
 
-    res2 = client.post(
+    res_no_mt5 = client.post(
         f'/api/admin/wallets/{wallet.id}/bot-toggle/',
         data='{"bot_status":"RUNNING"}',
         content_type='application/json',
     )
+    assert res_no_mt5.status_code == 400
+    assert 'login' in res_no_mt5.json()['error'].lower()
+    wallet.refresh_from_db()
+    assert wallet.bot_status == 'STOPPED'
+
+    with patch('apps.trading.mt5_connector.ExnessMT5Connector.session_login_matches', return_value=True):
+        res2 = client.post(
+            f'/api/admin/wallets/{wallet.id}/bot-toggle/',
+            data='{"bot_status":"RUNNING"}',
+            content_type='application/json',
+        )
     assert res2.status_code == 200
     assert res2.json()['bot_running'] is True
     wallet.refresh_from_db()
     assert wallet.bot_status == 'RUNNING'
 
+
+@pytest.mark.django_db
+def test_analyzer_uses_wine_history_candles_instead_of_waiting():
+    """Linux/Wine: kéo nến lịch sử sẵn có — không chờ nến mới đóng mới vào lệnh."""
+    from apps.analysis.analyzer import TechnicalAnalyzer
+    from apps.trading.mt5_connector import ExnessMT5Connector
+    from unittest.mock import patch
+    import json
+
+    rates = []
+    px = 2700.0
+    for i in range(80):
+        px += 0.35
+        rates.append({
+            'time': i, 'open': px - 0.1, 'high': px + 0.2, 'low': px - 0.2, 'close': px,
+        })
+
+    ExnessMT5Connector._rates_cache.clear()
+    sym = SymbolConfig.objects.create(
+        symbol="XAUUSD", display_name="Gold", category="METALS",
+        digits=2, current_price=Decimal(str(round(px, 2))),
+        current_bid=Decimal(str(round(px - 0.05, 2))),
+        current_ask=Decimal(str(round(px + 0.05, 2))),
+        timeframe="M5", strategy="SCALPING_BB", is_active=True,
+    )
+    with patch('apps.trading.mt5_session.MT5NativeSession.copy_rates', return_value=[]), \
+         patch.object(ExnessMT5Connector, 'copy_rates_from_bridge', return_value=rates):
+        fc = TechnicalAnalyzer.generate_market_analysis(sym)
+    ind = json.loads(fc.indicators_json)
+    assert ind['data_ok'] is True
+    assert ind['candles'] == 80
+    assert 'Chưa đủ nến' not in (fc.trigger_condition or '')
+
+
+def test_native_copy_rates_uses_history_range_when_pos_empty():
+    """copy_rates_from_pos trống → kéo copy_rates_range (nến trước đó)."""
+    from apps.trading.mt5_session import MT5NativeSession
+    from unittest.mock import patch, MagicMock
+    import numpy as np
+
+    hist = np.array(
+        [(i, 10.0 + i, 10.2 + i, 9.8 + i, 10.1 + i) for i in range(60)],
+        dtype=[('time', 'i8'), ('open', 'f8'), ('high', 'f8'), ('low', 'f8'), ('close', 'f8')],
+    )
+    mock_mt5 = MagicMock()
+    mock_mt5.copy_rates_from_pos.return_value = None
+    mock_mt5.copy_rates_range.return_value = hist
+    with patch('apps.trading.mt5_session.mt5', mock_mt5), \
+         patch('apps.trading.mt5_session.MT5_AVAILABLE', True), \
+         patch.object(MT5NativeSession, 'ensure', return_value=True), \
+         patch.object(MT5NativeSession, 'resolve_symbol', return_value='XAUUSDm'):
+        rows = MT5NativeSession.copy_rates('XAUUSD', 'M5', 80)
+    assert len(rows) == 60
+    assert rows[-1]['close'] == pytest.approx(10.1 + 59)
+    mock_mt5.copy_rates_range.assert_called()
+
+
+@pytest.mark.django_db
+def test_stop_all_autotrade_on_startup():
+    """Khởi động app tắt hết bot RUNNING — user phải bật tay."""
+    a = WalletAccount.objects.create(
+        name='RunA', account_type='DEMO', mt5_login='1', is_active=True, bot_status='RUNNING',
+    )
+    b = WalletAccount.objects.create(
+        name='RunB', account_type='DEMO', mt5_login='2', is_active=False, bot_status='PAUSED',
+    )
+    n = WalletAccount.stop_all_autotrade()
+    assert n >= 2
+    a.refresh_from_db()
+    b.refresh_from_db()
+    assert a.bot_status == 'STOPPED'
+    assert b.bot_status == 'STOPPED'
+
+
+@pytest.mark.django_db
+def test_wallet_can_autotrade_requires_mt5_session():
+    from unittest.mock import patch
+    wallet = WalletAccount.objects.create(
+        name='Live', account_type='DEMO', mt5_login='463974323',
+        is_active=True, bot_status='RUNNING',
+        balance_db=Decimal('100'), capital=Decimal('100'),
+    )
+    with patch('apps.trading.mt5_connector.ExnessMT5Connector.session_login_matches', return_value=False):
+        assert ExecutionEngine.wallet_can_autotrade(wallet) is False
+    with patch('apps.trading.mt5_connector.ExnessMT5Connector.session_login_matches', return_value=True):
+        assert ExecutionEngine.wallet_can_autotrade(wallet) is True
+    wallet.bot_status = 'STOPPED'
+    wallet.save(update_fields=['bot_status'])
+    with patch('apps.trading.mt5_connector.ExnessMT5Connector.session_login_matches', return_value=True):
+        assert ExecutionEngine.wallet_can_autotrade(wallet) is False
+
+
+@pytest.mark.django_db
+def test_stopped_bot_does_not_open_even_if_wallet_active():
+    wallet = WalletAccount.objects.create(
+        name="Stopped Bot",
+        account_type="DEMO",
+        mt5_login="",
+        balance_db=Decimal("2000.00"),
+        capital=Decimal("2000.00"),
+        is_active=True,
+        bot_status="STOPPED",
+        max_open_trades=3,
+        allowed_symbols_json='["XAUUSD"]',
+    )
+    SymbolConfig.objects.create(
+        symbol="XAUUSD", display_name="Gold", category="METALS",
+        digits=2, current_price=Decimal("2750.00"),
+        current_bid=Decimal("2749.80"), current_ask=Decimal("2750.20"),
+        timeframe="M5", strategy="SCALPING_BB", is_active=True,
+    )
+    MarketForecast.objects.create(
+        symbol="XAUUSD", timeframe="M5", trend_bias="BULLISH",
+        confidence_score=80, current_price=Decimal("2750.00"),
+        recommended_action="READY_TO_BUY",
+        trigger_condition="x", analysis_rationale="x",
+    )
+    ExecutionEngine.try_immediate_market_entries()
+    assert Position.objects.filter(wallet=wallet).count() == 0
+    assert not TradingPlan.objects.filter(wallet=wallet, status='PENDING_TRIGGER').exists()
 

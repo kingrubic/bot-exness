@@ -37,7 +37,7 @@ class ExecutionEngine:
     def trigger_plan_to_position(cls, plan: TradingPlan) -> Position:
         """Kích hoạt Trading Plan (Hỗ trợ Live MT5 cho ví Real và Sandbox Engine cho ví Demo)."""
         wallet = plan.wallet
-        if not wallet or not wallet.is_active:
+        if not wallet or not cls.wallet_can_autotrade(wallet):
             AutoPlanGenerator.discard_plan(plan)
             return None
         if not AutoPlanGenerator.wallet_has_capital(wallet):
@@ -652,12 +652,27 @@ class ExecutionEngine:
         return True, True, f"Mở thêm lệnh lướt sóng {forecast_dir} {sym_name} ({total_open_count + 1}/{max_allowed})"
 
     @classmethod
+    def wallet_can_autotrade(cls, wallet: WalletAccount | None) -> bool:
+        """Chỉ vào lệnh mới khi ví active + user đã Bật Bot + (sim hoặc MT5 đã login đúng ví)."""
+        if not wallet or not getattr(wallet, 'is_active', False):
+            return False
+        if str(getattr(wallet, 'bot_status', '') or '') != 'RUNNING':
+            return False
+        login = str(getattr(wallet, 'mt5_login', '') or '').replace('#', '').strip()
+        if not login:
+            return True
+        return ExnessMT5Connector.session_login_matches(wallet)
+
+    @classmethod
     def try_immediate_market_entries(cls, forecasts: dict | None = None):
         """
         Chỉ lập plan khi còn slot lệnh (open < max). Lặp khớp MARKET đến khi đủ max_open_trades.
         Đủ lệnh / không vào được → xóa plan chờ, không treo hàng đợi.
         """
-        active_wallets = list(WalletAccount.objects.filter(is_active=True, bot_status='RUNNING'))
+        active_wallets = [
+            w for w in WalletAccount.objects.filter(is_active=True, bot_status='RUNNING')
+            if cls.wallet_can_autotrade(w)
+        ]
         packed = dict(forecasts or {})
         if not packed:
             needed = set()
@@ -757,10 +772,9 @@ class ExecutionEngine:
     @classmethod
     def refill_plans_after_close(cls, wallet: WalletAccount | None):
         """Sau khi đóng lệnh: nếu bot RUNNING và còn slot thì lập plan mới theo phân tích hiện tại rồi khớp ngay."""
-        if not wallet or not getattr(wallet, 'is_active', False):
-            return
-        if str(getattr(wallet, 'bot_status', '') or '') != 'RUNNING':
-            AutoPlanGenerator.purge_pending_plans(wallet)
+        if not wallet or not cls.wallet_can_autotrade(wallet):
+            if wallet:
+                AutoPlanGenerator.purge_pending_plans(wallet)
             return
         if cls.count_open_positions(wallet) >= cls.get_max_allowed_positions_for_wallet(wallet):
             AutoPlanGenerator.purge_pending_plans(wallet)
@@ -1489,7 +1503,10 @@ class ExecutionEngine:
             cls.sync_symbol_prices_from_mt5()
 
             # Step 2: Generate technical forecasts for symbols required by active wallets
-            active_wallets = list(WalletAccount.objects.filter(is_active=True, bot_status='RUNNING'))
+            active_wallets = [
+                w for w in WalletAccount.objects.filter(is_active=True, bot_status='RUNNING')
+                if cls.wallet_can_autotrade(w)
+            ]
             needed_symbols = set()
             for w in active_wallets:
                 needed_symbols.update(w.allowed_symbols)

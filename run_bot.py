@@ -79,6 +79,9 @@ def main():
     else:
         apply_default_active_symbols()
 
+    stopped = WalletAccount.stop_all_autotrade()
+    print(f"🛑 Bot mặc định DỪNG khi khởi động (user tự bật). Đã tắt auto-trade trên {stopped} ví.")
+
     # 2. Open Exness MetaTrader 5 (required for live prices / orders)
     print("🔌 Đang kiểm tra ứng dụng Exness MetaTrader 5...")
     from apps.trading.mt5_launcher import MT5Launcher

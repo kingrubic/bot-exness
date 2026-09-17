@@ -259,8 +259,8 @@ function syncWalletBotToggleButton(ov, wallets) {
         btn.className = 'btn btn-success btn-sm rounded-pill px-3 shadow-xs font-weight-bold';
         btn.innerHTML = '<i class="fa-solid fa-play me-1"></i> Bật Bot';
         btn.title = isActive
-            ? 'Bật bot: tự phân tích và mở lệnh khi còn slot'
-            : 'Cần kích hoạt ví trước';
+            ? 'Bật bot: chỉ khi MT5 đã login ví này. Bot không tự chạy sau login / khi start app.'
+            : 'Cần kích hoạt ví (login MT5) trước';
     }
 }
 
@@ -1777,7 +1777,7 @@ async function openAddWalletModal() {
     if (document.getElementById('wallet-trail-sl-enabled')) document.getElementById('wallet-trail-sl-enabled').checked = false;
     if (document.getElementById('wallet-trail-sl-lock')) document.getElementById('wallet-trail-sl-lock').value = '';
     syncTrailSlLockInput();
-    if (document.getElementById('wallet-bot-status')) document.getElementById('wallet-bot-status').value = 'RUNNING';
+    if (document.getElementById('wallet-bot-status')) document.getElementById('wallet-bot-status').value = 'STOPPED';
     if (document.getElementById('wallet-is-active')) document.getElementById('wallet-is-active').checked = true;
 
     // Default to XAUUSD + BTCUSD + ETHUSD
@@ -1823,7 +1823,7 @@ async function openEditWalletModal(id) {
     if (document.getElementById('wallet-trail-sl-enabled')) document.getElementById('wallet-trail-sl-enabled').checked = !!w.trail_sl_enabled;
     if (document.getElementById('wallet-trail-sl-lock')) document.getElementById('wallet-trail-sl-lock').value = w.trail_sl_lock_usd ? Number(w.trail_sl_lock_usd).toFixed(2) : '';
     syncTrailSlLockInput();
-    if (document.getElementById('wallet-bot-status')) document.getElementById('wallet-bot-status').value = w.bot_status || 'RUNNING';
+    if (document.getElementById('wallet-bot-status')) document.getElementById('wallet-bot-status').value = w.bot_status || 'STOPPED';
     if (document.getElementById('wallet-is-active')) document.getElementById('wallet-is-active').checked = w.is_active;
 
     const allowed = w.allowed_symbols || [];
@@ -2022,7 +2022,7 @@ async function saveWallet(e) {
         trail_sl_enabled: !!document.getElementById('wallet-trail-sl-enabled')?.checked,
         trail_sl_lock_usd: (document.getElementById('wallet-trail-sl-lock')?.value || '').trim() === '' ? null : (parseFloat(document.getElementById('wallet-trail-sl-lock').value) || null),
         allowed_symbols: selectedSymbols,
-        bot_status: document.getElementById('wallet-bot-status').value,
+        bot_status: document.getElementById('wallet-bot-status')?.value || 'STOPPED',
         is_active: wantActive
     };
     if (capitalVal !== null) payload.capital = capitalVal;

@@ -255,13 +255,26 @@ class TechnicalAnalyzer:
 
     @staticmethod
     def _load_rates(symbol: str, timeframe: str, count: int = 220):
+        """Lấy nến lịch sử đã có trên MT5 (native hoặc Wine). Không ngồi chờ nến mới đóng."""
+        rates = None
         try:
             from apps.trading.mt5_session import MT5NativeSession
             rates = MT5NativeSession.copy_rates(symbol, timeframe or 'M15', count)
             if rates and len(rates) >= 30:
                 return rates
         except Exception as e:
-            logger.debug("copy_rates %s %s: %s", symbol, timeframe, e)
+            logger.debug("copy_rates native %s %s: %s", symbol, timeframe, e)
+        try:
+            from apps.trading.mt5_connector import ExnessMT5Connector
+            wine_rates = ExnessMT5Connector.copy_rates_from_bridge(symbol, timeframe or 'M15', count)
+            if wine_rates and len(wine_rates) >= 30:
+                return wine_rates
+            if wine_rates and (not rates or len(wine_rates) > len(rates)):
+                rates = wine_rates
+        except Exception as e:
+            logger.debug("copy_rates wine %s %s: %s", symbol, timeframe, e)
+        if rates and len(rates) >= 30:
+            return rates
         return None
 
     @staticmethod

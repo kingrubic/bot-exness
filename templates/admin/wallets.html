@@ -187,16 +187,16 @@
                                 <div class="col-sm-6">
                                     <label class="form-label font-weight-bold small text-secondary mb-1">Trạng Thái Bot</label>
                                     <select class="form-select" id="wallet-bot-status" name="bot_status">
-                                        <option value="RUNNING">Đang hoạt động (Auto Trade)</option>
+                                        <option value="STOPPED" selected>Đã dừng (mặc định sau login)</option>
                                         <option value="PAUSED">Tạm dừng</option>
-                                        <option value="STOPPED">Đã dừng</option>
+                                        <option value="RUNNING">Đang hoạt động (Auto Trade)</option>
                                     </select>
                                     <label class="modern-switch d-inline-flex align-items-center mt-2 mb-0">
                                         <input type="checkbox" id="wallet-is-active" name="is_active" checked>
                                         <span class="modern-switch-slider"></span>
                                         <span class="modern-switch-label ms-2 small font-weight-bold">Kích hoạt tài khoản</span>
                                     </label>
-                                    <div class="form-text">Bật = login MT5 tài khoản này. Tắt ví kia trước nếu đang active.</div>
+                                    <div class="form-text">Bật = login MT5. Bot vẫn DỪNG sau login — bấm Bật Bot trên Overview khi sẵn sàng.</div>
                                 </div>
                             </div>
                         </div>

@@ -109,7 +109,8 @@ class ExnessAutoTradeTestCase(TestCase):
              patch('apps.trading.mt5_connector.ExnessMT5Connector.sync_history_from_mt5', return_value=True), \
              patch('apps.trading.mt5_connector.ExnessMT5Connector.sync_account_info', return_value=True), \
              patch('apps.trading.mt5_connector.ExnessMT5Connector.sync_positions', return_value=True), \
-             patch('apps.trading.mt5_connector.ExnessMT5Connector.close_order', return_value=(True, 'closed', {})):
+             patch('apps.trading.mt5_connector.ExnessMT5Connector.close_order', return_value=(True, 'closed', {})), \
+             patch('apps.trading.mt5_connector.ExnessMT5Connector.session_login_matches', return_value=True):
             position = ExecutionEngine.trigger_plan_to_position(plan)
             self.assertIsNotNone(position)
             self.assertEqual(position.wallet, self.wallet)
@@ -284,5 +285,6 @@ class ExnessAutoTradeTestCase(TestCase):
             self.assertEqual(created_wallet.account_type, 'REAL')
             self.assertEqual(created_wallet.capital, Decimal('7500.50'))
             self.assertEqual(created_wallet.balance, Decimal('7500.50'))
+            self.assertEqual(created_wallet.bot_status, 'STOPPED')
 
 

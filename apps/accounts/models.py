@@ -70,7 +70,7 @@ class WalletAccount(models.Model):
     
     # Execution & Status
     is_active = models.BooleanField(default=True, verbose_name="Kích Hoạt")
-    bot_status = models.CharField(max_length=20, choices=BOT_STATUSES, default='RUNNING', verbose_name="Trạng Thái Bot")
+    bot_status = models.CharField(max_length=20, choices=BOT_STATUSES, default='STOPPED', verbose_name="Trạng Thái Bot")
     
     created_at = models.DateTimeField(default=timezone.now, verbose_name="Ngày Tạo")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Cập Nhật Lần Cuối")
@@ -136,6 +136,18 @@ class WalletAccount(models.Model):
             except Exception:
                 pass
         return keep
+
+    @classmethod
+    def stop_all_autotrade(cls) -> int:
+        """Khởi động app: mọi ví về STOPPED — user tự bật bot, không tự chạy."""
+        n = cls.objects.exclude(bot_status='STOPPED').update(bot_status='STOPPED')
+        try:
+            from apps.plans.planner import AutoPlanGenerator
+            for w in cls.objects.all():
+                AutoPlanGenerator.purge_pending_plans(w)
+        except Exception:
+            pass
+        return n
 
     @property
     def initial_balance(self):

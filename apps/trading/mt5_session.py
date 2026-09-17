@@ -388,17 +388,78 @@ class MT5NativeSession:
                 return rows[0]
             return None
 
+    @staticmethod
+    def _rates_lookback_days(timeframe: str, count: int) -> int:
+        minutes = {'M1': 1, 'M5': 5, 'M15': 15, 'M30': 30, 'H1': 60, 'H4': 240, 'D1': 1440}.get(
+            str(timeframe or 'M15').upper(), 15
+        )
+        days = int(max(int(count), 80) * minutes / (60 * 24) * 3) + 7
+        return min(max(days, 7), 120)
+
+    @staticmethod
+    def rates_as_dicts(rates) -> list:
+        out = []
+        if rates is None:
+            return out
+        for r in rates:
+            try:
+                if isinstance(r, dict):
+                    o, h, l, c = r.get('open'), r.get('high'), r.get('low'), r.get('close')
+                    t = int(r.get('time') or 0)
+                else:
+                    o, h, l, c = r['open'], r['high'], r['low'], r['close']
+                    try:
+                        t = int(r['time'])
+                    except Exception:
+                        t = 0
+                if float(c) <= 0:
+                    continue
+                out.append({
+                    'time': t,
+                    'open': float(o),
+                    'high': float(h),
+                    'low': float(l),
+                    'close': float(c),
+                })
+            except Exception:
+                continue
+        return out
+
+    @classmethod
+    def _copy_rates_locked(cls, broker: str, tf: int, count: int, timeframe: str):
+        need = max(int(count), 50)
+        mt5.symbol_select(broker, True)
+        rates = mt5.copy_rates_from_pos(broker, tf, 0, need)
+        got = 0 if rates is None else len(rates)
+        if got < min(need, 50):
+            date_to = datetime.now()
+            date_from = date_to - timedelta(days=cls._rates_lookback_days(timeframe, need))
+            ranged = mt5.copy_rates_range(broker, tf, date_from, date_to)
+            if ranged is not None and len(ranged) > got:
+                rates = ranged
+        return rates
+
     @classmethod
     def copy_rates(cls, symbol: str, timeframe: str = 'M15', count: int = 120) -> list:
+        """Kéo nến lịch sử sẵn có trên MT5 (không chờ nến mới đóng)."""
+        if not MT5_AVAILABLE:
+            return []
+        if not cls.ensure():
+            return []
         broker = cls.resolve_symbol(symbol)
         if not broker:
             return []
-        tf = TIMEFRAME_MAP.get(str(timeframe).upper(), 15)
+        tf_key = str(timeframe or 'M15').upper()
+        tf = TIMEFRAME_MAP.get(tf_key, 15)
+        need = max(int(count), 50)
         with _LOCK:
-            rates = mt5.copy_rates_from_pos(broker, tf, 0, int(count))
-        if rates is None:
-            return []
-        return list(rates)
+            rates = cls._copy_rates_locked(broker, tf, need, tf_key)
+            got = 0 if rates is None else len(rates)
+        if got < min(need, 50):
+            time.sleep(0.25)
+            with _LOCK:
+                rates = cls._copy_rates_locked(broker, tf, need, tf_key)
+        return cls.rates_as_dicts(rates)
 
     @classmethod
     def history_deals(cls, date_from: datetime, date_to: datetime | None = None):
