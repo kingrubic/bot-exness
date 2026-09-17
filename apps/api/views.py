@@ -114,6 +114,48 @@ def _mt5_today_for_wallets(wallets):
     return snap, login
 
 
+def _serialize_close_result(ticket, *, symbol='', position_type='', lot_size=0, pnl=0, close_reason=''):
+    pnl_f = round(float(pnl or 0), 2)
+    return {
+        'ticket': str(ticket),
+        'symbol': symbol or '',
+        'position_type': position_type or '',
+        'lot_size': float(lot_size or 0),
+        'pnl': pnl_f,
+        'is_win': pnl_f > 0,
+        'close_reason': close_reason or '',
+        'close_reason_display': _history_reason_display(close_reason),
+    }
+
+
+def _snapshot_open_close_result(pos):
+    gross = float(getattr(pos, 'floating_pnl', 0) or 0)
+    comm = float(getattr(pos, 'commission', 0) or 0)
+    swap = float(getattr(pos, 'swap', 0) or 0)
+    return _serialize_close_result(
+        pos.ticket,
+        symbol=pos.symbol,
+        position_type=pos.position_type,
+        lot_size=pos.lot_size,
+        pnl=gross + comm + swap,
+        close_reason='MANUAL_CLOSE',
+    )
+
+
+def _close_result_for_ticket(ticket, fallback=None):
+    h = TradeHistory.objects.filter(ticket=str(ticket)).order_by('-id').first()
+    if not h:
+        return fallback
+    return _serialize_close_result(
+        h.ticket,
+        symbol=h.symbol,
+        position_type=h.position_type,
+        lot_size=h.lot_size,
+        pnl=h.pnl,
+        close_reason=h.close_reason,
+    )
+
+
 def _history_reason_display(code):
     return {
         'TP_HIT': 'Chạm Take Profit (TP Hit)',
@@ -851,9 +893,14 @@ def close_position_api(request, position_id):
         pos = Position.objects.filter(ticket=ticket).first()
     if pos is None:
         return Response({'success': False, 'error': 'Không tìm thấy vị thế từ MT5'}, status=status.HTTP_404_NOT_FOUND)
+    snap = _snapshot_open_close_result(pos)
     ok, msg = ExecutionEngine.close_position(pos, reason='MANUAL_CLOSE')
     if ok:
-        return Response({'success': True, 'message': msg})
+        return Response({
+            'success': True,
+            'message': msg,
+            'close': _close_result_for_ticket(snap['ticket'], snap),
+        })
     return Response({'success': False, 'error': msg}, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -869,12 +916,20 @@ def close_all_positions_api(request, wallet_id=None):
     else:
         wallet = WalletAccount.get_current()
 
+    snaps = [
+        _snapshot_open_close_result(pos)
+        for pos in Position.objects.filter(wallet=wallet)
+    ]
     ok, msg, info = ExecutionEngine.close_all_open(wallet)
+    closes = [_close_result_for_ticket(s['ticket'], s) for s in snaps]
+    net_pnl = round(sum(float(c.get('pnl') or 0) for c in closes), 2) if closes else 0.0
     payload = {
         'success': ok,
         'message': msg,
         'closed': info.get('closed', 0),
         'total': info.get('total', 0),
+        'closes': closes,
+        'net_pnl': net_pnl,
     }
     if info.get('errors'):
         payload['errors'] = info['errors']

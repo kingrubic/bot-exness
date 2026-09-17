@@ -328,7 +328,12 @@ async function closeAllPositionsPrompt() {
         const data = await parseApiJson(res);
         const errs = (data.errors || []).slice(0, 3).join(' | ');
         if (data.success || (data.closed && data.closed > 0)) {
-            showToast(data.message || 'Đã đóng toàn bộ', data.success ? 'success' : 'error');
+            const closes = Array.isArray(data.closes) ? data.closes : [];
+            if (closes.length) {
+                notifyClosedTrades(closes, { force: true });
+            } else {
+                showToast(data.message || 'Đã đóng toàn bộ', data.success ? 'success' : 'error');
+            }
             if (errs) showToast(errs, 'error');
             refreshAllData();
             fetchLiveTicks();
@@ -725,6 +730,7 @@ function handleLiveTicksData(data) {
         if (sig !== lastHistorySig) {
             lastHistorySig = sig;
             rawOverviewHistory = data.history;
+            notifyNewClosedTrades(data.history);
             filterOverviewHistory(false);
         }
     }
@@ -763,6 +769,7 @@ async function refreshOverviewDeepData() {
 
         renderBotThinkBoard(forecasts, plans, live.timestamp || '', live.positions || []);
         rawOverviewHistory = history;
+        notifyNewClosedTrades(history);
         currentReportScope = String(current.id);
         syncActiveWalletScope({ wallets: list, overview: { active_wallet_id: current.id, active_wallet_name: current.name } });
         filterOverviewHistory(false);
@@ -1362,7 +1369,8 @@ async function closeSinglePosition(positionId, ticket) {
         });
         const data = await parseApiJson(res);
         if (data.success) {
-            showToast(data.message, 'success');
+            if (data.close) showCloseResultToast(data.close);
+            else showToast(data.message, 'success');
             refreshAllData();
             fetchLiveTicks();
         } else {
@@ -2483,7 +2491,70 @@ async function submitChangePassword(e) {
 }
 
 /* ==================== TOAST NOTIFICATIONS ==================== */
-function showToast(message, type = 'info') {
+let seenClosedTickets = new Set();
+let closedHistorySeeded = false;
+
+function markClosedTicketSeen(ticket) {
+    if (ticket == null || ticket === '') return;
+    seenClosedTickets.add(String(ticket).replace(/^#/, '').trim());
+}
+
+function showCloseResultToast(close) {
+    if (!close || close.ticket == null) return;
+    markClosedTicketSeen(close.ticket);
+    const pnl = Number(close.pnl || 0);
+    const win = pnl > 0.004;
+    const loss = pnl < -0.004;
+    const type = win ? 'profit' : (loss ? 'loss' : 'info');
+    const pnlTxt = `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USD`;
+    const title = win ? 'Đóng lệnh — LÃI' : (loss ? 'Đóng lệnh — LỖ' : 'Đóng lệnh — HÒA');
+    const reason = close.close_reason_display || close.close_reason || '';
+    const lot = Number(close.lot_size || 0);
+    const lotTxt = Number.isFinite(lot) ? lot.toFixed(2) : '';
+    const esc = (typeof _escHtml === 'function') ? _escHtml : (s => String(s || ''));
+    const msg = `
+        <div class="close-toast-body">
+            <div class="close-toast-title">${esc(title)}</div>
+            <div class="close-toast-meta">#${esc(close.ticket)} · ${esc(close.symbol || '')} ${esc(close.position_type || '')}${lotTxt ? ` ${lotTxt} lot` : ''}</div>
+            <div class="close-toast-pnl">${esc(pnlTxt)}</div>
+            ${reason ? `<div class="close-toast-reason">${esc(reason)}</div>` : ''}
+        </div>`;
+    showToast(msg, type, 7000);
+}
+
+function notifyClosedTrades(rows, opts) {
+    const list = Array.isArray(rows) ? rows.filter(h => h && h.ticket != null) : [];
+    if (!list.length) return;
+    const force = !!(opts && opts.force);
+    const fresh = force
+        ? list
+        : list.filter(h => !seenClosedTickets.has(String(h.ticket).replace(/^#/, '').trim()));
+    fresh.forEach(h => markClosedTicketSeen(h.ticket));
+    const show = fresh.slice(0, 6);
+    show.forEach(h => showCloseResultToast(h));
+    if (fresh.length > 6) {
+        const extra = fresh.slice(6);
+        const net = extra.reduce((s, h) => s + Number(h.pnl || 0), 0);
+        const extraType = net > 0.004 ? 'profit' : (net < -0.004 ? 'loss' : 'info');
+        showToast(
+            `+${extra.length} lệnh đóng nữa · ${net >= 0 ? '+' : ''}${net.toFixed(2)} USD`,
+            extraType,
+            7000,
+        );
+    }
+}
+
+function notifyNewClosedTrades(history) {
+    if (!Array.isArray(history)) return;
+    if (!closedHistorySeeded) {
+        history.forEach(h => { if (h && h.ticket != null) markClosedTicketSeen(h.ticket); });
+        closedHistorySeeded = true;
+        return;
+    }
+    notifyClosedTrades(history, { force: false });
+}
+
+function showToast(message, type = 'info', ttlMs = 4000) {
     const container = document.getElementById('toast-container');
     if (!container) return;
 
@@ -2491,8 +2562,8 @@ function showToast(message, type = 'info') {
     toast.className = `custom-toast ${type}`;
     
     let icon = 'fa-info-circle text-primary';
-    if (type === 'success') icon = 'fa-circle-check text-success';
-    else if (type === 'error') icon = 'fa-circle-exclamation text-danger';
+    if (type === 'success' || type === 'profit') icon = 'fa-circle-check text-success';
+    else if (type === 'error' || type === 'loss') icon = 'fa-circle-exclamation text-danger';
     else if (type === 'warning') icon = 'fa-triangle-exclamation text-warning';
 
     toast.innerHTML = `
@@ -2502,12 +2573,13 @@ function showToast(message, type = 'info') {
     `;
 
     container.appendChild(toast);
+    const ttl = Number(ttlMs) > 0 ? Number(ttlMs) : 4000;
     setTimeout(() => {
         toast.style.opacity = '0';
         toast.style.transform = 'translateX(100%)';
         toast.style.transition = 'all 0.3s ease';
         setTimeout(() => toast.remove(), 300);
-    }, 4000);
+    }, ttl);
 }
 
 /* ==================== VIETNAM REALTIME CLOCK (GMT+7) ==================== */

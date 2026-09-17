@@ -91,6 +91,41 @@ def test_close_position_simulation():
 
 
 @pytest.mark.django_db
+def test_close_position_api_returns_pnl_for_toast():
+    """API đóng lệnh trả PnL để toast góc phải: lãi dương / lỗ âm."""
+    from django.test import Client
+    wallet = WalletAccount.objects.create(
+        name="Toast Wallet", account_type="DEMO", mt5_login="",
+        balance_db=Decimal("1000.00"), capital=Decimal("1000.00"), is_active=True,
+    )
+    pos = Position.objects.create(
+        wallet=wallet, ticket="LOCAL-TOAST-1", symbol="XAUUSD",
+        position_type="BUY", lot_size=0.01,
+        open_price=Decimal("2700"), current_price=Decimal("2705"),
+        floating_pnl=Decimal("5.00"), opened_at=timezone.now(),
+    )
+    res = Client().post(f'/api/positions/{pos.id}/close/')
+    assert res.status_code == 200
+    body = res.json()
+    assert body['success'] is True
+    assert body['close']['ticket'] == 'LOCAL-TOAST-1'
+    assert body['close']['symbol'] == 'XAUUSD'
+    assert float(body['close']['pnl']) == 5.0
+    assert body['close']['is_win'] is True
+
+    pos2 = Position.objects.create(
+        wallet=wallet, ticket="LOCAL-TOAST-2", symbol="XAUUSD",
+        position_type="SELL", lot_size=0.01,
+        open_price=Decimal("2700"), current_price=Decimal("2705"),
+        floating_pnl=Decimal("-3.50"), opened_at=timezone.now(),
+    )
+    res2 = Client().post(f'/api/positions/{pos2.id}/close/')
+    assert res2.status_code == 200
+    assert float(res2.json()['close']['pnl']) == -3.5
+    assert res2.json()['close']['is_win'] is False
+
+
+@pytest.mark.django_db
 def test_manual_close_reason_not_overwritten_as_tp_for_bot_source():
     """Đóng tay / close-all → MANUAL_CLOSE + USER (không ép TP_HIT)."""
     from apps.trading.order_source import remember_close_reason, resolve_close_reason, remember_order_source, classify_order_source
