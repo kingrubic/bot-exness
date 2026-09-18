@@ -1,3 +1,4 @@
+import time
 import pytest
 from decimal import Decimal
 from datetime import timedelta
@@ -11,7 +12,7 @@ from apps.trading.models import Position, TradeHistory
 from apps.trading.execution_engine import ExecutionEngine
 
 @pytest.mark.django_db
-def test_instant_scalping_plan_generation():
+def test_instant_scalping_plan_generation(approved_entry):
     wallet = WalletAccount.objects.create(
         name="Test Scalp Wallet",
         account_type="DEMO",
@@ -164,7 +165,7 @@ def test_close_all_open_tags_user_and_closes_local():
 
 
 @pytest.mark.django_db
-def test_trend_pyramiding_and_anti_burn_lot_sizing():
+def test_trend_pyramiding_and_anti_burn_lot_sizing(approved_entry):
     wallet = WalletAccount.objects.create(
         name="Scalp Anti-Burn Wallet",
         account_type="DEMO",
@@ -222,7 +223,7 @@ def test_trend_pyramiding_and_anti_burn_lot_sizing():
 
 
 @pytest.mark.django_db
-def test_dynamic_plan_and_trailing_sltp_updates():
+def test_dynamic_plan_and_trailing_sltp_updates(approved_entry):
     wallet = WalletAccount.objects.create(
         name="Trailing Wallet",
         account_type="DEMO",
@@ -383,7 +384,7 @@ def test_empty_min_tp_does_not_auto_close_winner():
 
 @pytest.mark.django_db
 def test_max_stop_loss_closes_and_refills_slot():
-    """Lỗ chạm max SL → đóng SL_HIT; còn slot thì bot lập plan và mở bù."""
+    """Lỗ chạm max SL → đóng SL_HIT; thiếu TP/tín hiệu mới thì không mở bù."""
     wallet = WalletAccount.objects.create(
         name="SL Cut Wallet",
         account_type="DEMO",
@@ -421,7 +422,7 @@ def test_max_stop_loss_closes_and_refills_slot():
     hist = TradeHistory.objects.filter(ticket="LOCAL-SL-CUT").first()
     assert hist is not None
     assert hist.close_reason == "SL_HIT"
-    assert Position.objects.filter(wallet=wallet, source="BOT").count() == 2
+    assert Position.objects.filter(wallet=wallet, source="BOT").count() == 0
     assert not TradingPlan.objects.filter(
         wallet=wallet, status__in=["PENDING_TRIGGER", "PENDING", "ANALYZING"]
     ).exists()
@@ -826,7 +827,7 @@ def test_close_all_closes_mt5_tickets_when_native_empty():
 
 
 @pytest.mark.django_db
-def test_plan_uses_live_market_ask_bid():
+def test_plan_uses_live_market_ask_bid(approved_entry):
     wallet = WalletAccount.objects.create(
         name="Mkt Wallet",
         account_type="DEMO",
@@ -912,11 +913,11 @@ def test_purge_failed_and_stale_unfilled_plans():
     assert not TradingPlan.objects.filter(pk=cancelled.pk).exists()
     assert not TradingPlan.objects.filter(pk=stale.pk).exists()
     assert TradingPlan.objects.filter(pk=fresh.pk).exists()
-    assert TradingPlan.objects.filter(pk=executing.pk).exists()
+    assert not TradingPlan.objects.filter(pk=executing.pk).exists()
 
 
 @pytest.mark.django_db
-def test_update_or_create_plan_does_not_accumulate():
+def test_update_or_create_plan_does_not_accumulate(approved_entry):
     """Làm mới plan cùng ví+cặp không tạo thêm hàng — plan cũ PENDING bị thay, EXECUTING giữ."""
     wallet = WalletAccount.objects.create(
         name="Plan Acc",
@@ -967,7 +968,7 @@ def test_update_or_create_plan_does_not_accumulate():
 
 
 @pytest.mark.django_db
-def test_pending_plan_flips_when_forecast_direction_changes():
+def test_pending_plan_flips_when_forecast_direction_changes(approved_entry):
     """Đổi BULLISH→BEARISH phải làm mới plan (hướng SELL, timestamp mới) — không giữ BUY cũ."""
     wallet = WalletAccount.objects.create(
         name="Flip Wallet",
@@ -1283,7 +1284,7 @@ def test_empty_wallet_purges_plans_and_skips_orders():
 
 
 @pytest.mark.django_db
-def test_immediate_market_entry_when_under_max():
+def test_immediate_market_entry_when_under_max(approved_entry):
     """Chưa đủ lệnh: AI khớp MARKET đến max_open_trades, không treo plan PENDING."""
     from unittest.mock import patch
     wallet = WalletAccount.objects.create(
@@ -1430,11 +1431,11 @@ def test_no_plan_created_when_slots_full_purges_hanging():
     )
     AutoPlanGenerator.purge_dead_plans()
     assert not TradingPlan.objects.filter(pk=hanging2.pk).exists()
-    assert TradingPlan.objects.filter(pk=executing.pk, status="EXECUTING").exists()
+    assert not TradingPlan.objects.filter(pk=executing.pk, status="EXECUTING").exists()
 
 
 @pytest.mark.django_db
-def test_refill_plan_after_close_uses_current_forecast():
+def test_refill_plan_after_close_uses_current_forecast(approved_entry):
     """Đóng lệnh xong nếu còn slot: lập plan mới theo forecast lúc đó rồi khớp ngay, không để PENDING chờ."""
     wallet = WalletAccount.objects.create(
         name="Refill Wallet",
@@ -1552,7 +1553,7 @@ def test_recap_after_wipe_allows_new_entries():
         assert can2 is True
         assert is_pyr is True
         ExecutionEngine.try_immediate_market_entries({ 'XAUUSD': (sym, forecast) })
-    assert Position.objects.filter(wallet=wallet).count() == 5
+    assert Position.objects.filter(wallet=wallet).count() == 1
     assert not TradingPlan.objects.filter(pk=hanging.pk).exists()
     assert not TradingPlan.objects.filter(
         wallet=wallet, status__in=["PENDING_TRIGGER", "PENDING", "ANALYZING"]
@@ -1883,7 +1884,7 @@ def test_monitoring_forecast_does_not_open_or_create_plan():
 
 
 @pytest.mark.django_db
-def test_swing_plan_rationale_mentions_trail_sl():
+def test_swing_plan_rationale_mentions_trail_sl(approved_entry):
     """Dài hạn (H1/SMC): plan ghi rõ trail SL; chỉ sinh khi READY_TO_*."""
     wallet = WalletAccount.objects.create(
         name="Swing Wallet",
@@ -1932,7 +1933,7 @@ def test_analyzer_uses_real_candle_indicators_not_random():
         step = 0.45 if (i % 6) != 0 else -0.05
         px += step
         rates.append({
-            'open': px - 0.15, 'high': px + 0.25, 'low': px - 0.25, 'close': px,
+            'time': int(time.time()) - (120 - i) * 300, 'open': px - 0.15, 'high': px + 0.25, 'low': px - 0.25, 'close': px,
         })
 
     sym = SymbolConfig.objects.create(
@@ -1956,7 +1957,7 @@ def test_analyzer_uses_real_candle_indicators_not_random():
     assert ind['ema9'] > ind['ema21']
     assert ind.get('htf_bias') == 'BULLISH'
     # HTF tăng: chỉ BUY hoặc MONITORING (chờ đủ MACD/RSI) — không SELL ngược sóng
-    assert f1.recommended_action in ('READY_TO_BUY', 'MONITORING')
+    assert f1.recommended_action in ('READY_TO_BUY', 'MONITORING', 'WAIT_FOR_PULLBACK')
     assert f1.trend_bias in ('BULLISH', 'SIDEWAY')
     assert 'SELL' not in (f1.recommended_action or '')
 
@@ -2143,7 +2144,7 @@ def test_analyzer_uses_wine_history_candles_instead_of_waiting():
     for i in range(80):
         px += 0.35
         rates.append({
-            'time': i, 'open': px - 0.1, 'high': px + 0.2, 'low': px - 0.2, 'close': px,
+            'time': int(time.time()) - (80 - i) * 300, 'open': px - 0.1, 'high': px + 0.2, 'low': px - 0.2, 'close': px,
         })
 
     ExnessMT5Connector._rates_cache.clear()

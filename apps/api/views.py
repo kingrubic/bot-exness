@@ -1,3 +1,4 @@
+from apps.plans.entry_checks import entry_preview
 import json
 from decimal import Decimal
 from django.http import JsonResponse
@@ -472,6 +473,7 @@ def build_live_ticks_data():
             'trend_bias': fc.trend_bias,
             'trend_bias_display': fc.get_trend_bias_display(),
             'confidence_score': float(fc.confidence_score or 0),
+            'execution': entry_preview(current_wallet, SymbolConfig.objects.filter(symbol=fc.symbol).first(), fc),
             'current_price': float(fc.current_price or 0),
             'projected_target_zone': fc.projected_target_zone,
             'next_resistance_1': float(fc.next_resistance_1 or 0),
@@ -773,6 +775,7 @@ def wallet_detail_api(request, wallet_id):
                 'trend_bias': forecast.trend_bias,
                 'trend_bias_display': forecast.get_trend_bias_display(),
                 'confidence_score': forecast.confidence_score,
+                'execution': entry_preview(w, SymbolConfig.objects.filter(symbol=forecast.symbol).first(), forecast),
                 'current_price': float(forecast.current_price),
                 'projected_target_zone': forecast.projected_target_zone,
                 'next_resistance_1': float(forecast.next_resistance_1),

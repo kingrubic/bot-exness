@@ -995,13 +995,13 @@ function _parseHorizonDetail(h, ready, dir) {
         : (/EMA9\s*<\s*EMA21/i.test(raw) ? 'EMA9 < EMA21' : null);
 
     if (ready && dir && dir !== '—' && dir !== 'CHƯA VÀO') {
-        fields.push({ k: 'Hành động', v: 'MARKET ' + dir, tone: dir === 'BUY' ? 'up' : 'down' });
+        fields.push({ k: 'Tín hiệu', v: dir, tone: dir === 'BUY' ? 'up' : 'down' });
     }
     if (close) fields.push({ k: 'Close', v: close, tone: '' });
     if (emaCross) fields.push({ k: 'EMA', v: emaCross, tone: emaCross.includes('>') ? 'up' : 'down' });
-    if (tp) fields.push({ k: 'TP', v: tp, tone: 'up' });
-    if (sl) fields.push({ k: 'SL', v: sl, tone: 'down' });
-    if (zone && !tp) fields.push({ k: 'Vùng', v: zone, tone: '' });
+    if (tp) fields.push({ k: 'TP tham khảo', v: tp, tone: 'up' });
+    if (sl) fields.push({ k: 'SL tham khảo', v: sl, tone: 'down' });
+    if (zone && !tp) fields.push({ k: 'Vùng tham khảo', v: zone, tone: '' });
     if (ema9) fields.push({ k: 'EMA9', v: ema9, tone: '' });
     if (ema21) fields.push({ k: 'EMA21', v: ema21, tone: '' });
     if (rsi) fields.push({ k: 'RSI', v: rsi, tone: Number(rsi) >= 60 ? 'up' : (Number(rsi) <= 40 ? 'down' : 'mid') });
@@ -1034,7 +1034,7 @@ function _detailPanelHtml(parsed, waiting) {
         </div>` : '';
     if (waiting) {
         // Chỉ hiện câu chờ khi chưa tách được field (tránh text dài trùng grid)
-        const showSummary = summary && (!fields.length || !/Close\s*=|TP[=≈]|EMA9/i.test(summary));
+        const showSummary = Boolean(summary);
         return `
         <div class="np-detail np-detail-wait">
             <div class="np-detail-label"><i class="fa-solid fa-hourglass-half"></i> Đang chờ điều kiện</div>
@@ -1050,7 +1050,7 @@ function _detailPanelHtml(parsed, waiting) {
     </div>`;
 }
 
-function _horizonBlock(title, h, isExec, isLongRef) {
+function _horizonBlock(title, h, isExec, isLongRef, execution) {
     const bias = String((h && h.bias) || 'SIDEWAY').toUpperCase();
     const dir = _horizonDir(h);
     const act = String((h && h.action) || 'MONITORING').toUpperCase();
@@ -1061,6 +1061,16 @@ function _horizonBlock(title, h, isExec, isLongRef) {
     const biasCls = bias === 'BULLISH' ? 'is-buy' : (bias === 'BEARISH' ? 'is-sell' : '');
     const zone = (h && h.target_zone) || '';
     const parsed = _parseHorizonDetail(h, ready, dir);
+    if (isExec && execution && execution.allowed) {
+        parsed.fields.push(
+            { k: 'Entry Ask/Bid dự kiến', v: String(execution.entry_price), tone: '' },
+            { k: 'SL gửi sàn', v: String(execution.stop_loss), tone: 'down' },
+            { k: 'TP ròng USD (bot)', v: String(execution.target_profit_usd), tone: 'up' },
+            { k: 'Giá TP trước phí ≈', v: String(execution.target_price), tone: '' },
+            { k: 'Lời/lỗ trước phí', v: Number(execution.rr_ratio).toFixed(2) + 'R', tone: '' },
+            { k: 'Lot', v: String(execution.calculated_lot), tone: '' },
+        );
+    }
 
     if (isLongRef) {
         const longFields = [];
@@ -1084,14 +1094,14 @@ function _horizonBlock(title, h, isExec, isLongRef) {
             <div class="np-hz-row">
                 <div><span>Xu hướng</span><b class="${biasCls}">${_biasText(bias)}</b></div>
                 <div><span>Vùng giá</span><b class="font-monospace np-hz-zone">${_escHtml(zone || '—')}</b></div>
-                <div><span>Tin cậy</span><b>${conf.toFixed(0)}%</b></div>
+                <div><span title="Điểm quy tắc, không phải xác suất thắng">Điểm tín hiệu</span><b>${conf.toFixed(0)}/100</b></div>
                 <div><span>Ghi chú</span><b class="np-hz-muted">Không khớp lệnh</b></div>
             </div>
             ${_detailPanelHtml(longParsed, true)}
         </div>`;
     }
 
-    const statusText = ready ? ('Sắp ' + dir) : 'Đang chờ điều kiện';
+    const statusText = ready ? (execution && execution.allowed ? 'Đạt kiểm tra rủi ro' : 'Chờ kiểm tra rủi ro') : 'Đang chờ điều kiện';
     return `
     <div class="np-horizon ${bias === 'BULLISH' ? 'hz-bull' : (bias === 'BEARISH' ? 'hz-bear' : 'hz-side')}${isExec ? ' hz-exec' : ''}">
         <div class="np-hz-top">
@@ -1101,11 +1111,11 @@ function _horizonBlock(title, h, isExec, isLongRef) {
         <div class="np-hz-row">
             <div><span>Xu hướng</span><b class="${biasCls}">${_biasText(bias)}</b></div>
             <div><span>Lệnh tiếp theo</span><b class="${dirCls}">${_escHtml(ready ? dir : 'CHƯA VÀO')}</b></div>
-            <div><span>Tin cậy</span><b>${conf.toFixed(0)}%</b></div>
+            <div><span title="Điểm quy tắc, không phải xác suất thắng">Điểm tín hiệu</span><b>${conf.toFixed(0)}/100</b></div>
             <div><span>Trạng thái</span><b class="${waiting ? 'is-hold' : dirCls}">${_escHtml(statusText)}</b></div>
         </div>
         ${_detailPanelHtml(parsed, waiting)}
-        ${ready ? `<p class="np-hz-ready"><i class="fa-solid fa-circle-check me-1"></i>Còn slot → MARKET ${dir} ngay</p>` : ''}
+        ${ready ? `<p class="np-hz-ready">${_escHtml(execution && execution.reason || 'Chưa có kiểm tra rủi ro cho ví; chưa xác nhận vào lệnh.')}</p>` : ''}
     </div>`;
 }
 
@@ -1235,7 +1245,7 @@ function renderBotThinkBoard(forecasts, plans, timestamp, positions) {
                 <time class="np-time">${_escHtml(fc.updated_at || '—')}</time>
             </div>
             <div class="np-dual">
-                ${_horizonBlock('Ngắn hạn · vào lệnh', shortH, true, false)}
+                ${_horizonBlock('Ngắn hạn · vào lệnh', shortH, true, false, fc.execution)}
                 ${_horizonBlock('Dài hạn · xu hướng / vùng giá', longH, false, true)}
             </div>
             ${metricsHtml}

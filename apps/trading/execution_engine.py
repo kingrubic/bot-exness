@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 class ExecutionEngine:
     """
-    Bộ máy thực thi: chỉ chốt lời khi lãi ròng >= min_take_profit_usd.
-    Lệnh lỗ giữ nguyên (gồng) đến khi về lãi.
+    Thực thi sau khi kiểm tra lại tín hiệu, giá và rủi ro.
+    SL bảo vệ gửi cùng lệnh; TP ròng và trailing theo cấu hình ví.
     """
     _last_persist = 0.0
     _close_cooldown: dict[str, float] = {}
@@ -67,13 +67,23 @@ class ExecutionEngine:
 
         # Luôn lấy giá MARKET mới nhất (Ask/Bid) ngay trước khi gửi lệnh
         sym_live = AutoPlanGenerator.refresh_symbol_market_price(plan.symbol)
-        if sym_live:
-            mkt_price = AutoPlanGenerator.market_entry_price(sym_live, plan.direction)
-            if mkt_price > 0:
-                plan.entry_price = mkt_price
-                plan.entry_zone_low = mkt_price
-                plan.entry_zone_high = mkt_price
-                plan.save(update_fields=['entry_price', 'entry_zone_low', 'entry_zone_high'])
+        forecast = MarketForecast.objects.filter(symbol=plan.symbol).order_by('-updated_at', '-id').first()
+        if not sym_live or not forecast or AutoPlanGenerator.direction_from_forecast(forecast) != plan.direction:
+            AutoPlanGenerator.discard_plan(plan)
+            return None
+        wallet.refresh_from_db()
+        if not cls.wallet_can_autotrade(wallet):
+            AutoPlanGenerator.discard_plan(plan)
+            return None
+        fields = AutoPlanGenerator._plan_fields(wallet, sym_live, forecast)
+        if not fields:
+            AutoPlanGenerator.discard_plan(plan)
+            return None
+        for field in ('entry_price', 'entry_zone_low', 'entry_zone_high', 'stop_loss',
+                      'take_profit_1', 'take_profit_2', 'rr_ratio', 'risk_amount_usd',
+                      'calculated_lot', 'rationale'):
+            setattr(plan, field, fields[field])
+        plan.save()
 
         if connected_mt5:
             order_res = connector.send_order(
@@ -81,7 +91,7 @@ class ExecutionEngine:
                 order_type=plan.direction,
                 volume=float(plan.calculated_lot),
                 price=0.0,
-                sl=0.0,
+                sl=float(plan.stop_loss),
                 tp=0.0,
                 comment=f"AI-{plan.symbol}"
             )
@@ -104,9 +114,7 @@ class ExecutionEngine:
             from apps.core.trading_defaults import BOT_MAGIC
             from apps.trading.order_source import remember_order_source
             remember_order_source(ticket, 'BOT', BOT_MAGIC)
-            sl_to_save = cls.compute_stop_loss_price(
-                plan.symbol, plan.direction, exec_price, exec_volume, wallet
-            )
+            sl_to_save = plan.stop_loss
             position = Position.objects.filter(ticket=str(ticket)).first()
             if not position:
                 position = Position.objects.create(
@@ -118,7 +126,7 @@ class ExecutionEngine:
                     lot_size=exec_volume,
                     open_price=exec_price,
                     current_price=exec_price,
-                    stop_loss=None,
+                    stop_loss=sl_to_save,
                     source='BOT',
                     magic=BOT_MAGIC,
                     comment=f"AI-{plan.symbol}",
@@ -128,13 +136,8 @@ class ExecutionEngine:
                 position.plan = plan
                 position.source = 'BOT'
                 position.magic = BOT_MAGIC
-                position.save(update_fields=['plan', 'source', 'magic'])
-            if sl_to_save and cls.push_sl_to_broker(position, wallet, sl_to_save, connector=connector):
                 position.stop_loss = sl_to_save
-                try:
-                    position.save(update_fields=['stop_loss'])
-                except Exception:
-                    pass
+                position.save(update_fields=['plan', 'source', 'magic', 'stop_loss'])
             plan.status = 'EXECUTING'
             plan.triggered_at = timezone.now()
             plan.save()
@@ -705,7 +708,8 @@ class ExecutionEngine:
 
             max_n = cls.get_max_allowed_positions_for_wallet(wallet)
             fail_streak = 0
-            while cls.count_open_positions(wallet) < max_n and fail_streak < 5:
+            attempts_left = max_n
+            while cls.count_open_positions(wallet) < max_n and fail_streak < 5 and attempts_left > 0:
                 opened_any = False
                 blocked_all = True
                 for sym_name in wallet.allowed_symbols:
@@ -736,6 +740,7 @@ class ExecutionEngine:
                         )
                         if not plan or plan.status not in ('PENDING_TRIGGER', 'PENDING'):
                             continue
+                        attempts_left -= 1
                         pos = cls.trigger_plan_to_position(plan)
                         if pos is not None:
                             opened_any = True
@@ -765,7 +770,7 @@ class ExecutionEngine:
                         )
                 if blocked_all:
                     break
-                if not opened_any and fail_streak >= 5:
+                if not opened_any:
                     break
             AutoPlanGenerator.purge_pending_plans(wallet)
 

@@ -163,3 +163,47 @@ exness/
 ├── run_bot.py
 └── README.md
 ```
+
+### Kiểm tra vào lệnh (signal version 2)
+
+Bot chỉ xác nhận BUY/SELL khi EMA9/21, giá đóng nến, RSI và MACD cùng hướng.
+Cấu trúc giá chỉ chặn lệnh ngược hướng, không được ghi đè các điều kiện đó.
+Dữ liệu thiếu timestamp, nến chưa đóng, dữ liệu cũ hoặc chỉ báo không hợp lệ
+không được dùng để mở lệnh. Điểm tín hiệu `/100` là điểm quy tắc, không phải
+xác suất thắng đã được kiểm chứng.
+
+Trước khi lập plan và ngay trước khi gửi lệnh, bot dùng chung kiểm tra với
+bảng kế hoạch của ví:
+
+- Bắt buộc có TP USD và SL USD dương; SL không vượt `% rủi ro mỗi lệnh`.
+- Lời/lỗ tối thiểu 1.5R trước phí; SL cách entry ít nhất 0.5 ATR và đủ qua spread.
+- Spread phải đạt giới hạn cặp và không quá 0.15 ATR; entry không lệch quá 0.5 ATR
+  so với giá tín hiệu; giá hiện tại vẫn phải xác nhận EMA9.
+- Mục tiêu giá trước phí phải còn cách vùng cản ít nhất 0.1 ATR.
+- Tổng lỗ đã thực hiện trong ngày, rủi ro SL của vị thế mở và lệnh mới không
+  vượt ngân sách lỗ ngày. Vị thế thiếu SL chặn mở thêm.
+- Tín hiệu quá 30 giây phải được phân tích lại. Tín hiệu cũ trước version 2 bị chặn.
+
+SL được gửi cùng lệnh MT5; sàn từ chối SL thì bot không thử lại bằng cách bỏ SL.
+TP vẫn đóng theo lợi nhuận ròng USD do bot quản lý, **không phải TP đặt sẵn tại sàn**.
+Giá TP trên dashboard là ước tính trước phí. SL giá cũng không bảo đảm mức lỗ USD
+chính xác khi có phí, gap hoặc trượt giá. Việc quy đổi hiện dùng contract size
+cho sản phẩm tuyến tính định giá USD và tài khoản USD; các cặp không kết thúc
+bằng USD bị chặn cho đến khi có cơ chế quy đổi thích hợp.
+
+Các ngưỡng trên là bộ lọc thận trọng, chưa phải chiến lược được xác nhận lợi nhuận
+qua backtest/forward test. Bản sửa không tự đổi cấu hình ví hay bật bot. Ví chưa
+có cấu hình đáp ứng điều kiện sẽ chờ và hiển thị lý do.
+
+Kiểm thử độc lập với MT5 đang chạy:
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+MT5_BRIDGE_URL=http://127.0.0.1:1 DJANGO_SETTINGS_MODULE=exness_project.settings .venv/bin/python -m pytest tests -q
+node tests/test_dashboard_entry.js
+```
+
+Các test lifecycle cũ dùng fixture `approved_entry` để tách cơ chế lưu/đóng/mở bù
+khỏi chính sách tín hiệu. `tests/test_entry_safety.py` kiểm tra chính sách thật,
+bao gồm tích hợp planner → execution và request SL gửi MT5 (mock broker).

@@ -5,6 +5,7 @@ from apps.accounts.models import WalletAccount
 from apps.symbols.models import SymbolConfig
 from apps.analysis.models import MarketForecast
 from apps.plans.models import TradingPlan
+from apps.plans.entry_checks import entry_preview
 
 # Plan FAILED/CANCELLED xóa ngay. Plan PENDING lệch hướng forecast xóa ngay.
 # Quá STALE_PLAN_SECONDS không được làm mới thì cũng xóa (lướt sóng ngắn hạn).
@@ -107,18 +108,7 @@ class AutoPlanGenerator:
     def direction_from_forecast(forecast) -> str | None:
         """BUY/SELL khi sẵn sàng vào; None khi MONITORING / WAIT_FOR_PULLBACK."""
         action = str(getattr(forecast, 'recommended_action', '') or '').upper()
-        if action in ('MONITORING', 'WAIT_FOR_PULLBACK', 'BREAKOUT_PENDING'):
-            return None
-        if 'SELL' in action:
-            return 'SELL'
-        if 'BUY' in action:
-            return 'BUY'
-        bias = str(getattr(forecast, 'trend_bias', '') or '').upper()
-        if bias == 'BEARISH':
-            return 'SELL'
-        if bias == 'BULLISH':
-            return 'BUY'
-        return None
+        return {'READY_TO_BUY': 'BUY', 'READY_TO_SELL': 'SELL'}.get(action)
 
     @staticmethod
     def generate_plan_for_wallet(wallet: WalletAccount, symbol_config: SymbolConfig, forecast: MarketForecast, is_pyramiding: bool = False) -> TradingPlan:
@@ -155,10 +145,13 @@ class AutoPlanGenerator:
         except Exception:
             pass
 
-        entry_price = AutoPlanGenerator.market_entry_price(symbol_config, direction)
+        check = entry_preview(wallet, symbol_config, forecast)
+        if not check['allowed']:
+            AutoPlanGenerator.purge_pending_plans(wallet, symbol=symbol_config.symbol)
+            return {}
+        entry_price = Decimal(str(check['entry_price']))
 
-        lot = float(wallet.default_lot_size or 0.01)
-        lot = max(0.01, round(lot, 2))
+        lot = check['calculated_lot']
         min_tp = float(wallet.min_take_profit_usd or 0) if wallet.min_take_profit_usd else 0.0
         max_sl = float(wallet.max_stop_loss_usd or 0) if getattr(wallet, 'max_stop_loss_usd', None) else 0.0
         trail_on = bool(getattr(wallet, 'trail_sl_enabled', False))
@@ -188,6 +181,8 @@ class AutoPlanGenerator:
         rationale = (
             f"{tag_name}: MARKET {direction} {lot} Lot (Ask/Bid), phân tích từ nến MT5 thật.{fc_note} "
             f"{tp_txt} {sl_txt}{trail_txt} "
+            f"SL gửi sàn={check['stop_loss']}; mục tiêu giá trước phí≈{check['target_price']}, "
+            f"lợi nhuận/rủi ro trước phí={check['rr_ratio']:.2f}R. "
             f"Tối đa {max_n} lệnh mở trên ví."
         )
 
@@ -199,12 +194,12 @@ class AutoPlanGenerator:
             'entry_price': entry_price,
             'entry_zone_low': entry_price,
             'entry_zone_high': entry_price,
-            'stop_loss': None,
+            'stop_loss': Decimal(str(check['stop_loss'])),
             'take_profit_1': None,
             'take_profit_2': None,
-            'rr_ratio': 1.0,
+            'rr_ratio': check['rr_ratio'],
             'calculated_lot': lot,
-            'risk_amount_usd': Decimal('0.00'),
+            'risk_amount_usd': Decimal(str(check['risk_amount_usd'])),
             'rationale': rationale,
             'status': 'PENDING_TRIGGER',
         }

@@ -740,6 +740,8 @@ class MT5NativeSession:
             return {'success': False, 'error': f'Không tìm thấy cặp {symbol} trên Exness MT5.'}
         spec = cls.spec(broker)
         vol = cls._normalize_volume(volume, spec)
+        if sl and abs(vol - float(volume)) > 1e-9:
+            return {'success': False, 'error': 'Lot không đúng bước khối lượng của sàn; không tự đổi rủi ro.'}
         modes = list(spec.get('filling_modes') or [])
         side = mt5.ORDER_TYPE_BUY if str(order_type).upper() == 'BUY' else mt5.ORDER_TYPE_SELL
         last_err = 'MT5 từ chối lệnh'
@@ -785,21 +787,7 @@ class MT5NativeSession:
                         last_err = res.comment or 'Invalid filling'
                         continue
                     if res.retcode == RET_INVALID_STOPS:
-                        req['sl'] = 0.0
-                        req['tp'] = 0.0
-                        res2 = mt5.order_send(req)
-                        if res2 and res2.retcode in SUCCESS_RETCODES:
-                            return {
-                                'success': True,
-                                'ticket': str(res2.order),
-                                'deal': str(res2.deal),
-                                'price': float(res2.price),
-                                'volume': float(res2.volume),
-                                'comment': res2.comment or comment,
-                                'broker_symbol': broker,
-                            }
-                        last_err = (res2.comment if res2 else res.comment) or 'Invalid stops'
-                        break
+                        return {'success': False, 'error': res.comment or 'Invalid stops; không mở lệnh thiếu SL.'}
                     if res.retcode in RETRY_RETCODES:
                         last_err = res.comment or str(res.retcode)
                         time.sleep(0.05)

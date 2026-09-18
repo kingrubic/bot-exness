@@ -83,6 +83,7 @@ class ExnessAutoTradeTestCase(TestCase):
             self.assertTrue(plan.calculated_lot >= 0.01)
             self.assertIn(plan.status, ['PENDING_TRIGGER', 'EXECUTING'])
 
+    @pytest.mark.usefixtures("approved_entry")
     def test_execution_engine_lifecycle(self):
         """Kiểm tra chu trình kích hoạt lệnh, tính PnL và đóng lệnh."""
         forecast = TechnicalAnalyzer.generate_market_analysis(self.symbol)
@@ -103,6 +104,8 @@ class ExnessAutoTradeTestCase(TestCase):
                 status='PENDING_TRIGGER'
             )
 
+        forecast.recommended_action = "READY_TO_BUY"
+        forecast.save()
         from unittest.mock import patch
         with patch('apps.trading.mt5_connector.ExnessMT5Connector.connect', return_value=True), \
              patch('apps.trading.mt5_connector.ExnessMT5Connector.send_order', return_value={'success': True, 'ticket': '99887766', 'price': 2750.00, 'volume': 0.1}), \
@@ -117,7 +120,9 @@ class ExnessAutoTradeTestCase(TestCase):
             self.assertEqual(position.symbol, 'XAUUSD')
             self.assertTrue(position.lot_size >= 0.01)
 
-            # Test closing position
+            # Test closing position without starting another entry cycle.
+            self.wallet.bot_status = "STOPPED"
+            self.wallet.save(update_fields=["bot_status"])
             ExecutionEngine.close_position(position, close_price=Decimal('2760.00'), reason='TP_HIT')
             self.assertEqual(Position.objects.filter(pk=position.id).count(), 0)
             self.wallet.refresh_from_db()

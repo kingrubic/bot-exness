@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import time
 from decimal import Decimal
 from django.utils import timezone
@@ -47,7 +48,7 @@ def _rsi(closes: list[float], period: int = 14) -> float | None:
         avg_gain = (avg_gain * (period - 1) + gains[i]) / period
         avg_loss = (avg_loss * (period - 1) + losses[i]) / period
     if avg_loss <= 1e-12:
-        return 100.0
+        return 50.0 if avg_gain <= 1e-12 else 100.0
     rs = avg_gain / avg_loss
     return round(100.0 - (100.0 / (1.0 + rs)), 1)
 
@@ -219,6 +220,38 @@ def _sr_entry_gate(price: float, atr: float, r1, r2, s1, s2, want: str) -> tuple
     return True, ''
 
 
+TIMEFRAME_SECONDS = {'M1': 60, 'M5': 300, 'M15': 900, 'M30': 1800,
+                     'H1': 3600, 'H4': 14400, 'D1': 86400}
+
+
+def _closed_rates(rates, timeframe, now=None):
+    """Accept only ordered, valid, completed candles with a recent final close."""
+    duration = TIMEFRAME_SECONDS.get(str(timeframe).upper())
+    if not duration:
+        return []
+    now = time.time() if now is None else now
+    result = []
+    previous = None
+    for row in rates or []:
+        try:
+            stamp = float(row['time'])
+            o, h, l, c = (float(row[k]) for k in ('open', 'high', 'low', 'close'))
+            if not all(math.isfinite(x) for x in (stamp, o, h, l, c)):
+                return []
+            if stamp <= 0 or min(o, h, l, c) <= 0 or l > min(o, c) or h < max(o, c):
+                return []
+            if previous is not None and stamp <= previous:
+                return []
+            previous = stamp
+            if stamp + duration <= now:
+                result.append(row)
+        except (KeyError, TypeError, ValueError):
+            return []
+    if not result or now - float(result[-1]['time']) - duration > duration + 60:
+        return []
+    return result
+
+
 def _extract_ohlc(rates) -> tuple[list[float], list[float], list[float], list[float]]:
     opens, highs, lows, closes = [], [], [], []
     for row in rates:
@@ -255,6 +288,10 @@ class TechnicalAnalyzer:
 
     @staticmethod
     def _load_rates(symbol: str, timeframe: str, count: int = 220):
+        return _closed_rates(TechnicalAnalyzer._load_raw_rates(symbol, timeframe, count + 1), timeframe)
+
+    @staticmethod
+    def _load_raw_rates(symbol: str, timeframe: str, count: int = 220):
         """Lấy nến lịch sử đã có trên MT5 (native hoặc Wine). Không ngồi chờ nến mới đóng."""
         rates = None
         try:
@@ -478,6 +515,8 @@ class TechnicalAnalyzer:
             'short_term': _horizon_pack(short_result, 'NGẮN HẠN'),
             'long_term': _horizon_pack(long_result, 'DÀI HẠN'),
             'exec_horizon': 'short',
+            'signal_version': 2,
+            'closed_candle_time': int(rates[-1]['time']) if rates else None,
         }
 
         for attempt in range(3):
@@ -511,7 +550,7 @@ class TechnicalAnalyzer:
 
     @staticmethod
     def _decide_scalp(**kw) -> dict:
-        """Ngắn hạn: theo impulse/EMA9/21 — vào lệnh liên tục, không bị HTF dài hạn chặn."""
+        """Ngắn hạn: EMA, giá, RSI, MACD phải đồng thuận; cấu trúc và S/R lọc lệnh."""
         price = kw['price']
         atr = kw['atr']
         rsi = kw['rsi']
@@ -535,7 +574,9 @@ class TechnicalAnalyzer:
                 'r1': r1, 'r2': r2, 's1': s1, 's2': s2,
             }
 
-        if not data_ok or ema9 is None or ema21 is None or rsi is None:
+        if (not data_ok or not all(v is not None and math.isfinite(float(v))
+                                  for v in (price, atr, ema9, ema21, rsi, macd_h))
+                or price <= 0 or atr <= 0):
             return _base(
                 'SIDEWAY', 'MONITORING', 40.0,
                 f"{tf} Chờ dữ liệu nến đủ (cần ≥50 nến MT5)",
@@ -549,45 +590,25 @@ class TechnicalAnalyzer:
             f"S1={round(s1, digits) if s1 else '-'}."
         )
 
-        # Tín hiệu ngắn hạn — nới RSI/MACD để trade liên tục theo trend hiện tại
+        # Structure is a veto, never an override of timing confirmation.
         bull = (
-            ema9 > ema21
-            and price >= ema9
-            and 38 <= rsi <= 78
-            and (macd_h is None or macd_h >= -abs(float(atr or 0)) * 0.02)
+            ema9 > ema21 and price >= ema9 and 50 <= rsi <= 70
+            and macd_h > 0 and struct_bias != 'BEARISH'
         )
         bear = (
-            ema9 < ema21
-            and price <= ema9
-            and 22 <= rsi <= 62
-            and (macd_h is None or macd_h <= abs(float(atr or 0)) * 0.02)
+            ema9 < ema21 and price <= ema9 and 30 <= rsi <= 50
+            and macd_h < 0 and struct_bias != 'BULLISH'
         )
-
-        # Impulse rõ: ưu tiên theo cấu trúc gần nhất
-        if struct_bias == 'BEARISH':
-            bull = False
-            if ema9 <= ema21 or price <= ema9 or (macd_h is not None and macd_h <= 0) or rsi < 55:
-                bear = True
-        elif struct_bias == 'BULLISH':
-            bear = False
-            if ema9 >= ema21 or price >= ema9 or (macd_h is not None and macd_h >= 0) or rsi > 45:
-                bull = True
-
-        if not bull and not bear:
-            if bb_lo is not None and price <= bb_lo and rsi < 35 and struct_bias != 'BEARISH':
-                bull = True
-            elif bb_up is not None and price >= bb_up and rsi > 65 and struct_bias != 'BULLISH':
-                bear = True
 
         if bull and not bear:
             ok_sr, sr_note = _sr_entry_gate(price, atr, r1, r2, s1, s2, 'BUY')
             # Chỉ chờ khi sát kháng cự quá mức; còn lại vào luôn
-            if not ok_sr and _near_level(price, r1, atr, 0.25):
+            if not ok_sr:
                 return _base(
                     'BULLISH', 'WAIT_FOR_PULLBACK', 60.0,
                     f"{tf} Sát R1 — chờ nhẹ rồi BUY",
                     f"Đang chờ điều kiện: giá rời kháng cự R1≈{round(r1, digits) if r1 else '-'} "
-                    f"(còn cách <0.25×ATR). {sr_note}",
+                    f"{sr_note}",
                     f"[SHORT {tf}] {sr_note}{note}",
                 )
             conf = 70.0
@@ -604,8 +625,8 @@ class TechnicalAnalyzer:
                 'confidence': round(conf, 1),
                 'structure': f"{tf} SHORT BUY · Struct={struct_bias}",
                 'trigger': (
-                    f"BUY MARKET ngay. Close={round(price, digits)}, EMA9>EMA21. "
-                    f"TP≈{t_hi}, SL dưới S1≈{round(s1, digits) if s1 else '-'}.{note}"
+                    f"Tín hiệu BUY đã xác nhận. Close={round(price, digits)}, EMA9>EMA21. "
+                    f"Vùng giá chỉ tham khảo; lệnh cần qua kiểm tra rủi ro của ví.{note}"
                 ),
                 'rationale': f"[SHORT {tf}] Theo xu hướng ngắn hạn TĂNG.{note}",
                 'target_zone': f"{t_lo} - {t_hi}",
@@ -614,12 +635,12 @@ class TechnicalAnalyzer:
 
         if bear and not bull:
             ok_sr, sr_note = _sr_entry_gate(price, atr, r1, r2, s1, s2, 'SELL')
-            if not ok_sr and _near_level(price, s1, atr, 0.25):
+            if not ok_sr:
                 return _base(
                     'BEARISH', 'WAIT_FOR_PULLBACK', 60.0,
                     f"{tf} Sát S1 — chờ nhẹ rồi SELL",
                     f"Đang chờ điều kiện: giá rời hỗ trợ S1≈{round(s1, digits) if s1 else '-'} "
-                    f"(còn cách <0.25×ATR). {sr_note}",
+                    f"{sr_note}",
                     f"[SHORT {tf}] {sr_note}{note}",
                 )
             conf = 70.0
@@ -636,49 +657,23 @@ class TechnicalAnalyzer:
                 'confidence': round(conf, 1),
                 'structure': f"{tf} SHORT SELL · Struct={struct_bias}",
                 'trigger': (
-                    f"SELL MARKET ngay. Close={round(price, digits)}, EMA9<EMA21. "
-                    f"TP≈{t_lo}, SL trên R1≈{round(r1, digits) if r1 else '-'}.{note}"
+                    f"Tín hiệu SELL đã xác nhận. Close={round(price, digits)}, EMA9<EMA21. "
+                    f"Vùng giá chỉ tham khảo; lệnh cần qua kiểm tra rủi ro của ví.{note}"
                 ),
                 'rationale': f"[SHORT {tf}] Theo xu hướng ngắn hạn GIẢM.{note}",
                 'target_zone': f"{t_lo} - {t_hi}",
                 'r1': r1, 'r2': r2, 's1': s1, 's2': s2,
             }
 
-        # Struct rõ nhưng EMA chưa cắt — vẫn vào theo impulse để bot không đứng im
-        if struct_bias == 'BEARISH':
-            return {
-                'trend_bias': 'BEARISH',
-                'action': 'READY_TO_SELL',
-                'confidence': 66.0,
-                'structure': f"{tf} SHORT SELL theo impulse giảm",
-                'trigger': (
-                    f"SELL MARKET theo cấu trúc ngắn hạn giảm. "
-                    f"TP hướng S1≈{round(s1, digits) if s1 else '-'}, SL trên R1.{note}"
-                ),
-                'rationale': f"[SHORT {tf}] Impulse BEARISH — vào SELL khi còn slot.{note}",
-                'target_zone': f"{round(price - atr * 1.2, digits)} - {round(price - atr * 0.4, digits)}",
-                'r1': r1, 'r2': r2, 's1': s1, 's2': s2,
-            }
-        if struct_bias == 'BULLISH':
-            return {
-                'trend_bias': 'BULLISH',
-                'action': 'READY_TO_BUY',
-                'confidence': 66.0,
-                'structure': f"{tf} SHORT BUY theo impulse tăng",
-                'trigger': (
-                    f"BUY MARKET theo cấu trúc ngắn hạn tăng. "
-                    f"TP hướng R1≈{round(r1, digits) if r1 else '-'}, SL dưới S1.{note}"
-                ),
-                'rationale': f"[SHORT {tf}] Impulse BULLISH — vào BUY khi còn slot.{note}",
-                'target_zone': f"{round(price + atr * 0.4, digits)} - {round(price + atr * 1.2, digits)}",
-                'r1': r1, 'r2': r2, 's1': s1, 's2': s2,
-            }
-
+        bias = struct_bias if struct_bias in ('BULLISH', 'BEARISH') else (
+            'BULLISH' if ema9 > ema21 else 'BEARISH' if ema9 < ema21 else 'SIDEWAY'
+        )
         return _base(
-            'SIDEWAY', 'MONITORING', 52.0,
-            f"{tf} Sideway ngắn hạn",
-            'Đang chờ điều kiện: EMA9 cắt EMA21 hoặc impulse 3–6 nến rõ hướng.',
-            f"[SHORT {tf}] Chưa có hướng ngắn hạn.{note}",
+            bias, 'WAIT_FOR_PULLBACK' if bias != 'SIDEWAY' else 'MONITORING', 52.0,
+            f"{tf} Chờ xác nhận đồng thuận",
+            'Chờ đủ EMA, giá, RSI và MACD cùng hướng trên nến đã đóng; '
+            'cấu trúc giá không được bỏ qua bộ lọc.' + note,
+            f"[SHORT {tf}] Chưa đủ xác nhận, không vào lệnh.{note}",
         )
 
     @staticmethod
@@ -763,7 +758,7 @@ class TechnicalAnalyzer:
                     'structure': f"{tf} Uptrend nhưng MACD_hist={macd_h} < 0 — chờ momentum",
                     'trigger': (
                         f"Xu hướng tăng (EMA50>EMA200) nhưng MACD histogram đang âm. "
-                        f"Không BUY đuổi; chờ MACD ≥ 0 hoặc giá hồi gần S1≈{round(s1, digits) if s1 else '-'} / EMA50≈{round(ema50, digits)}."
+                        f"Chờ MACD ≥ 0 và kiểm tra lại vùng giá, EMA50≈{round(ema50, digits)} / S1≈{round(s1, digits) if s1 else '-'}."
                     ),
                     'rationale': (
                         f"[SWING {tf}] Trend tăng nhưng timing xấu: MACD={macd_h}, RSI={rsi}. "
@@ -837,7 +832,7 @@ class TechnicalAnalyzer:
                     'structure': f"{tf} Downtrend nhưng MACD_hist={macd_h} > 0 — chờ momentum",
                     'trigger': (
                         f"Xu hướng giảm nhưng MACD histogram đang dương. "
-                        f"Không SELL đuổi; chờ MACD ≤ 0 hoặc giá hồi gần R1≈{round(r1, digits) if r1 else '-'}."
+                        f"Chờ MACD ≤ 0 và kiểm tra lại vùng giá, R1≈{round(r1, digits) if r1 else '-'}."
                     ),
                     'rationale': (
                         f"[SWING {tf}] Trend giảm nhưng timing xấu: MACD={macd_h}, RSI={rsi}.{sr_note_tail}"
