@@ -19,12 +19,18 @@ Hệ thống Bot Auto Trade chuyên sâu cho sàn **Exness** (Vàng XAUUSD, Ngo�
 3. **Trang Chi Tiết Ví (`/wallet/<id>/`)**:
    - **Báo cáo riêng của ví**: Số dư, Vốn ròng, PnL hôm nay, Win Rate.
    - **🤖 PHẦN PHÂN TÍCH CỦA BOT & DỰ BÁO CÁC BƯỚC GIÁ TIẾP THEO (Forward Market Analysis)**:
-     - Xu hướng dự báo kế tiếp (`BULLISH` / `BEARISH` / `SIDEWAY`) kèm điểm tin cậy %.
-     - Vùng giá mục tiêu tiếp theo (`Projected Target Zone`).
-     - Mức Cản Kế Tiếp (Next R1, R2) & Mức Hỗ Trợ Kế Tiếp (Next S1, S2).
-     - Điều kiện kích hoạt lệnh tiếp theo (`Trigger Condition`).
-     - Cấu trúc SMC / Price Action & Lý do phân tích chi tiết của Bot.
-     - Snapshot chỉ báo kỹ thuật: RSI, EMA 50/200, MACD Histogram, ATR, Spread.
+     - Xu hướng từng khung M15 / H1 / H4 phân tích độc lập, kèm xu hướng tổng có trọng số; D1 chỉ hiển thị bối cảnh khi đủ nến và không cộng/trừ điểm vào lệnh.
+     - Trạng thái setup (`WAITING` / `WATCHING_BUY` / `WATCHING_SELL` / `BUY_READY` / `SELL_READY`) và điểm đồng thuận đa khung.
+     - Vùng hỗ trợ / kháng cự thật gom từ swing nhiều khung (`{low, high}`), tách riêng khỏi dải ATR (`ATR Upper / Lower Band`).
+     - Kế hoạch entry / SL / TP1 / TP2 / Risk-Reward theo cấu trúc — TP1 có thể chốt một phần, setup hợp lệ khi ít nhất TP2 đạt RR tối thiểu.
+     - Danh sách điều kiện Bot đang chờ (`waiting_for`) và lý do từng khung (`reasons`).
+     - Snapshot chỉ báo kỹ thuật: RSI, EMA 9/21/50/200, MACD Histogram, ATR, Spread.
+
+   Ngưỡng của lớp phân tích này nằm tập trung ở `apps/analysis/config.py`
+   (`MIN_CONFIDENCE`, `MIN_RISK_REWARD`, `ATR_SL_BUFFER`, `SWING_LOOKBACK`,
+   `ZONE_ATR_TOLERANCE`, `BREAKOUT_BUFFER`). Breakout chỉ tính khi **nến đã đóng**
+   vượt biên vùng cộng đệm ATR — râu nến xuyên qua không đủ để vào lệnh, nên
+   `WAIT` là trạng thái bình thường chứ không phải lỗi.
    - **Bảng Kế Hoạch Giao Dịch AI (AI Trading Plans Table)**.
    - **Bảng Vị Thế Đang Mở (Active Positions Table)** kèm nút Đóng Lệnh 1-click.
    - **Bảng Lịch Sử Giao Dịch Đã Đóng (Closed Trades History Table)**.
@@ -175,18 +181,19 @@ xác suất thắng đã được kiểm chứng.
 Trước khi lập plan và ngay trước khi gửi lệnh, bot dùng chung kiểm tra với
 bảng kế hoạch của ví:
 
-- Bắt buộc có TP USD và SL USD dương; SL không vượt `% rủi ro mỗi lệnh`.
+- SL/TP ban đầu lấy từ kế hoạch cấu trúc đa khung; trường TP/SL USD có thể để
+  trống. Nếu đặt Max Cắt Lỗ USD, nó là trần bổ sung cho rủi ro SL cấu trúc.
+- SL cấu trúc không vượt `% rủi ro mỗi lệnh`; TP2 phải đạt tối thiểu 1.5R trước phí.
 - Lời/lỗ tối thiểu 1.5R trước phí; SL cách entry ít nhất 0.5 ATR và đủ qua spread.
 - Spread phải đạt giới hạn cặp và không quá 0.15 ATR; entry không lệch quá 0.5 ATR
   so với giá tín hiệu; giá hiện tại vẫn phải xác nhận EMA9.
-- Mục tiêu giá trước phí phải còn cách vùng cản ít nhất 0.1 ATR.
 - Tổng lỗ đã thực hiện trong ngày, rủi ro SL của vị thế mở và lệnh mới không
   vượt ngân sách lỗ ngày. Vị thế thiếu SL chặn mở thêm.
 - Tín hiệu quá 30 giây phải được phân tích lại. Tín hiệu cũ trước version 2 bị chặn.
 
-SL được gửi cùng lệnh MT5; sàn từ chối SL thì bot không thử lại bằng cách bỏ SL.
-TP vẫn đóng theo lợi nhuận ròng USD do bot quản lý, **không phải TP đặt sẵn tại sàn**.
-Giá TP trên dashboard là ước tính trước phí. SL giá cũng không bảo đảm mức lỗ USD
+SL cấu trúc và TP2 được gửi cùng lệnh MT5; sàn từ chối protective levels thì bot
+không thử lại bằng cách bỏ chúng. Min Chốt Lời USD, nếu có, vẫn cho phép bot chốt
+sớm theo lợi nhuận ròng. SL giá không bảo đảm mức lỗ USD
 chính xác khi có phí, gap hoặc trượt giá. Việc quy đổi hiện dùng contract size
 cho sản phẩm tuyến tính định giá USD và tài khoản USD; các cặp không kết thúc
 bằng USD bị chặn cho đến khi có cơ chế quy đổi thích hợp.

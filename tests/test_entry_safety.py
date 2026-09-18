@@ -69,7 +69,8 @@ def valid_inputs():
     fc = SimpleNamespace(recommended_action='READY_TO_BUY', timeframe='M15',
         updated_at=timezone.now(), indicators={'signal_version': 2, 'data_ok': True,
         'closed_candle_time': int(time.time()) - 900, 'atr': 8.41,
-        'signal_price': 4300, 'ema9': 4299, 'r1': 4335, 's1': 4270})
+        'signal_price': 4300, 'ema9': 4299, 'r1': 4335, 's1': 4270,
+        'stop_loss': 4290.02, 'take_profit_1': 4310.02, 'take_profit_2': 4315.02})
     return wallet, sym, fc
 
 
@@ -79,17 +80,31 @@ def test_preview_uses_ask_and_computes_actual_stop_and_risk():
     assert result['allowed'], result
     assert result['entry_price'] == 4300.02
     assert result['stop_loss'] == 4290.02
+    assert result['take_profit_1'] == 4310.02
+    assert result['take_profit_2'] == 4315.02
+    assert result['target_source'] == 'STRUCTURE_TP2'
     assert result['rr_ratio'] == 1.5
     assert result['risk_amount_usd'] == 10
 
 
-@pytest.mark.parametrize('field,value', [('max_stop_loss_usd', None),
-    ('min_take_profit_usd', 3), ('risk_percent', .5), ('today_pnl', -35),
+@pytest.mark.parametrize('field,value', [('max_stop_loss_usd', 5),
+    ('risk_percent', .5), ('today_pnl', -35),
     ('default_lot_size', float('nan')), ('equity_db', -1), ('currency', 'USC')])
 def test_wallet_risk_rejections(field, value):
     wallet, sym, fc = valid_inputs()
     setattr(wallet, field, value)
     assert not entry_preview(wallet, sym, fc)['allowed']
+
+
+def test_blank_usd_tp_sl_uses_structural_levels():
+    wallet, sym, fc = valid_inputs()
+    wallet.min_take_profit_usd = None
+    wallet.max_stop_loss_usd = None
+    result = entry_preview(wallet, sym, fc)
+    assert result['allowed'], result
+    assert result['stop_loss'] == fc.indicators['stop_loss']
+    assert result['target_price'] == fc.indicators['take_profit_2']
+    assert result['stop_source'] == 'STRUCTURE_ATR'
 
 
 def test_stale_signal_and_spread_and_price_drift_rejected():
@@ -103,10 +118,12 @@ def test_stale_signal_and_spread_and_price_drift_rejected():
     assert not entry_preview(wallet, sym, fc)['allowed']
 
 
-def test_target_beyond_resistance_rejected():
+def test_missing_structural_plan_rejected():
     wallet, sym, fc = valid_inputs()
-    fc.indicators['r1'] = 4310
-    assert not entry_preview(wallet, sym, fc)['allowed']
+    del fc.indicators['stop_loss']
+    result = entry_preview(wallet, sym, fc)
+    assert not result['allowed']
+    assert 'Thiếu dữ liệu' in result['reason']
 
 
 @pytest.mark.parametrize('action', ['BUY', 'SELL', '', 'MONITORING', 'WAIT_FOR_PULLBACK', 'UNKNOWN'])
@@ -133,6 +150,8 @@ def test_plan_execution_sends_protective_stop_and_rechecks_forecast():
     plan = AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, fc)
     assert plan is not None
     assert plan.stop_loss == Decimal('4290.02')
+    assert plan.take_profit_1 == Decimal('4310.02')
+    assert plan.take_profit_2 == Decimal('4315.02')
     connector = MagicMock()
     connector.connect.return_value = True
     connector.send_order.return_value = dict(success=True, ticket='101', price=4300.02, volume=.01)
@@ -141,7 +160,9 @@ def test_plan_execution_sends_protective_stop_and_rechecks_forecast():
         pos = ExecutionEngine.trigger_plan_to_position(plan)
     assert pos is not None
     assert connector.send_order.call_args.kwargs['sl'] == 4290.02
+    assert connector.send_order.call_args.kwargs['tp'] == 4315.02
     assert pos.stop_loss == plan.stop_loss
+    assert pos.take_profit == plan.take_profit_2
     plan2 = AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, fc)
     assert plan2 is not None
     fc.recommended_action = 'WAIT_FOR_PULLBACK'

@@ -485,6 +485,8 @@ def build_live_ticks_data():
             'analysis_rationale': fc.analysis_rationale,
             'recommended_action': fc.recommended_action,
             'recommended_action_display': fc.get_recommended_action_display(),
+            'setup_status': fc.setup_status,
+            'setup_status_display': fc.get_setup_status_display(),
             'indicators': ind,
             'updated_at': format_vn_time(fc.updated_at),
             'updated_at_raw': fc.updated_at.isoformat() if fc.updated_at else '',
@@ -787,6 +789,8 @@ def wallet_detail_api(request, wallet_id):
                 'analysis_rationale': forecast.analysis_rationale,
                 'recommended_action': forecast.recommended_action,
                 'recommended_action_display': forecast.get_recommended_action_display(),
+                'setup_status': forecast.setup_status,
+                'setup_status_display': forecast.get_setup_status_display(),
                 'indicators': forecast.indicators,
                 'updated_at': format_vn_time(forecast.updated_at),
             })

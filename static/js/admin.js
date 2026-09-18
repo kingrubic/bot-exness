@@ -701,6 +701,7 @@ function handleLiveTicksData(data) {
             return [
                 f.symbol, f.trend_bias, f.recommended_action, f.confidence_score, f.updated_at,
                 s.bias, s.action, s.confidence, l.bias, l.action, l.confidence,
+                ind.setup_status, ind.overall_trend, ind.trade_bias,
                 ind.macd_hist, ind.rsi
             ].join(':');
         }).join('|');
@@ -944,6 +945,36 @@ function _biasText(bias) {
     return 'ĐI NGANG';
 }
 
+function _trendArrow(trend) {
+    const t = String(trend || '').toUpperCase();
+    if (t === 'BULLISH') return '↑';
+    if (t === 'BEARISH') return '↓';
+    return '→';
+}
+
+function _trendCls(trend) {
+    const t = String(trend || '').toUpperCase();
+    if (t === 'BULLISH') return 'is-buy';
+    if (t === 'BEARISH') return 'is-sell';
+    return '';
+}
+
+function _setupStatusLabel(status) {
+    const s = String(status || '').toUpperCase();
+    if (s === 'BUY_READY') return 'Đủ điều kiện BUY';
+    if (s === 'SELL_READY') return 'Đủ điều kiện BÁN';
+    if (s === 'WATCHING_BUY') return 'Theo dõi BUY';
+    if (s === 'WATCHING_SELL') return 'Theo dõi SELL';
+    if (s === 'WAITING') return 'Chờ setup';
+    return s || '—';
+}
+
+function _zoneText(zone) {
+    if (!zone || zone.low == null || zone.high == null) return '—';
+    if (Number(zone.low) === Number(zone.high)) return _fmtInd(zone.low, 2);
+    return `${_fmtInd(zone.low, 2)} - ${_fmtInd(zone.high, 2)}`;
+}
+
 function _horizonDir(h) {
     if (!h) return '—';
     if (h.direction) return h.direction;
@@ -1047,6 +1078,137 @@ function _detailPanelHtml(parsed, waiting) {
     <div class="np-detail np-detail-go">
         <div class="np-detail-label"><i class="fa-solid fa-bolt"></i> Chi tiết lệnh</div>
         ${grid || (summary ? `<p class="np-detail-summary soft">${_escHtml(summary)}</p>` : '')}
+    </div>`;
+}
+
+/** Khối trái: kế hoạch vào lệnh trên khung entry, kèm lý do WAIT nếu chưa đủ điều kiện. */
+function _entryPlanBlock(fc, ind, execution) {
+    const mtf = ind.multi_tf || {};
+    const entryTf = mtf.entry_tf || ind.analysis_tf || fc.timeframe || 'M15';
+    const rows = Array.isArray(mtf.rows) ? mtf.rows : [];
+    const entryRow = rows.find(r => r.timeframe === entryTf) || {};
+    const trend = String(entryRow.trend || ind.overall_trend || 'SIDEWAYS').toUpperCase();
+    const bias = String(ind.trade_bias || 'NEUTRAL').toUpperCase();
+    const status = String(ind.setup_status || fc.setup_status || 'WAITING').toUpperCase();
+    const ready = status === 'BUY_READY' || status === 'SELL_READY';
+    const action = status === 'BUY_READY' ? 'BUY' : (status === 'SELL_READY' ? 'SELL' : 'WAIT');
+    const conf = Math.max(0, Math.min(100, Number(
+        ind.confidence != null ? ind.confidence : fc.confidence_score
+    ) || 0));
+    const actCls = action === 'BUY' ? 'is-buy' : (action === 'SELL' ? 'is-sell' : 'is-hold');
+    const biasCls = bias === 'BUY' ? 'is-buy' : (bias === 'SELL' ? 'is-sell' : 'is-hold');
+
+    const fields = [];
+    if (ready) {
+        if (ind.entry != null) fields.push({ k: 'Entry kế hoạch', v: _fmtInd(ind.entry, 2), tone: '' });
+        if (ind.stop_loss != null) fields.push({ k: 'SL cấu trúc', v: _fmtInd(ind.stop_loss, 2), tone: 'down' });
+        if (ind.take_profit_1 != null) fields.push({ k: 'TP1 cấu trúc', v: _fmtInd(ind.take_profit_1, 2), tone: 'up' });
+        if (ind.take_profit_2 != null) fields.push({ k: 'TP2 cấu trúc', v: _fmtInd(ind.take_profit_2, 2), tone: 'up' });
+        if (ind.risk_reward_1 != null) {
+            fields.push({ k: 'R:R tới TP1', v: Number(ind.risk_reward_1).toFixed(2) + 'R', tone: '' });
+        }
+        if (ind.risk_reward_2 != null) {
+            fields.push({ k: 'R:R tới TP2', v: Number(ind.risk_reward_2).toFixed(2) + 'R', tone: '' });
+        }
+        if (ind.risk_reward_1 == null && ind.risk_reward != null) {
+            fields.push({ k: 'R:R cấu trúc', v: Number(ind.risk_reward).toFixed(2) + 'R', tone: '' });
+        }
+    }
+    if (execution && execution.allowed) {
+        fields.push(
+            { k: 'Entry Ask/Bid dự kiến', v: String(execution.entry_price), tone: '', wide: true },
+            { k: 'SL gửi sàn', v: String(execution.stop_loss), tone: 'down' },
+            { k: 'TP ròng USD (bot)', v: String(execution.target_profit_usd), tone: 'up' },
+            { k: 'Giá TP trước phí ≈', v: String(execution.target_price), tone: '' },
+            { k: 'Lời/lỗ trước phí', v: Number(execution.rr_ratio).toFixed(2) + 'R', tone: '' },
+            { k: 'Lot', v: String(execution.calculated_lot), tone: '' },
+        );
+    }
+
+    const waiting = Array.isArray(ind.waiting_for) ? ind.waiting_for : [];
+    const gridHtml = fields.length ? `
+        <div class="np-detail-grid">
+            ${fields.map(f => `
+                <div class="np-detail-item ${f.tone ? ('tone-' + f.tone) : ''}${f.wide ? ' is-wide' : ''}">
+                    <span>${_escHtml(f.k)}</span>
+                    <b>${_escHtml(f.v)}</b>
+                </div>`).join('')}
+        </div>` : '';
+    const detailHtml = ready
+        ? `<div class="np-detail np-detail-go">
+            <div class="np-detail-label"><i class="fa-solid fa-bolt"></i> Chi tiết lệnh</div>
+            ${gridHtml}
+        </div>`
+        : `<div class="np-detail np-detail-wait">
+            <div class="np-detail-label"><i class="fa-solid fa-hourglass-half"></i> Đang chờ điều kiện</div>
+            ${waiting.length
+                ? `<ul class="np-wait-list">${waiting.map(w => `<li>${_escHtml(w)}</li>`).join('')}</ul>`
+                : `<p class="np-detail-summary">${_escHtml(fc.trigger_condition || 'Chưa đủ tín hiệu nến để vào lệnh.')}</p>`}
+            ${gridHtml}
+        </div>`;
+
+    return `
+    <div class="np-horizon ${trend === 'BULLISH' ? 'hz-bull' : (trend === 'BEARISH' ? 'hz-bear' : 'hz-side')} hz-exec">
+        <div class="np-hz-top">
+            <strong>Kế hoạch vào lệnh · ${_escHtml(entryTf)}</strong>
+            <span class="np-hz-exec">Bot vào lệnh theo khung này</span>
+        </div>
+        <div class="np-hz-row np-hz-row-5">
+            <div><span>Xu hướng ${_escHtml(entryTf)}</span><b class="${_trendCls(trend)}">${_biasText(trend)}</b></div>
+            <div><span>Thiên hướng</span><b class="${biasCls}">${_escHtml(bias)}</b></div>
+            <div><span>Lệnh tiếp theo</span><b class="${actCls}">${_escHtml(action)}</b></div>
+            <div><span>Trạng thái</span><b class="${actCls}">${_escHtml(_setupStatusLabel(status))}</b></div>
+            <div><span title="Điểm quy tắc đa khung, không phải xác suất thắng">Điểm tín hiệu</span><b>${conf.toFixed(0)}/100</b></div>
+        </div>
+        ${detailHtml}
+        ${ready ? `<p class="np-hz-ready">${_escHtml((execution && execution.reason) || 'Chưa có kiểm tra rủi ro cho ví; chưa xác nhận vào lệnh.')}</p>` : ''}
+    </div>`;
+}
+
+/** Khối phải: xu hướng từng khung + vùng S/R cấu trúc + dải ATR. */
+function _multiTfBlock(ind) {
+    const mtf = ind.multi_tf || {};
+    const rows = Array.isArray(mtf.rows) ? mtf.rows : [];
+    const overall = String(ind.overall_trend || 'SIDEWAYS').toUpperCase();
+    const rowsHtml = rows.map(r => `
+        <div class="np-tf-row">
+            <span class="np-tf-name">${_escHtml(r.timeframe)}</span>
+            <b class="np-tf-trend ${r.sufficient ? _trendCls(r.trend) : 'is-hold'}">
+                ${r.sufficient ? `${_trendArrow(r.trend)} ${_biasText(r.trend)}` : 'THIẾU NẾN'}
+            </b>
+            <span class="np-tf-struct">${_escHtml(r.sufficient ? (r.structure || '') : `${r.candles || 0} nến`)}</span>
+            <span class="np-tf-conf">${Number(r.confidence || 0).toFixed(0)}</span>
+        </div>`).join('');
+
+    const levels = [
+        { k: 'Hỗ trợ (vùng)', v: _zoneText(ind.support), tone: 'sup', wide: true },
+        { k: 'Kháng cự (vùng)', v: _zoneText(ind.resistance), tone: 'res', wide: true },
+        { k: 'ATR', v: ind.atr != null ? _fmtInd(ind.atr, 2) : '—', tone: 'mid' },
+        { k: 'ATR Lower Band', v: ind.atr_lower_band != null ? _fmtInd(ind.atr_lower_band, 2) : '—', tone: '' },
+        { k: 'ATR Upper Band', v: ind.atr_upper_band != null ? _fmtInd(ind.atr_upper_band, 2) : '—', tone: '' },
+    ];
+
+    return `
+    <div class="np-horizon ${overall === 'BULLISH' ? 'hz-bull' : (overall === 'BEARISH' ? 'hz-bear' : 'hz-side')}">
+        <div class="np-hz-top">
+            <strong>Xu hướng đa khung</strong>
+            <span class="np-hz-exec np-hz-ref">Tham chiếu</span>
+        </div>
+        <div class="np-tf-table">${rowsHtml || '<div class="np-tf-row"><span class="np-tf-name">—</span></div>'}</div>
+        <div class="np-hz-row">
+            <div><span>Xu hướng tổng</span><b class="${_trendCls(overall)}">${_trendArrow(overall)} ${_biasText(overall)}</b></div>
+            <div><span>Vùng mục tiêu</span><b class="font-monospace np-hz-zone">${_escHtml(mtf.target_zone || '—')}</b></div>
+        </div>
+        <div class="np-detail np-detail-go">
+            <div class="np-detail-label"><i class="fa-solid fa-layer-group"></i> Vùng giá &amp; biến động</div>
+            <div class="np-detail-grid">
+                ${levels.map(f => `
+                    <div class="np-detail-item ${f.tone ? ('tone-' + f.tone) : ''}${f.wide ? ' is-wide' : ''}">
+                        <span>${_escHtml(f.k)}</span>
+                        <b>${_escHtml(f.v)}</b>
+                    </div>`).join('')}
+            </div>
+        </div>
     </div>`;
 }
 
@@ -1173,7 +1335,8 @@ function renderBotThinkBoard(forecasts, plans, timestamp, positions) {
         const ind = f.indicators || {};
         const s = ind.short_term || {};
         const l = ind.long_term || {};
-        return [f.symbol, s.bias, s.action, s.confidence, l.bias, l.action, l.confidence, f.updated_at].join(':');
+        return [f.symbol, s.bias, s.action, s.confidence, l.bias, l.action, l.confidence,
+                ind.setup_status, f.updated_at].join(':');
     }).join('|');
 
     board.innerHTML = list.map(fc => {
@@ -1193,9 +1356,7 @@ function renderBotThinkBoard(forecasts, plans, timestamp, positions) {
             trigger: fc.trigger_condition,
             structure: fc.smc_structure,
         };
-        const execShort = true;
-        const r1 = ind.r1 != null ? ind.r1 : fc.next_resistance_1;
-        const s1 = ind.s1 != null ? ind.s1 : fc.next_support_1;
+        const hasMtf = Boolean(ind.multi_tf && Array.isArray(ind.multi_tf.rows) && ind.multi_tf.rows.length);
         const symPos = posBySym[fc.symbol] || [];
         const plan = planBySym[fc.symbol];
         const cardKey = [fc.symbol, shortH.bias, shortH.action, longH.bias, longH.action, fc.updated_at].join(':');
@@ -1211,8 +1372,9 @@ function renderBotThinkBoard(forecasts, plans, timestamp, positions) {
             { k: 'EMA50', v: ind.ema50 != null ? _fmtInd(ind.ema50, 2) : null, tone: '' },
             { k: 'EMA200', v: ind.ema200 != null ? _fmtInd(ind.ema200, 2) : null, tone: '' },
             { k: 'ATR', v: ind.atr != null ? _fmtInd(ind.atr, 2) : null, tone: 'mid' },
-            { k: 'R1', v: r1 != null ? _fmtInd(r1, 2) : null, tone: 'res' },
-            { k: 'S1', v: s1 != null ? _fmtInd(s1, 2) : null, tone: 'sup' },
+            // Dải ATR là thước đo biến động, không phải kháng cự/hỗ trợ cấu trúc.
+            { k: 'ATR Upper', v: ind.atr_upper_band != null ? _fmtInd(ind.atr_upper_band, 2) : null, tone: '' },
+            { k: 'ATR Lower', v: ind.atr_lower_band != null ? _fmtInd(ind.atr_lower_band, 2) : null, tone: '' },
             { k: 'Giá tín hiệu', v: ind.signal_price != null ? _fmtInd(ind.signal_price, 2) : (fc.current_price != null ? _fmtInd(fc.current_price, 2) : null), tone: '' },
         ].filter(m => m.v != null);
 
@@ -1245,8 +1407,10 @@ function renderBotThinkBoard(forecasts, plans, timestamp, positions) {
                 <time class="np-time">${_escHtml(fc.updated_at || '—')}</time>
             </div>
             <div class="np-dual">
-                ${_horizonBlock('Ngắn hạn · vào lệnh', shortH, true, false, fc.execution)}
-                ${_horizonBlock('Dài hạn · xu hướng / vùng giá', longH, false, true)}
+                ${hasMtf
+                    ? _entryPlanBlock(fc, ind, fc.execution) + _multiTfBlock(ind)
+                    : _horizonBlock('Ngắn hạn · vào lệnh', shortH, true, false, fc.execution)
+                      + _horizonBlock('Xu hướng / vùng giá', longH, false, true)}
             </div>
             ${metricsHtml}
             ${planNote}

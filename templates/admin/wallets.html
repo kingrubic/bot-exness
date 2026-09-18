@@ -157,20 +157,20 @@
                                     </div>
                                 </div>
                                 <div class="col-sm-6">
-                                    <label class="form-label font-weight-bold small text-secondary mb-1">Min Chốt Lời</label>
+                                    <label class="form-label font-weight-bold small text-secondary mb-1">Min Chốt Lời Sớm (tuỳ chọn)</label>
                                     <div class="input-group">
-                                        <input type="number" step="0.01" min="0.01" max="100000" class="form-control font-weight-bold text-success" id="wallet-min-take-profit" name="min_take_profit_usd" placeholder="Trống = không tự chốt">
+                                        <input type="number" step="0.01" min="0.01" max="100000" class="form-control font-weight-bold text-success" id="wallet-min-take-profit" name="min_take_profit_usd" placeholder="Trống = theo TP cấu trúc">
                                         <span class="input-group-text">USD</span>
                                     </div>
-                                    <div class="form-text">Để trống nếu không muốn bot tự chốt lời</div>
+                                    <div class="form-text">Nếu đặt, bot chốt sớm khi lãi ròng đạt mức này; TP2 cấu trúc vẫn được gửi lên sàn.</div>
                                 </div>
                                 <div class="col-sm-6">
-                                    <label class="form-label font-weight-bold small text-secondary mb-1">Max Cắt Lỗ</label>
+                                    <label class="form-label font-weight-bold small text-secondary mb-1">Trần Cắt Lỗ (tuỳ chọn)</label>
                                     <div class="input-group">
-                                        <input type="number" step="0.01" min="0.01" max="100000" class="form-control font-weight-bold text-danger" id="wallet-max-stop-loss" name="max_stop_loss_usd" placeholder="Trống = không tự cắt">
+                                        <input type="number" step="0.01" min="0.01" max="100000" class="form-control font-weight-bold text-danger" id="wallet-max-stop-loss" name="max_stop_loss_usd" placeholder="Trống = theo SL cấu trúc">
                                         <span class="input-group-text">USD</span>
                                     </div>
-                                    <div class="form-text">Mỗi lệnh lỗ tới mức này thì đóng SL_HIT; còn slot thì bot mở bù</div>
+                                    <div class="form-text">Nếu đặt, đây là trần rủi ro của SL cấu trúc. Để trống, lệnh vẫn luôn có SL theo vùng giá + ATR.</div>
                                 </div>
                                 <div class="col-sm-6">
                                     <label class="modern-switch d-inline-flex align-items-center mb-2">

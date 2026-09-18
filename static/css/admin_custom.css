@@ -2308,6 +2308,36 @@ select.form-select-sm + span.select2.select2-container {
     background:#fff; border:1px solid #e2e8f0; border-radius:8px; padding:8px 10px;
 }
 .np-hz-ready { margin:8px 0 0; font-size:0.78rem; font-weight:700; color:#1d4ed8; }
+.np-hz-row.np-hz-row-5 { grid-template-columns:repeat(5, minmax(0,1fr)); }
+.np-hz-row.np-hz-row-5 b { font-size:0.95rem; }
+
+/* Bảng xu hướng từng khung thời gian */
+.np-tf-table {
+    background:#fff; border:1px solid #e2e8f0; border-radius:8px;
+    padding:4px 8px; margin-bottom:10px;
+}
+.np-tf-row {
+    display:grid; grid-template-columns:52px 1fr auto 34px;
+    align-items:center; gap:8px; padding:5px 2px;
+    border-bottom:1px solid #f1f5f9; font-size:0.82rem;
+}
+.np-tf-row:last-child { border-bottom:none; }
+.np-tf-name { font-weight:800; color:#0f172a; font-family:ui-monospace, monospace; }
+.np-tf-trend { font-weight:800; color:#475569; }
+.np-tf-trend.is-buy { color:#15803d; }
+.np-tf-trend.is-sell { color:#b91c1c; }
+.np-tf-trend.is-hold { color:#b45309; font-weight:700; }
+.np-tf-struct { font-size:0.7rem; color:#94a3b8; font-family:ui-monospace, monospace; }
+.np-tf-conf { font-size:0.75rem; font-weight:800; color:#64748b; text-align:right; }
+
+/* Danh sách điều kiện bot đang chờ */
+.np-wait-list { margin:4px 0 0; padding-left:18px; }
+.np-wait-list li {
+    font-size:0.8rem; line-height:1.45; color:#78350f; font-weight:600; margin-bottom:3px;
+}
+@media (max-width: 992px) {
+    .np-hz-row.np-hz-row-5 { grid-template-columns:repeat(2, minmax(0,1fr)); }
+}
 .np-plan-note { font-size:0.8rem; color:#334155; margin-bottom:4px; }
 @media (max-width: 768px) {
     .np-dual { grid-template-columns: 1fr; }
@@ -2506,6 +2536,8 @@ select.form-select-sm + span.select2.select2-container {
     overflow: hidden;
     text-overflow: ellipsis;
 }
+/* Vùng giá cần cả khoảng "thấp - cao" nên chiếm 2 cột */
+.np-detail-item.is-wide { grid-column: span 2; }
 .np-detail-item.tone-up { border-color:#bbf7d0; background:#f0fdf4; }
 .np-detail-item.tone-up b { color:#15803d; }
 .np-detail-item.tone-down { border-color:#fecaca; background:#fef2f2; }

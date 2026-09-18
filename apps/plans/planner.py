@@ -166,8 +166,16 @@ class AutoPlanGenerator:
             tag_name = "Dài hạn / Trend (EMA50/200 + trail SL)" + (" Scale-In" if is_pyramiding else "")
 
         max_n = int(wallet.max_open_trades or 1)
-        tp_txt = f"Chốt lời khi lãi ròng >= ${min_tp:.2f}." if min_tp > 0 else "Không tự chốt lời (min TP trống)."
-        sl_txt = f"Cắt lỗ khi lỗ ròng <= -${max_sl:.2f} (SL_HIT)." if max_sl > 0 else "Không tự cắt lỗ USD (max SL trống)."
+        tp_txt = (
+            f"Ngoài TP2 gửi sàn, chốt sớm khi lãi ròng >= ${min_tp:.2f}."
+            if min_tp > 0 else
+            "TP gửi sàn theo TP2 cấu trúc; không chốt sớm theo USD."
+        )
+        sl_txt = (
+            f"Max Cắt Lỗ ${max_sl:.2f} là trần rủi ro của SL cấu trúc."
+            if max_sl > 0 else
+            "Không đặt trần SL USD; lệnh vẫn có SL cấu trúc."
+        )
         trail_txt = (
             f" Tự dời SL: khoá ${trail_lock:.2f} (lãi ≥2× khoá → SL giữ lãi; chỉ dời tăng)."
             if trail_on and trail_lock > 0 else
@@ -181,7 +189,8 @@ class AutoPlanGenerator:
         rationale = (
             f"{tag_name}: MARKET {direction} {lot} Lot (Ask/Bid), phân tích từ nến MT5 thật.{fc_note} "
             f"{tp_txt} {sl_txt}{trail_txt} "
-            f"SL gửi sàn={check['stop_loss']}; mục tiêu giá trước phí≈{check['target_price']}, "
+            f"SL cấu trúc gửi sàn={check['stop_loss']}; "
+            f"TP1={check['take_profit_1']}, TP2 gửi sàn={check['target_price']}, "
             f"lợi nhuận/rủi ro trước phí={check['rr_ratio']:.2f}R. "
             f"Tối đa {max_n} lệnh mở trên ví."
         )
@@ -195,8 +204,8 @@ class AutoPlanGenerator:
             'entry_zone_low': entry_price,
             'entry_zone_high': entry_price,
             'stop_loss': Decimal(str(check['stop_loss'])),
-            'take_profit_1': None,
-            'take_profit_2': None,
+            'take_profit_1': Decimal(str(check['take_profit_1'])),
+            'take_profit_2': Decimal(str(check['take_profit_2'])),
             'rr_ratio': check['rr_ratio'],
             'calculated_lot': lot,
             'risk_amount_usd': Decimal(str(check['risk_amount_usd'])),

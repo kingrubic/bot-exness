@@ -6,6 +6,21 @@ from decimal import Decimal
 from django.utils import timezone
 from apps.symbols.models import SymbolConfig
 from apps.analysis.models import MarketForecast
+from apps.analysis import config as cfg
+from apps.analysis.market_structure import (
+    BEARISH,
+    BULLISH,
+    SIDEWAYS,
+    atr as _atr,
+    breakout_state,
+    build_zones,
+    classify_trend,
+    ema as _ema,
+    nearest_zone,
+    next_zone_beyond,
+    retest_hold,
+    structural_levels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -15,22 +30,6 @@ def _f(v, default=0.0) -> float:
         return float(v)
     except (TypeError, ValueError):
         return float(default)
-
-
-def _ema(values: list[float], period: int) -> list[float | None]:
-    """EMA series; None until warm-up complete."""
-    n = len(values)
-    out: list[float | None] = [None] * n
-    if n < period or period < 1:
-        return out
-    k = 2.0 / (period + 1)
-    seed = sum(values[:period]) / period
-    out[period - 1] = seed
-    prev = seed
-    for i in range(period, n):
-        prev = values[i] * k + prev * (1 - k)
-        out[i] = prev
-    return out
 
 
 def _rsi(closes: list[float], period: int = 14) -> float | None:
@@ -51,22 +50,6 @@ def _rsi(closes: list[float], period: int = 14) -> float | None:
         return 50.0 if avg_gain <= 1e-12 else 100.0
     rs = avg_gain / avg_loss
     return round(100.0 - (100.0 / (1.0 + rs)), 1)
-
-
-def _atr(highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> float | None:
-    if len(closes) < period + 1:
-        return None
-    trs = []
-    for i in range(1, len(closes)):
-        tr = max(
-            highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i] - closes[i - 1]),
-        )
-        trs.append(tr)
-    if len(trs) < period:
-        return None
-    return sum(trs[-period:]) / period
 
 
 def _macd_hist(closes: list[float], fast=12, slow=26, signal=9) -> float | None:
@@ -271,6 +254,147 @@ def _extract_ohlc(rates) -> tuple[list[float], list[float], list[float], list[fl
     return opens, highs, lows, closes
 
 
+# Cache nến theo (symbol, timeframe): nến đã đóng không đổi trong chu kỳ nến nên
+# vòng lặp bot 4s không phải gọi MT5 lại cho từng khung phụ.
+_RATES_CACHE: dict[tuple[str, str], tuple[float, list]] = {}
+
+
+def clear_rates_cache() -> None:
+    """Xoá cache nến đa khung — dùng khi đổi phiên MT5 hoặc trong test."""
+    _RATES_CACHE.clear()
+
+
+TREND_LABEL_VI = {BULLISH: 'TĂNG', BEARISH: 'GIẢM', SIDEWAYS: 'ĐI NGANG'}
+# TREND_CHOICES của MarketForecast dùng 'SIDEWAY', phân tích nội bộ dùng 'SIDEWAYS'.
+_DB_TREND = {BULLISH: 'BULLISH', BEARISH: 'BEARISH', SIDEWAYS: 'SIDEWAY'}
+
+
+def _zone_payload(zone: dict | None, digits: int) -> dict | None:
+    if not zone:
+        return None
+    return {
+        'low': round(zone['low'], digits),
+        'high': round(zone['high'], digits),
+        'mid': round(zone['mid'], digits),
+        'touches': int(zone['touches']),
+    }
+
+
+def _tf_score_weights(entry_tf: str) -> dict[str, float]:
+    """Trọng số điểm theo khung. Khung vào lệnh trùng khung context thì gộp trọng số."""
+    weights: dict[str, float] = {}
+    for slot, tf in (('H4', 'H4'), ('H1', 'H1'), ('M15', 'M15'), ('ENTRY', entry_tf)):
+        weights[tf] = weights.get(tf, 0.0) + cfg.SCORE_WEIGHTS[slot]
+    return weights
+
+
+def _momentum_fraction(direction: str, momentum: dict) -> float:
+    """Tỷ lệ chỉ báo động lượng khung vào lệnh ủng hộ hướng; chỉ báo thiếu thì bỏ qua."""
+    checks = []
+    ema9, ema21 = momentum.get('ema9'), momentum.get('ema21')
+    if ema9 is not None and ema21 is not None:
+        checks.append(ema9 > ema21 if direction == 'BUY' else ema9 < ema21)
+    macd_h = momentum.get('macd_h')
+    if macd_h is not None:
+        checks.append(macd_h > 0 if direction == 'BUY' else macd_h < 0)
+    rsi = momentum.get('rsi')
+    if rsi is not None:
+        checks.append(50 <= rsi <= 75 if direction == 'BUY' else 25 <= rsi <= 50)
+    if not checks:
+        return 0.0
+    return sum(1 for ok in checks if ok) / len(checks)
+
+
+def _direction_score(direction: str, packs: dict, entry_tf: str,
+                     breakout: dict, momentum: dict) -> tuple[float, dict]:
+    """Điểm 0-100 cho một hướng: đồng thuận đa khung + breakout + động lượng - phạt mâu thuẫn."""
+    wanted = BULLISH if direction == 'BUY' else BEARISH
+    earned = available = 0.0
+    detail: dict[str, float | None] = {}
+
+    for tf, weight in _tf_score_weights(entry_tf).items():
+        pack = packs.get(tf)
+        if not pack or not pack.get('sufficient'):
+            detail[tf] = None  # thiếu nến → loại khỏi tổng rồi chuẩn hoá lại
+            continue
+        available += weight
+        share = pack['confidence'] / 100.0
+        if pack['trend'] == wanted:
+            got = weight * share
+        elif pack['trend'] == SIDEWAYS:
+            got = weight * cfg.SIDEWAYS_SCORE_FRACTION * share
+        else:
+            got = 0.0
+        earned += got
+        detail[tf] = round(got, 1)
+
+    available += cfg.SCORE_WEIGHTS['BREAKOUT']
+    if breakout.get('confirmed') or breakout.get('retest'):
+        got = cfg.SCORE_WEIGHTS['BREAKOUT']
+    elif breakout.get('wick_only'):
+        got = cfg.SCORE_WEIGHTS['BREAKOUT'] * cfg.WICK_ONLY_SCORE_FRACTION
+    else:
+        got = 0.0
+    earned += got
+    detail['breakout'] = round(got, 1)
+
+    available += cfg.SCORE_WEIGHTS['MOMENTUM']
+    got = cfg.SCORE_WEIGHTS['MOMENTUM'] * _momentum_fraction(direction, momentum)
+    earned += got
+    detail['momentum'] = round(got, 1)
+
+    score = (earned / available * 100.0) if available > 0 else 0.0
+
+    penalty = 0.0
+    slot_tf = {'H4': 'H4', 'H1': 'H1', 'ENTRY': entry_tf}
+    for (slot_a, slot_b), amount in cfg.CONFLICT_PENALTY.items():
+        pack_a, pack_b = packs.get(slot_tf[slot_a]), packs.get(slot_tf[slot_b])
+        if not pack_a or not pack_b:
+            continue
+        if not pack_a.get('sufficient') or not pack_b.get('sufficient'):
+            continue
+        trend_a, trend_b = pack_a['trend'], pack_b['trend']
+        if trend_a in (BULLISH, BEARISH) and trend_b in (BULLISH, BEARISH) and trend_a != trend_b:
+            penalty += amount
+    detail['conflict_penalty'] = -round(penalty, 1)
+
+    # D1 chỉ cung cấp bối cảnh trên UI. Tín hiệu vào lệnh bắt buộc dựa trên
+    # entry timeframe + M15/H1/H4, nên D1 không cộng hoặc trừ điểm.
+    detail['macro'] = 0.0
+
+    score = max(0.0, min(100.0, score - penalty))
+    detail['total'] = round(score, 1)
+    return score, detail
+
+
+def _retest_confirmed(rates: list, zones: list, price: float, tf_atr: float, direction: str) -> bool:
+    """Retest hợp lệ: vùng vừa bị phá trong ít nến gần đây và nến đóng cuối vẫn giữ được."""
+    if not rates or not zones or tf_atr <= 0:
+        return False
+    zone = nearest_zone(zones, price, 'support' if direction == 'BUY' else 'resistance')
+    if not zone:
+        return False
+    window = rates[-(cfg.RETEST_LOOKBACK + 1):-1]
+    if direction == 'BUY':
+        was_other_side = any(_f(row.get('close')) < zone['high'] for row in window)
+    else:
+        was_other_side = any(_f(row.get('close')) > zone['low'] for row in window)
+    return was_other_side and retest_hold(rates[-1], zone, tf_atr, direction)
+
+
+def _overall_trend(packs: dict, entry_tf: str) -> str:
+    """Xu hướng tổng: bỏ phiếu có trọng số theo khung, không copy trend khung nhỏ."""
+    votes = {BULLISH: 0.0, BEARISH: 0.0, SIDEWAYS: 0.0}
+    for tf, weight in _tf_score_weights(entry_tf).items():
+        pack = packs.get(tf)
+        if not pack or not pack.get('sufficient'):
+            continue
+        votes[pack['trend']] += weight * pack['confidence'] / 100.0
+    if not any(votes.values()):
+        return SIDEWAYS
+    return max(votes.items(), key=lambda kv: kv[1])[0]
+
+
 class TechnicalAnalyzer:
     """
     Phân tích thật từ nến MT5:
@@ -288,7 +412,36 @@ class TechnicalAnalyzer:
 
     @staticmethod
     def _load_rates(symbol: str, timeframe: str, count: int = 220):
-        return _closed_rates(TechnicalAnalyzer._load_raw_rates(symbol, timeframe, count + 1), timeframe)
+        tf = str(timeframe or 'M15').upper()
+        key = (str(symbol), tf)
+        ttl = cfg.RATES_CACHE_TTL.get(tf, 0.0)
+        now = time.time()
+        hit = _RATES_CACHE.get(key)
+        if hit and ttl > 0 and now - hit[0] < ttl and len(hit[1]) >= count:
+            return hit[1][-count:] if count else hit[1]
+        rows = _closed_rates(TechnicalAnalyzer._load_raw_rates(symbol, tf, count + 1), tf)
+        if rows and ttl > 0:
+            _RATES_CACHE[key] = (now, rows)
+        return rows
+
+    @classmethod
+    def _timeframe_pack(cls, symbol: str, timeframe: str) -> dict:
+        """Phân tích độc lập một khung: xu hướng, cấu trúc, swing, ATR, nến đóng cuối."""
+        rates = cls._load_rates(symbol, timeframe, cfg.RATES_COUNT)
+        _opens, highs, lows, closes = _extract_ohlc(rates or [])
+        tf_atr = _atr(highs, lows, closes, 14) if closes else None
+        pack = classify_trend(highs, lows, closes, tf_atr)
+        level_highs, level_lows = structural_levels(highs, lows)
+        pack.update({
+            'timeframe': str(timeframe).upper(),
+            'atr': tf_atr,
+            'swing_highs': level_highs,
+            'swing_lows': level_lows,
+            'last_closed': rates[-1] if rates else None,
+            'prev_closed': rates[-2] if rates and len(rates) > 1 else None,
+            'last_closed_time': int(rates[-1]['time']) if rates else None,
+        })
+        return pack
 
     @staticmethod
     def _load_raw_rates(symbol: str, timeframe: str, count: int = 220):
@@ -451,9 +604,76 @@ class TechnicalAnalyzer:
             struct_bias=long_bias,
         )
 
-        # Bot luôn khớp theo ngắn hạn (làm mới theo trend hiện tại)
-        result = short_result
+        # ---- Đa khung: khung vào lệnh + M15/H1/H4, thêm D1 khi đủ nến ----
+        entry_tf = str(analysis_tf).upper()
+        entry_pack = classify_trend(highs, lows, closes, atr)
+        entry_level_highs, entry_level_lows = structural_levels(highs, lows)
+        entry_pack.update({
+            'timeframe': entry_tf,
+            'atr': atr,
+            'swing_highs': entry_level_highs,
+            'swing_lows': entry_level_lows,
+            'last_closed': rates[-1] if rates else None,
+            'prev_closed': rates[-2] if rates and len(rates) > 1 else None,
+            'last_closed_time': int(rates[-1]['time']) if rates else None,
+        })
+        packs = {entry_tf: entry_pack}
+        for tf in cfg.CONTEXT_TIMEFRAMES:
+            if tf not in packs:
+                packs[tf] = cls._timeframe_pack(symbol, tf)
+        macro_pack = cls._timeframe_pack(symbol, cfg.OPTIONAL_TIMEFRAME)
+        if macro_pack.get('sufficient'):
+            packs[cfg.OPTIONAL_TIMEFRAME] = macro_pack
+
+        level_sets = {}
+        for tf, pack in packs.items():
+            levels = list(pack.get('swing_highs') or []) + list(pack.get('swing_lows') or [])
+            if levels:
+                level_sets[tf] = levels
+        zones = build_zones(level_sets, cfg.ZONE_TF_WEIGHTS, cfg.ZONE_ATR_TOLERANCE * atr)
+
+        # Breakout tính trên nến ĐÃ ĐÓNG so với vùng còn là cản ở nến liền trước.
+        breakouts = {}
+        prev_closed = entry_pack.get('prev_closed')
+        prev_close_px = _f(prev_closed.get('close')) if prev_closed else 0.0
+        for want in ('BUY', 'SELL'):
+            side = 'resistance' if want == 'BUY' else 'support'
+            broken = nearest_zone(zones, prev_close_px, side) if (zones and prev_close_px > 0) else None
+            state = breakout_state(entry_pack.get('last_closed'), broken, atr, want)
+            state['retest'] = _retest_confirmed(rates or [], zones, price, atr, want)
+            breakouts[want] = state
+
+        data_issues = []
+        if not rates:
+            data_issues.append('Không nhận được nến đã đóng hợp lệ từ MT5.')
+        if not data_ok:
+            data_issues.append(f'Chưa đủ nến {entry_tf} đã đóng để tính chỉ báo (cần ≥50).')
+
+        mtf_result = cls._decide_multi_tf(
+            entry_tf=entry_tf, packs=packs, price=price, atr=atr, digits=digits,
+            zones=zones, breakouts=breakouts, data_issues=data_issues,
+            momentum={'ema9': ema9, 'ema21': ema21, 'rsi': rsi, 'macd_h': macd_h},
+        )
+        # Kế hoạch lệnh chạy theo kết luận đa khung; ngắn hạn chỉ còn là lớp timing.
+        result = mtf_result
+        for key, fallback in (('r1', price + atr), ('r2', price + atr * 2),
+                              ('s1', price - atr), ('s2', price - atr * 2)):
+            if result.get(key) is None:
+                result[key] = round(fallback, digits)
+        if not result.get('target_zone'):
+            result['target_zone'] = f"{result['s1']} - {result['r1']}"
         struct_bias = short_struct
+
+        logger.debug(
+            "[TradeAnalysis] %s | %s | bias=%s action=%s status=%s conf=%s | wait=%s",
+            symbol,
+            ' '.join(
+                f"{tf}:{pack['trend'] if pack.get('sufficient') else 'N/A'}"
+                for tf, pack in packs.items()
+            ),
+            result['trade_bias'], result['action'], result['setup_status'],
+            result['confidence'], '; '.join(result['waiting_for']) or '-',
+        )
 
         # Persist ATR / scan meta — UI dùng live; tín hiệu vẫn theo close
         try:
@@ -487,6 +707,43 @@ class TechnicalAnalyzer:
                 'target_zone': res.get('target_zone') or '',
             }
 
+        def _tf_row(tf: str) -> dict | None:
+            pack = packs.get(tf)
+            if not pack:
+                return None
+            return {
+                'timeframe': tf,
+                'trend': pack['trend'] if pack.get('sufficient') else None,
+                'confidence': pack['confidence'] if pack.get('sufficient') else 0.0,
+                'structure': pack.get('structure') or 'UNCLEAR',
+                'candles': pack.get('candles') or 0,
+                'sufficient': bool(pack.get('sufficient')),
+                'ema20': round(pack['ema20'], digits) if pack.get('ema20') is not None else None,
+                'ema50': round(pack['ema50'], digits) if pack.get('ema50') is not None else None,
+                'ema200': round(pack['ema200'], digits) if pack.get('ema200') is not None else None,
+                'last_closed_candle_time': pack.get('last_closed_time'),
+            }
+
+        timeframes_data = {tf: row for tf in packs if (row := _tf_row(tf))}
+        row_order: list[str] = []
+        for tf in (entry_tf, 'M15', 'H1', 'H4', cfg.OPTIONAL_TIMEFRAME):
+            if tf in timeframes_data and tf not in row_order:
+                row_order.append(tf)
+        multi_tf_pack = {
+            'label': 'XU HƯỚNG ĐA KHUNG',
+            'entry_tf': entry_tf,
+            'bias': _DB_TREND[result['overall_trend']],
+            'overall_trend': result['overall_trend'],
+            'trade_bias': result['trade_bias'],
+            'action': result['action'],
+            'setup_status': result['setup_status'],
+            'confidence': result['confidence'],
+            'structure': result['structure'],
+            'trigger': result['trigger'],
+            'target_zone': result['target_zone'],
+            'rows': [timeframes_data[tf] for tf in row_order],
+        }
+
         indicators_data = {
             'mode': 'SCALP' if scalp else 'SWING',
             'strategy': strategy,
@@ -505,16 +762,38 @@ class TechnicalAnalyzer:
             'bb_mid': round(bb_mid, digits) if bb_mid is not None else None,
             'bb_upper': round(bb_up, digits) if bb_up is not None else None,
             'bb_lower': round(bb_lo, digits) if bb_lo is not None else None,
-            'r1': round(r1, digits) if r1 is not None else None,
-            'r2': round(r2, digits) if r2 is not None else None,
-            's1': round(s1, digits) if s1 is not None else None,
-            's2': round(s2, digits) if s2 is not None else None,
+            # r1/s1 giữ tên cũ cho API/frontend nhưng nay là biên vùng cấu trúc thật,
+            # không còn là signalPrice ± ATR. Dải ATR nằm ở atr_upper/lower_band.
+            'r1': result['r1'],
+            'r2': result['r2'],
+            's1': result['s1'],
+            's2': result['s2'],
+            'atr_upper_band': result['atr_upper_band'],
+            'atr_lower_band': result['atr_lower_band'],
+            'support': _zone_payload(result['support'], digits),
+            'resistance': _zone_payload(result['resistance'], digits),
             'spread_pips': spread,
             'candles': len(closes),
             'data_ok': data_ok,
-            'short_term': _horizon_pack(short_result, 'NGẮN HẠN'),
-            'long_term': _horizon_pack(long_result, 'DÀI HẠN'),
-            'exec_horizon': 'short',
+            'short_term': _horizon_pack(short_result, 'NGẮN HẠN · VÀO LỆNH'),
+            'long_term': multi_tf_pack,
+            'multi_tf': multi_tf_pack,
+            'timeframes': timeframes_data,
+            'overall_trend': result['overall_trend'],
+            'trade_bias': result['trade_bias'],
+            'setup_status': result['setup_status'],
+            'entry': result['entry'],
+            'stop_loss': result['stop_loss'],
+            'take_profit_1': result['take_profit_1'],
+            'take_profit_2': result['take_profit_2'],
+            'risk_reward': result['risk_reward'],
+            'risk_reward_1': result['risk_reward_1'],
+            'risk_reward_2': result['risk_reward_2'],
+            'waiting_for': result['waiting_for'],
+            'reasons': result['reasons'],
+            'score_breakdown': result['score_breakdown'],
+            'swing_long_term': _horizon_pack(long_result, 'SWING EMA50/200'),
+            'exec_horizon': 'multi_tf',
             'signal_version': 2,
             'closed_candle_time': int(rates[-1]['time']) if rates else None,
         }
@@ -537,6 +816,7 @@ class TechnicalAnalyzer:
                         'smc_structure': result['structure'],
                         'analysis_rationale': result['rationale'],
                         'recommended_action': result['action'],
+                        'setup_status': result['setup_status'],
                         'indicators_json': json.dumps(indicators_data),
                         'updated_at': timezone.now(),
                     },
@@ -547,6 +827,242 @@ class TechnicalAnalyzer:
                     logger.warning("MarketForecast update error for %s: %s", symbol, e)
                     return MarketForecast.objects.filter(symbol=symbol).first()
                 time.sleep(0.1)
+
+    @staticmethod
+    def _decide_multi_tf(**kw) -> dict:
+        """Kết luận đa khung (khung vào lệnh + M15/H1/H4, D1 tuỳ chọn).
+
+        WAIT là trạng thái bình thường: chỉ trả BUY_READY/SELL_READY khi mọi điều
+        kiện an toàn đều đạt, và chỉ khi đó mới sinh entry/SL/TP.
+        """
+        entry_tf = str(kw.get('entry_tf') or 'M15').upper()
+        packs: dict = kw.get('packs') or {}
+        price = _f(kw.get('price'))
+        atr = _f(kw.get('atr'))
+        digits = int(kw.get('digits') or 2)
+        zones: list = list(kw.get('zones') or [])
+        momentum: dict = kw.get('momentum') or {}
+        breakouts: dict = kw.get('breakouts') or {}
+        issues: list[str] = list(kw.get('data_issues') or [])
+
+        price_ok = price > 0 and math.isfinite(price)
+        atr_ok = atr > 0 and math.isfinite(atr)
+        support = nearest_zone(zones, price, 'support') if zones and price_ok else None
+        resistance = nearest_zone(zones, price, 'resistance') if zones and price_ok else None
+
+        atr_upper = round(price + atr, digits) if price_ok and atr_ok else None
+        atr_lower = round(price - atr, digits) if price_ok and atr_ok else None
+        support_next = next_zone_beyond(zones, support, price, 'support')
+        resistance_next = next_zone_beyond(zones, resistance, price, 'resistance')
+        # r1/s1 giữ tên cũ cho tương thích API nhưng nay là biên vùng cấu trúc thật.
+        # Khi giá ở biên cửa sổ quan sát (không còn vùng phía trước) thì dùng mục
+        # tiêu đo theo ATR — vẫn khác dải ATR 1× hiển thị riêng bên dưới.
+        measured_up = round(price + cfg.MEASURED_MOVE_ATR * atr, digits) if price_ok and atr_ok else None
+        measured_down = round(price - cfg.MEASURED_MOVE_ATR * atr, digits) if price_ok and atr_ok else None
+        r1 = round(resistance['low'], digits) if resistance else measured_up
+        r2 = round(resistance_next['low'], digits) if resistance_next else (
+            round(resistance['high'], digits) if resistance else measured_up)
+        s1 = round(support['high'], digits) if support else measured_down
+        s2 = round(support_next['high'], digits) if support_next else (
+            round(support['low'], digits) if support else measured_down)
+
+        def _tf_trend(tf: str) -> str:
+            pack = packs.get(tf)
+            if not pack or not pack.get('sufficient'):
+                return 'thiếu nến'
+            return f"{TREND_LABEL_VI[pack['trend']]} {pack['confidence']:.0f}"
+
+        ordered_tfs = []
+        for tf in (entry_tf, 'M15', 'H1', 'H4', cfg.OPTIONAL_TIMEFRAME):
+            if tf in packs and tf not in ordered_tfs:
+                ordered_tfs.append(tf)
+        overall = _overall_trend(packs, entry_tf)
+        structure = ' · '.join(f"{tf} {_tf_trend(tf)}" for tf in ordered_tfs)[:150]
+
+        def _out(**over) -> dict:
+            base = {
+                'trend_bias': _DB_TREND[overall],
+                'overall_trend': overall,
+                'trade_bias': 'NEUTRAL',
+                'action': 'MONITORING',
+                'setup_status': 'WAITING',
+                'confidence': 0.0,
+                'structure': structure,
+                'trigger': '',
+                'rationale': '',
+                'target_zone': f"{s1} - {r1}" if s1 is not None and r1 is not None else '',
+                'r1': r1, 'r2': r2, 's1': s1, 's2': s2,
+                'support': support, 'resistance': resistance,
+                'atr_upper_band': atr_upper, 'atr_lower_band': atr_lower,
+                'entry': None, 'stop_loss': None,
+                'take_profit_1': None, 'take_profit_2': None,
+                'risk_reward': None, 'risk_reward_1': None, 'risk_reward_2': None,
+                'waiting_for': [], 'reasons': [], 'score_breakdown': {},
+            }
+            base.update(over)
+            return base
+
+        if not price_ok:
+            issues.append('Giá tín hiệu không hợp lệ.')
+        if not atr_ok:
+            issues.append('ATR không hợp lệ (NaN/0) — không lập kế hoạch giá.')
+        for tf in ('H1', 'H4'):
+            pack = packs.get(tf)
+            if not pack or not pack.get('sufficient'):
+                issues.append(f'Thiếu dữ liệu nến {tf} (cần ≥{cfg.MIN_CANDLES_STRUCTURE} nến đã đóng).')
+        entry_pack = packs.get(entry_tf)
+        if not entry_pack or not entry_pack.get('sufficient'):
+            issues.append(f'Thiếu dữ liệu nến {entry_tf} để xác định cấu trúc.')
+        if not zones:
+            issues.append('Chưa dựng được vùng cấu trúc nào từ nến đã đóng.')
+
+        if issues:
+            return _out(
+                trigger='Dữ liệu chưa đủ để ra tín hiệu: ' + ' '.join(issues),
+                rationale='[MTF] ' + ' '.join(issues),
+                reasons=issues,
+                waiting_for=issues,
+            )
+
+        buy_score, buy_detail = _direction_score(
+            'BUY', packs, entry_tf, breakouts.get('BUY') or {}, momentum)
+        sell_score, sell_detail = _direction_score(
+            'SELL', packs, entry_tf, breakouts.get('SELL') or {}, momentum)
+        direction = 'BUY' if buy_score >= sell_score else 'SELL'
+        confidence = round(max(buy_score, sell_score), 1)
+        detail = buy_detail if direction == 'BUY' else sell_detail
+        breakout = breakouts.get(direction) or {}
+        wanted = BULLISH if direction == 'BUY' else BEARISH
+        sign = 1 if direction == 'BUY' else -1
+
+        sl_zone = support if direction == 'BUY' else resistance
+        tp_zone = resistance if direction == 'BUY' else support
+        next_target = resistance_next if direction == 'BUY' else support_next
+        measured = measured_up if direction == 'BUY' else measured_down
+
+        entry = round(price, digits)
+        stop_loss = None
+        risk = 0.0
+        if sl_zone is not None:
+            stop_loss = round(
+                sl_zone['low'] - cfg.ATR_SL_BUFFER * atr if direction == 'BUY'
+                else sl_zone['high'] + cfg.ATR_SL_BUFFER * atr, digits)
+            risk = sign * (entry - stop_loss)
+        take_profit_1 = round(
+            (tp_zone['low'] if direction == 'BUY' else tp_zone['high']) if tp_zone else measured,
+            digits)
+        reward = sign * (take_profit_1 - entry)
+        if next_target:
+            take_profit_2 = round(next_target['low'] if direction == 'BUY' else next_target['high'], digits)
+        elif risk > 0:
+            take_profit_2 = round(entry + sign * risk * cfg.TP2_RR_FALLBACK, digits)
+        else:
+            take_profit_2 = round(entry + sign * cfg.MEASURED_MOVE_ATR * atr * cfg.TP2_RR_FALLBACK, digits)
+        if sign * (take_profit_2 - take_profit_1) <= 0:
+            take_profit_2 = round(
+                take_profit_1 + sign * max(risk, cfg.MEASURED_MOVE_ATR * atr / 2), digits)
+        reward_2 = sign * (take_profit_2 - entry)
+        risk_reward_1 = round(reward / risk, 2) if risk > 0 else None
+        risk_reward_2 = round(reward_2 / risk, 2) if risk > 0 else None
+        valid_rr = [
+            value for value in (risk_reward_1, risk_reward_2)
+            if value is not None and math.isfinite(value)
+        ]
+        # TP1 là mục tiêu chốt một phần. Setup vẫn hợp lệ nếu TP2 có đủ RR.
+        risk_reward = max(valid_rr) if valid_rr else None
+
+        reasons = [f"{tf}: {_tf_trend(tf)}" for tf in ordered_tfs]
+        reasons.append(f"Xu hướng tổng: {TREND_LABEL_VI[overall]}")
+        if detail.get('conflict_penalty', 0) < 0:
+            reasons.append(f"Trừ {abs(detail['conflict_penalty']):.0f} điểm do các khung mâu thuẫn")
+        macro = packs.get(cfg.OPTIONAL_TIMEFRAME)
+        if macro and macro.get('sufficient'):
+            reasons.append(
+                f"{cfg.OPTIONAL_TIMEFRAME}: {TREND_LABEL_VI[macro['trend']]} "
+                "(chỉ tham khảo, không tính điểm)"
+            )
+
+        waiting: list[str] = []
+        breakout_missing = False
+        if sl_zone is None:
+            side_txt = 'hỗ trợ bên dưới' if direction == 'BUY' else 'kháng cự bên trên'
+            waiting.append(f"Chưa có vùng {side_txt} để đặt SL theo cấu trúc.")
+        h4 = packs['H4']
+        if h4['trend'] not in (wanted, SIDEWAYS):
+            waiting.append(f"H4 đang {TREND_LABEL_VI[h4['trend']]} — chờ H4 thôi ngược hướng {direction}.")
+        h1 = packs['H1']
+        if h1['trend'] not in (wanted, SIDEWAYS):
+            waiting.append(
+                f"H1 đang {TREND_LABEL_VI[h1['trend']]} — chờ H1 thôi ngược hướng {direction}."
+            )
+        if cfg.REQUIRE_BREAKOUT_CLOSE and not (breakout.get('confirmed') or breakout.get('retest')):
+            breakout_missing = True
+            side_txt = 'trên' if direction == 'BUY' else 'dưới'
+            level = breakout.get('level')
+            if level is None:
+                waiting.append(f"{entry_tf} phá vùng cấu trúc bằng nến đã đóng.")
+            elif breakout.get('wick_only'):
+                waiting.append(
+                    f"{entry_tf} mới xuyên bằng râu nến — cần nến ĐÓNG {side_txt} {round(level, digits)}."
+                )
+            else:
+                waiting.append(f"{entry_tf} đóng cửa {side_txt} {round(level, digits)}.")
+        if risk_reward is None or risk_reward < cfg.MIN_RISK_REWARD:
+            rr_txt = f"{risk_reward:.2f}" if risk_reward is not None else 'không tính được'
+            waiting.append(
+                f"Risk/Reward tốt nhất giữa TP1/TP2 là {rr_txt} < {cfg.MIN_RISK_REWARD}."
+            )
+        if reward < cfg.MIN_ROOM_ATR * atr:
+            waiting.append(
+                f"Còn dưới {cfg.MIN_ROOM_ATR}×ATR khoảng trống tới vùng cản gần nhất — giá quá sát cản."
+            )
+        level = breakout.get('level')
+        if level is not None and abs(price - level) > cfg.MAX_EXTENSION_ATR * atr:
+            waiting.append(
+                f"Giá đã chạy quá {cfg.MAX_EXTENSION_ATR}×ATR khỏi vùng phá vỡ — chờ nhịp hồi."
+            )
+        if confidence < cfg.MIN_CONFIDENCE:
+            waiting.append(
+                f"Điểm đồng thuận {confidence:.0f}/100 dưới ngưỡng {cfg.MIN_CONFIDENCE:.0f}."
+            )
+
+        if not waiting:
+            status = 'BUY_READY' if direction == 'BUY' else 'SELL_READY'
+            action = 'READY_TO_BUY' if direction == 'BUY' else 'READY_TO_SELL'
+            trigger = (
+                f"{direction} xác nhận: {entry_tf} đóng cửa qua {round(level, digits) if level is not None else '-'}, "
+                f"H1 {TREND_LABEL_VI[h1['trend']]}, H4 {TREND_LABEL_VI[h4['trend']]}. "
+                f"Entry≈{entry}, SL={stop_loss}, TP1={take_profit_1}, TP2={take_profit_2}, "
+                f"RR1={risk_reward_1:.2f}, RR2={risk_reward_2:.2f}. "
+                f"Vùng SL/TP này là kế hoạch phân tích; "
+                f"lệnh thật vẫn qua kiểm tra rủi ro USD của ví."
+            )
+            return _out(
+                trade_bias=direction, action=action, setup_status=status,
+                confidence=confidence, trigger=trigger,
+                rationale=f"[MTF {entry_tf}/H1/H4] " + ' | '.join(reasons),
+                target_zone=f"{take_profit_1} - {take_profit_2}",
+                entry=entry, stop_loss=stop_loss,
+                take_profit_1=take_profit_1, take_profit_2=take_profit_2,
+                risk_reward=risk_reward, risk_reward_1=risk_reward_1,
+                risk_reward_2=risk_reward_2, reasons=reasons, waiting_for=[],
+                score_breakdown=detail,
+            )
+
+        if confidence >= cfg.WATCHING_CONFIDENCE:
+            status = 'WATCHING_BUY' if direction == 'BUY' else 'WATCHING_SELL'
+            action = 'BREAKOUT_PENDING' if (breakout_missing and len(waiting) == 1) else 'WAIT_FOR_PULLBACK'
+            trade_bias = direction
+        else:
+            status, action, trade_bias = 'WAITING', 'MONITORING', 'NEUTRAL'
+
+        return _out(
+            trade_bias=trade_bias, action=action, setup_status=status,
+            confidence=confidence,
+            trigger='Đang chờ: ' + ' '.join(f'({i + 1}) {w}' for i, w in enumerate(waiting)),
+            rationale=f"[MTF {entry_tf}/H1/H4] " + ' | '.join(reasons),
+            reasons=reasons, waiting_for=waiting, score_breakdown=detail,
+        )
 
     @staticmethod
     def _decide_scalp(**kw) -> dict:

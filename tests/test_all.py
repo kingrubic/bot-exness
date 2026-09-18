@@ -56,8 +56,10 @@ class ExnessAutoTradeTestCase(TestCase):
         self.assertIsNotNone(forecast)
         self.assertEqual(forecast.symbol, 'XAUUSD')
         self.assertIn(forecast.trend_bias, ['BULLISH', 'BEARISH', 'SIDEWAY'])
-        # Không có nến MT5 → MONITORING (confidence thấp hơn); có nến → ≥60
-        self.assertTrue(forecast.confidence_score >= 40.0)
+        # Không có nến MT5 → WAITING/confidence 0 (không bịa điểm tin cậy)
+        self.assertEqual(forecast.setup_status, 'WAITING')
+        self.assertEqual(forecast.recommended_action, 'MONITORING')
+        self.assertEqual(forecast.confidence_score, 0.0)
         self.assertTrue(len(forecast.projected_target_zone) > 0)
         self.assertTrue(len(forecast.trigger_condition) > 0)
         self.assertTrue(len(forecast.analysis_rationale) > 0)

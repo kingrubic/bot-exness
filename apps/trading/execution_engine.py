@@ -92,7 +92,7 @@ class ExecutionEngine:
                 volume=float(plan.calculated_lot),
                 price=0.0,
                 sl=float(plan.stop_loss),
-                tp=0.0,
+                tp=float(plan.take_profit_2 or plan.take_profit_1 or 0),
                 comment=f"AI-{plan.symbol}"
             )
 
@@ -127,6 +127,7 @@ class ExecutionEngine:
                     open_price=exec_price,
                     current_price=exec_price,
                     stop_loss=sl_to_save,
+                    take_profit=plan.take_profit_2 or plan.take_profit_1,
                     source='BOT',
                     magic=BOT_MAGIC,
                     comment=f"AI-{plan.symbol}",
@@ -137,7 +138,8 @@ class ExecutionEngine:
                 position.source = 'BOT'
                 position.magic = BOT_MAGIC
                 position.stop_loss = sl_to_save
-                position.save(update_fields=['plan', 'source', 'magic', 'stop_loss'])
+                position.take_profit = plan.take_profit_2 or plan.take_profit_1
+                position.save(update_fields=['plan', 'source', 'magic', 'stop_loss', 'take_profit'])
             plan.status = 'EXECUTING'
             plan.triggered_at = timezone.now()
             plan.save()
@@ -182,7 +184,7 @@ class ExecutionEngine:
             open_price=exec_price,
             current_price=exec_price,
             stop_loss=sl_to_save,
-            take_profit=None,
+            take_profit=plan.take_profit_2 or plan.take_profit_1,
             floating_pnl=Decimal("0.00"),
             floating_pips=0.0,
             source='BOT',

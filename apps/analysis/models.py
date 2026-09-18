@@ -17,6 +17,14 @@ class MarketForecast(models.Model):
         ('MONITORING', 'Theo Dõi Cấu Trúc (Monitoring)'),
     ]
 
+    SETUP_STATUS_CHOICES = [
+        ('WAITING', 'Chưa Có Setup Rõ Ràng (Waiting)'),
+        ('WATCHING_BUY', 'Thiên Hướng Mua, Chưa Đủ Kích Hoạt (Watching Buy)'),
+        ('WATCHING_SELL', 'Thiên Hướng Bán, Chưa Đủ Kích Hoạt (Watching Sell)'),
+        ('BUY_READY', 'Đủ Điều Kiện Mua (Buy Ready)'),
+        ('SELL_READY', 'Đủ Điều Kiện Bán (Sell Ready)'),
+    ]
+
     symbol = models.CharField(max_length=30, verbose_name="Mã Cặp")
     timeframe = models.CharField(max_length=10, default='M15', verbose_name="Khung Thời Gian Phân Tích")
     
@@ -39,6 +47,7 @@ class MarketForecast(models.Model):
     indicators_json = models.TextField(default='{}', verbose_name="Dữ Liệu Chỉ Báo Kỹ Thuật")
     analysis_rationale = models.TextField(verbose_name="Lý Do Phân Tích Chi Tiết Của Bot")
     recommended_action = models.CharField(max_length=30, choices=ACTION_CHOICES, default='WAIT_FOR_PULLBACK', verbose_name="Hành Động Khuyến Nghị")
+    setup_status = models.CharField(max_length=20, choices=SETUP_STATUS_CHOICES, default='WAITING', verbose_name="Trạng Thái Setup Đa Khung")
     
     updated_at = models.DateTimeField(default=timezone.now, verbose_name="Cập Nhật Lúc")
 
