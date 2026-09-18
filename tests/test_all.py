@@ -1,3 +1,5 @@
+import json
+import time
 import pytest
 from decimal import Decimal
 from django.test import TestCase, Client
@@ -107,6 +109,9 @@ class ExnessAutoTradeTestCase(TestCase):
             )
 
         forecast.recommended_action = "READY_TO_BUY"
+        indicators = forecast.indicators
+        indicators['closed_candle_time'] = int(time.time()) - 900
+        forecast.indicators_json = json.dumps(indicators)
         forecast.save()
         from unittest.mock import patch
         with patch('apps.trading.mt5_connector.ExnessMT5Connector.connect', return_value=True), \

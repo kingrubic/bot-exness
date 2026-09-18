@@ -111,11 +111,20 @@ def structure_label(swing_highs, swing_lows) -> str:
     return 'RANGE'
 
 
+def structure_direction(label: str | None) -> str:
+    """Hướng của cấu trúc swing mạnh; mixed/range/unclear là trung tính."""
+    if label == 'HH/HL':
+        return BULLISH
+    if label == 'LH/LL':
+        return BEARISH
+    return SIDEWAYS
+
+
 def select_trend(scores: dict[str, float]) -> tuple[str, float]:
     """Chọn trend và độ chắc chắn của chính phân loại đó.
 
-    Khi điểm tăng/giảm gần như hòa nhau, kết luận SIDEWAYS có độ chắc chắn cao
-    thay vì confidence=0. Confidence này không phải xác suất thắng của lệnh.
+    Khi điểm tăng/giảm gần như hòa nhau, confidence phải phản ánh độ không chắc
+    chắn thay vì nhảy lên 100. Confidence này không phải xác suất thắng của lệnh.
     """
     bullish = float(scores.get('bullish') or 0.0)
     bearish = float(scores.get('bearish') or 0.0)
@@ -129,11 +138,11 @@ def select_trend(scores: dict[str, float]) -> tuple[str, float]:
     directional_gap = abs(bullish - bearish)
 
     if sideways >= leader_score:
-        confidence = max(sideways, 100.0 - directional_gap)
+        confidence = max(sideways, 50.0 - directional_gap)
         return SIDEWAYS, min(100.0, confidence)
     if directional_gap < 10.0:
-        # Hai hướng giằng co sát nhau chính là bằng chứng của trạng thái đi ngang.
-        confidence = max(sideways, 100.0 - directional_gap)
+        # Hai hướng giằng co sát nhau: SIDEWAYS nhưng không được gán certainty 100.
+        confidence = max(sideways, 50.0 - directional_gap)
         return SIDEWAYS, min(100.0, confidence)
     return leader, min(100.0, leader_score)
 
@@ -296,22 +305,66 @@ def breakout_state(candle: dict | None, zone: dict | None, tf_atr: float,
     `confirmed` chỉ True khi giá ĐÓNG vượt biên vùng cộng đệm ATR; râu nến vượt
     mà thân chưa đóng qua chỉ cho `wick_only`.
     """
-    state = {'confirmed': False, 'wick_only': False, 'level': None, 'distance': None}
+    state = {
+        'confirmed': False,
+        'wick_only': False,
+        'weak_close': False,
+        'quality_ok': False,
+        'level': None,
+        'distance': None,
+        'body_atr': None,
+        'body_ratio': None,
+        'rejection_wick_ratio': None,
+        'failure_reasons': [],
+    }
     if not candle or not zone or not tf_atr or tf_atr <= 0:
         return state
     try:
+        open_price = float(candle['open'])
         close = float(candle['close'])
         high = float(candle['high'])
         low = float(candle['low'])
     except (KeyError, TypeError, ValueError):
         return state
     buffer_px = cfg.BREAKOUT_BUFFER * tf_atr
+    candle_range = high - low
+    if candle_range <= 0:
+        state['failure_reasons'] = ['invalid_range']
+        return state
+    body = abs(close - open_price)
+    body_atr = body / tf_atr
+    body_ratio = body / candle_range
+    if direction == 'BUY':
+        directional_body = close > open_price
+        rejection_wick = high - max(open_price, close)
+    else:
+        directional_body = close < open_price
+        rejection_wick = min(open_price, close) - low
+    rejection_wick_ratio = max(0.0, rejection_wick) / candle_range
+    failures = []
+    if not directional_body:
+        failures.append('wrong_body_direction')
+    if body_atr < cfg.BREAKOUT_MIN_BODY_ATR:
+        failures.append('body_too_small_atr')
+    if body_ratio < cfg.BREAKOUT_MIN_BODY_RATIO:
+        failures.append('body_ratio_too_small')
+    if rejection_wick_ratio > cfg.BREAKOUT_MAX_REJECTION_WICK_RATIO:
+        failures.append('excessive_rejection_wick')
+    state.update({
+        'body_atr': round(body_atr, 4),
+        'body_ratio': round(body_ratio, 4),
+        'rejection_wick_ratio': round(rejection_wick_ratio, 4),
+        'quality_ok': not failures,
+        'failure_reasons': failures,
+    })
+
     if direction == 'BUY':
         level = zone['high']
         state['level'] = level
         state['distance'] = close - level
         if close > level + buffer_px:
-            state['confirmed'] = True
+            state['confirmed'] = state['quality_ok']
+            state['weak_close'] = not state['quality_ok']
         elif high > level:
             state['wick_only'] = True
     elif direction == 'SELL':
@@ -319,7 +372,8 @@ def breakout_state(candle: dict | None, zone: dict | None, tf_atr: float,
         state['level'] = level
         state['distance'] = level - close
         if close < level - buffer_px:
-            state['confirmed'] = True
+            state['confirmed'] = state['quality_ok']
+            state['weak_close'] = not state['quality_ok']
         elif low < level:
             state['wick_only'] = True
     return state

@@ -1,3 +1,4 @@
+import json
 import time
 import pytest
 from decimal import Decimal
@@ -1285,7 +1286,7 @@ def test_empty_wallet_purges_plans_and_skips_orders():
 
 @pytest.mark.django_db
 def test_immediate_market_entry_when_under_max(approved_entry):
-    """Chưa đủ lệnh: AI khớp MARKET đến max_open_trades, không treo plan PENDING."""
+    """Một forecast candle chỉ được khớp một MARKET dù ví còn nhiều slot."""
     from unittest.mock import patch
     wallet = WalletAccount.objects.create(
         name="Instant Wallet",
@@ -1310,11 +1311,12 @@ def test_immediate_market_entry_when_under_max(approved_entry):
         confidence_score=80, current_price=Decimal("2750.00"),
         recommended_action="READY_TO_BUY",
         trigger_condition="ema9>ema21", analysis_rationale="scalp buy from candles",
+        indicators_json=json.dumps({'closed_candle_time': int(time.time()) - 300}),
     )
     ExecutionEngine.try_immediate_market_entries({ 'XAUUSD': (sym, forecast) })
-    assert Position.objects.filter(wallet=wallet, symbol="XAUUSD", source="BOT").count() == 3
+    assert Position.objects.filter(wallet=wallet, symbol="XAUUSD", source="BOT").count() == 1
     executing = TradingPlan.objects.filter(wallet=wallet, symbol="XAUUSD", status="EXECUTING")
-    assert executing.count() == 3
+    assert executing.count() == 1
     assert all(p.direction == "BUY" for p in executing)
     assert not TradingPlan.objects.filter(wallet=wallet, status="PENDING_TRIGGER").exists()
     assert all("Lướt sóng" in (p.rationale or "") for p in executing)
@@ -1436,7 +1438,7 @@ def test_no_plan_created_when_slots_full_purges_hanging():
 
 @pytest.mark.django_db
 def test_refill_plan_after_close_uses_current_forecast(approved_entry):
-    """Đóng lệnh xong nếu còn slot: lập plan mới theo forecast lúc đó rồi khớp ngay, không để PENDING chờ."""
+    """Refill chỉ khớp một lệnh cho cùng forecast candle dù còn nhiều slot."""
     wallet = WalletAccount.objects.create(
         name="Refill Wallet",
         account_type="DEMO",
@@ -1460,6 +1462,7 @@ def test_refill_plan_after_close_uses_current_forecast(approved_entry):
         confidence_score=80, current_price=Decimal("2750.00"),
         recommended_action="READY_TO_SELL",
         trigger_condition="x", analysis_rationale="x",
+        indicators_json=json.dumps({'closed_candle_time': int(time.time()) - 300}),
     )
     pos = Position.objects.create(
         wallet=wallet, ticket="LOCAL-OLD-1", symbol="XAUUSD",
@@ -1471,9 +1474,9 @@ def test_refill_plan_after_close_uses_current_forecast(approved_entry):
     assert ok is True
     assert not Position.objects.filter(ticket="LOCAL-OLD-1").exists()
     fresh = Position.objects.filter(wallet=wallet, source="BOT")
-    assert fresh.count() == 2
-    assert all(p.position_type == "SELL" for p in fresh)
-    assert TradingPlan.objects.filter(wallet=wallet, status="EXECUTING", direction="SELL").count() == 2
+    assert fresh.count() == 1
+    assert fresh.first().position_type == "SELL"
+    assert TradingPlan.objects.filter(wallet=wallet, status="EXECUTING", direction="SELL").count() == 1
     assert not TradingPlan.objects.filter(wallet=wallet, status="PENDING_TRIGGER").exists()
 
 

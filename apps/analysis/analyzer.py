@@ -19,6 +19,7 @@ from apps.analysis.market_structure import (
     nearest_zone,
     next_zone_beyond,
     retest_hold,
+    structure_direction,
     structural_levels,
 )
 
@@ -288,6 +289,18 @@ def _tf_score_weights(entry_tf: str) -> dict[str, float]:
     return weights
 
 
+def _entry_level_sets(packs: dict) -> dict[str, list[float]]:
+    """Levels dùng cho entry; D1 chỉ là macro context, không đổi SL/TP/RR."""
+    result: dict[str, list[float]] = {}
+    for tf, pack in packs.items():
+        if tf == cfg.OPTIONAL_TIMEFRAME:
+            continue
+        levels = list(pack.get('swing_highs') or []) + list(pack.get('swing_lows') or [])
+        if levels:
+            result[tf] = levels
+    return result
+
+
 def _momentum_fraction(direction: str, momentum: dict) -> float:
     """Tỷ lệ chỉ báo động lượng khung vào lệnh ủng hộ hướng; chỉ báo thiếu thì bỏ qua."""
     checks = []
@@ -322,7 +335,13 @@ def _direction_score(direction: str, packs: dict, entry_tf: str,
         if pack['trend'] == wanted:
             got = weight * share
         elif pack['trend'] == SIDEWAYS:
-            got = weight * cfg.SIDEWAYS_SCORE_FRACTION * share
+            swing_direction = structure_direction(pack.get('structure'))
+            # SIDEWAYS không phải bằng chứng thuận cho hướng đang ngược cấu trúc
+            # swing mạnh (ví dụ BUY trong H1 LH/LL).
+            got = (
+                0.0 if swing_direction not in (SIDEWAYS, wanted)
+                else weight * cfg.SIDEWAYS_SCORE_FRACTION * share
+            )
         else:
             got = 0.0
         earned += got
@@ -331,7 +350,7 @@ def _direction_score(direction: str, packs: dict, entry_tf: str,
     available += cfg.SCORE_WEIGHTS['BREAKOUT']
     if breakout.get('confirmed') or breakout.get('retest'):
         got = cfg.SCORE_WEIGHTS['BREAKOUT']
-    elif breakout.get('wick_only'):
+    elif breakout.get('wick_only') or breakout.get('weak_close'):
         got = cfg.SCORE_WEIGHTS['BREAKOUT'] * cfg.WICK_ONLY_SCORE_FRACTION
     else:
         got = 0.0
@@ -368,18 +387,34 @@ def _direction_score(direction: str, packs: dict, entry_tf: str,
 
 
 def _retest_confirmed(rates: list, zones: list, price: float, tf_atr: float, direction: str) -> bool:
-    """Retest hợp lệ: vùng vừa bị phá trong ít nến gần đây và nến đóng cuối vẫn giữ được."""
+    """Retest exact zone: có transition breakout, không fail lại, rồi mới retest."""
     if not rates or not zones or tf_atr <= 0:
         return False
     zone = nearest_zone(zones, price, 'support' if direction == 'BUY' else 'resistance')
     if not zone:
         return False
-    window = rates[-(cfg.RETEST_LOOKBACK + 1):-1]
+    window = rates[-(cfg.RETEST_LOOKBACK + 2):]
+    if len(window) < 3 or not retest_hold(window[-1], zone, tf_atr, direction):
+        return False
+    buffer_px = cfg.BREAKOUT_BUFFER * tf_atr
+    breakout_index = None
+    # Chỉ tìm transition trước candle retest hiện tại.
+    for i in range(1, len(window) - 1):
+        previous_close = _f(window[i - 1].get('close'))
+        close = _f(window[i].get('close'))
+        if direction == 'BUY':
+            crossed = previous_close <= zone['high'] and close > zone['high'] + buffer_px
+        else:
+            crossed = previous_close >= zone['low'] and close < zone['low'] - buffer_px
+        if crossed:
+            breakout_index = i
+    if breakout_index is None:
+        return False
+
+    post_breakout = window[breakout_index + 1:-1]
     if direction == 'BUY':
-        was_other_side = any(_f(row.get('close')) < zone['high'] for row in window)
-    else:
-        was_other_side = any(_f(row.get('close')) > zone['low'] for row in window)
-    return was_other_side and retest_hold(rates[-1], zone, tf_atr, direction)
+        return all(_f(row.get('close')) >= zone['low'] - buffer_px for row in post_breakout)
+    return all(_f(row.get('close')) <= zone['high'] + buffer_px for row in post_breakout)
 
 
 def _overall_trend(packs: dict, entry_tf: str) -> str:
@@ -625,11 +660,9 @@ class TechnicalAnalyzer:
         if macro_pack.get('sufficient'):
             packs[cfg.OPTIONAL_TIMEFRAME] = macro_pack
 
-        level_sets = {}
-        for tf, pack in packs.items():
-            levels = list(pack.get('swing_highs') or []) + list(pack.get('swing_lows') or [])
-            if levels:
-                level_sets[tf] = levels
+        # D1 chỉ hiển thị macro context. Entry S/R, SL, TP và RR chỉ dùng
+        # entry timeframe + M15/H1/H4.
+        level_sets = _entry_level_sets(packs)
         zones = build_zones(level_sets, cfg.ZONE_TF_WEIGHTS, cfg.ZONE_ATR_TOLERANCE * atr)
 
         # Breakout tính trên nến ĐÃ ĐÓNG so với vùng còn là cản ở nến liền trước.
@@ -988,12 +1021,15 @@ class TechnicalAnalyzer:
             side_txt = 'hỗ trợ bên dưới' if direction == 'BUY' else 'kháng cự bên trên'
             waiting.append(f"Chưa có vùng {side_txt} để đặt SL theo cấu trúc.")
         h4 = packs['H4']
-        if h4['trend'] not in (wanted, SIDEWAYS):
+        h4_structure = structure_direction(h4.get('structure'))
+        if h4['trend'] not in (wanted, SIDEWAYS) or h4_structure not in (wanted, SIDEWAYS):
             waiting.append(f"H4 đang {TREND_LABEL_VI[h4['trend']]} — chờ H4 thôi ngược hướng {direction}.")
         h1 = packs['H1']
-        if h1['trend'] not in (wanted, SIDEWAYS):
+        h1_structure = structure_direction(h1.get('structure'))
+        if h1['trend'] not in (wanted, SIDEWAYS) or h1_structure not in (wanted, SIDEWAYS):
             waiting.append(
-                f"H1 đang {TREND_LABEL_VI[h1['trend']]} — chờ H1 thôi ngược hướng {direction}."
+                f"H1 trend={TREND_LABEL_VI[h1['trend']]}, structure={h1.get('structure') or 'UNCLEAR'} "
+                f"đang ngược hướng {direction}."
             )
         if cfg.REQUIRE_BREAKOUT_CLOSE and not (breakout.get('confirmed') or breakout.get('retest')):
             breakout_missing = True
@@ -1001,6 +1037,12 @@ class TechnicalAnalyzer:
             level = breakout.get('level')
             if level is None:
                 waiting.append(f"{entry_tf} phá vùng cấu trúc bằng nến đã đóng.")
+            elif breakout.get('weak_close'):
+                failed = ', '.join(breakout.get('failure_reasons') or [])
+                waiting.append(
+                    f"{entry_tf} đã đóng qua {round(level, digits)} nhưng breakout yếu "
+                    f"(body/wick chưa đạt: {failed or 'quality'})."
+                )
             elif breakout.get('wick_only'):
                 waiting.append(
                     f"{entry_tf} mới xuyên bằng râu nến — cần nến ĐÓNG {side_txt} {round(level, digits)}."

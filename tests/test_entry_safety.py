@@ -174,6 +174,53 @@ def test_plan_execution_sends_protective_stop_and_rechecks_forecast():
     connector.send_order.assert_not_called()
 
 
+@pytest.mark.django_db
+def test_same_closed_candle_can_submit_only_one_order():
+    from apps.accounts.models import WalletAccount
+    from apps.symbols.models import SymbolConfig
+    from apps.analysis.models import MarketForecast
+    from apps.plans.models import TradeSignalClaim
+    from apps.trading.execution_engine import ExecutionEngine
+
+    _wallet_data, _sym_data, fc_data = valid_inputs()
+    wallet = WalletAccount.objects.create(
+        name='Idempotent', bot_status='RUNNING', account_type='DEMO',
+        balance_db=1000, equity_db=1000, max_open_trades=3,
+        min_take_profit_usd=None, max_stop_loss_usd=None,
+        allowed_symbols_json='["XAUUSD"]',
+    )
+    sym = SymbolConfig.objects.create(
+        symbol='XAUUSD', current_bid=4300, current_ask=Decimal('4300.02'),
+        contract_size=100, point_size=.01, digits=2,
+    )
+    fc = MarketForecast.objects.create(
+        symbol='XAUUSD', timeframe='M15',
+        recommended_action='READY_TO_BUY', trend_bias='BULLISH',
+        current_price=4300, indicators_json=json.dumps(fc_data.indicators),
+    )
+    connector = MagicMock()
+    connector.connect.return_value = True
+    connector.send_order.return_value = {
+        'success': True, 'ticket': 'IDEMPOTENT-1',
+        'price': 4300.02, 'volume': .01,
+    }
+
+    with patch('apps.trading.execution_engine.ExnessMT5Connector', return_value=connector), \
+         patch.object(AutoPlanGenerator, 'refresh_symbol_market_price', return_value=sym):
+        first_plan = AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, fc)
+        assert ExecutionEngine.trigger_plan_to_position(first_plan) is not None
+
+        second_plan = AutoPlanGenerator.generate_plan_for_wallet(wallet, sym, fc)
+        assert second_plan is not None
+        assert ExecutionEngine.trigger_plan_to_position(second_plan) is None
+
+    assert connector.send_order.call_count == 1
+    claim = TradeSignalClaim.objects.get(wallet=wallet, symbol='XAUUSD')
+    assert claim.candle_time == fc_data.indicators['closed_candle_time']
+    assert claim.status == 'EXECUTED'
+    assert claim.order_ticket == 'IDEMPOTENT-1'
+
+
 def test_invalid_broker_stops_never_retry_without_stop():
     from apps.trading import mt5_session as module
     mt5 = MagicMock()

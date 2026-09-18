@@ -19,7 +19,7 @@ Hệ thống Bot Auto Trade chuyên sâu cho sàn **Exness** (Vàng XAUUSD, Ngo�
 3. **Trang Chi Tiết Ví (`/wallet/<id>/`)**:
    - **Báo cáo riêng của ví**: Số dư, Vốn ròng, PnL hôm nay, Win Rate.
    - **🤖 PHẦN PHÂN TÍCH CỦA BOT & DỰ BÁO CÁC BƯỚC GIÁ TIẾP THEO (Forward Market Analysis)**:
-     - Xu hướng từng khung M15 / H1 / H4 phân tích độc lập, kèm xu hướng tổng có trọng số; D1 chỉ hiển thị bối cảnh khi đủ nến và không cộng/trừ điểm vào lệnh.
+     - Xu hướng từng khung M15 / H1 / H4 phân tích độc lập, kèm xu hướng tổng có trọng số; D1 chỉ hiển thị bối cảnh, không tham gia score hoặc vùng S/R dùng cho entry.
      - Trạng thái setup (`WAITING` / `WATCHING_BUY` / `WATCHING_SELL` / `BUY_READY` / `SELL_READY`) và điểm đồng thuận đa khung.
      - Vùng hỗ trợ / kháng cự thật gom từ swing nhiều khung (`{low, high}`), tách riêng khỏi dải ATR (`ATR Upper / Lower Band`).
      - Kế hoạch entry / SL / TP1 / TP2 / Risk-Reward theo cấu trúc — TP1 có thể chốt một phần, setup hợp lệ khi ít nhất TP2 đạt RR tối thiểu.
@@ -29,8 +29,10 @@ Hệ thống Bot Auto Trade chuyên sâu cho sàn **Exness** (Vàng XAUUSD, Ngo�
    Ngưỡng của lớp phân tích này nằm tập trung ở `apps/analysis/config.py`
    (`MIN_CONFIDENCE`, `MIN_RISK_REWARD`, `ATR_SL_BUFFER`, `SWING_LOOKBACK`,
    `ZONE_ATR_TOLERANCE`, `BREAKOUT_BUFFER`). Breakout chỉ tính khi **nến đã đóng**
-   vượt biên vùng cộng đệm ATR — râu nến xuyên qua không đủ để vào lệnh, nên
-   `WAIT` là trạng thái bình thường chứ không phải lỗi.
+   vượt biên vùng cộng đệm ATR, thân nến đủ lớn và râu từ chối không quá mạnh.
+   Retest phải gắn với đúng transition breakout gần nhất; râu nến xuyên qua
+   không đủ để vào lệnh. Mỗi ví/cặp chỉ được gửi tối đa một lệnh cho cùng
+   timestamp nến đã đóng; `WAIT` là trạng thái bình thường chứ không phải lỗi.
    - **Bảng Kế Hoạch Giao Dịch AI (AI Trading Plans Table)**.
    - **Bảng Vị Thế Đang Mở (Active Positions Table)** kèm nút Đóng Lệnh 1-click.
    - **Bảng Lịch Sử Giao Dịch Đã Đóng (Closed Trades History Table)**.

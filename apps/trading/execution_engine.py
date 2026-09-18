@@ -3,12 +3,13 @@ import time
 import traceback
 import uuid
 from decimal import Decimal
+from django.db import IntegrityError, OperationalError, transaction
 from django.utils import timezone
 from apps.accounts.models import WalletAccount
 from apps.symbols.models import SymbolConfig
 from apps.analysis.models import MarketForecast
 from apps.analysis.analyzer import TechnicalAnalyzer
-from apps.plans.models import TradingPlan
+from apps.plans.models import TradingPlan, TradeSignalClaim
 from apps.plans.planner import AutoPlanGenerator
 from apps.trading.models import Position, TradeHistory, BotLog
 from apps.trading.mt5_connector import ExnessMT5Connector
@@ -23,6 +24,49 @@ class ExecutionEngine:
     _last_persist = 0.0
     _close_cooldown: dict[str, float] = {}
     _closing: set[str] = set()
+
+    @classmethod
+    def claim_entry_signal(cls, wallet: WalletAccount, forecast: MarketForecast, direction: str):
+        """Atomically claim one closed-candle signal before any order submission.
+
+        Unique DB constraint makes this work across threads/processes. Failure
+        is fail-closed: never send if the candle id is absent or DB is busy.
+        """
+        try:
+            candle_time = int((forecast.indicators or {})['closed_candle_time'])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        if candle_time <= 0 or direction not in ('BUY', 'SELL'):
+            return None
+        try:
+            # Savepoint riêng để duplicate IntegrityError không làm hỏng
+            # transaction ngoài (đặc biệt TestCase/SQLite).
+            with transaction.atomic():
+                return TradeSignalClaim.objects.create(
+                    wallet=wallet,
+                    symbol=forecast.symbol,
+                    direction=direction,
+                    candle_time=candle_time,
+                )
+        except (IntegrityError, OperationalError):
+            return None
+
+    @staticmethod
+    def finish_entry_signal_claim(claim, status: str, ticket='', error='') -> None:
+        """Persist claim outcome; claim itself remains to prevent uncertain retry."""
+        if not claim:
+            return
+        try:
+            TradeSignalClaim.objects.filter(pk=claim.pk).update(
+                status=status,
+                order_ticket=str(ticket or '')[:64],
+                error=str(error or '')[:255],
+                updated_at=timezone.now(),
+            )
+        except Exception:
+            # The unique CLAIMED row already blocks duplicate sends even if
+            # outcome metadata cannot be updated.
+            pass
 
     @classmethod
     def sync_symbol_prices_from_mt5(cls):
@@ -86,6 +130,10 @@ class ExecutionEngine:
         plan.save()
 
         if connected_mt5:
+            claim = cls.claim_entry_signal(wallet, forecast, plan.direction)
+            if claim is None:
+                AutoPlanGenerator.discard_plan(plan)
+                return None
             order_res = connector.send_order(
                 symbol=plan.symbol,
                 order_type=plan.direction,
@@ -97,6 +145,9 @@ class ExecutionEngine:
             )
 
             if not order_res.get('success'):
+                cls.finish_entry_signal_claim(
+                    claim, 'FAILED', error=order_res.get('error') or 'Broker send failed'
+                )
                 BotLog.log(
                     level='ERROR',
                     category='EXECUTION',
@@ -111,6 +162,7 @@ class ExecutionEngine:
             ticket = order_res.get('ticket')
             exec_price = Decimal(str(order_res.get('price', plan.entry_price)))
             exec_volume = float(order_res.get('volume', plan.calculated_lot))
+            cls.finish_entry_signal_claim(claim, 'EXECUTED', ticket=ticket)
             from apps.core.trading_defaults import BOT_MAGIC
             from apps.trading.order_source import remember_order_source
             remember_order_source(ticket, 'BOT', BOT_MAGIC)
@@ -164,9 +216,14 @@ class ExecutionEngine:
                 return None
             else:
                 # Chỉ khi ví hoàn toàn không cấu hình MT5 (ví mô phỏng nội bộ)
+                claim = cls.claim_entry_signal(wallet, forecast, plan.direction)
+                if claim is None:
+                    AutoPlanGenerator.discard_plan(plan)
+                    return None
                 ticket = f"LOCAL-{time.time_ns()}-{uuid.uuid4().hex[:6]}"
                 exec_price = plan.entry_price
                 exec_volume = float(plan.calculated_lot)
+                cls.finish_entry_signal_claim(claim, 'EXECUTED', ticket=ticket)
 
         sl_to_save = cls.compute_stop_loss_price(
             plan.symbol, plan.direction, exec_price, exec_volume, wallet

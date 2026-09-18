@@ -40,6 +40,11 @@ ZONE_TF_WEIGHTS = {'M1': 0.6, 'M5': 0.8, 'M15': 1.2, 'M30': 1.4, 'H1': 1.8, 'H4'
 RETEST_LOOKBACK = 12
 # Nến phải đóng vượt biên vùng thêm buffer × ATR mới tính là breakout thật.
 BREAKOUT_BUFFER = 0.10
+# Breakout candle phải có displacement thật, thân đủ lớn và không bị râu phía
+# phá vỡ từ chối quá mạnh. Volume chưa dùng vì feed MT5 hiện chưa chuẩn hoá nó.
+BREAKOUT_MIN_BODY_ATR = 0.10
+BREAKOUT_MIN_BODY_RATIO = 0.45
+BREAKOUT_MAX_REJECTION_WICK_RATIO = 0.35
 # Giá cách vùng cản gần nhất dưới ngần này × ATR là quá sát, không vào lệnh.
 MIN_ROOM_ATR = 0.60
 # Giá đi xa vùng phá vỡ quá ngần này × ATR là đã overextended.
@@ -72,7 +77,7 @@ CONFLICT_PENALTY = {
 WATCHING_CONFIDENCE = 50.0
 MIN_CONFIDENCE = 75.0
 
-# Kế hoạch entry/SL/TP hiển thị trong forecast (SL thật gửi sàn vẫn theo USD ví).
+# Kế hoạch entry/SL/TP cấu trúc; execution recheck rồi gửi SL/TP2 lên sàn.
 ATR_SL_BUFFER = 0.30
 MIN_RISK_REWARD = 1.5
 TP2_RR_FALLBACK = 2.5

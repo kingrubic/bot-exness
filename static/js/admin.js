@@ -1177,7 +1177,7 @@ function _multiTfBlock(ind) {
                 ${r.sufficient ? `${_trendArrow(r.trend)} ${_biasText(r.trend)}` : 'THIẾU NẾN'}
             </b>
             <span class="np-tf-struct">${_escHtml(r.sufficient ? (r.structure || '') : `${r.candles || 0} nến`)}</span>
-            <span class="np-tf-conf">${Number(r.confidence || 0).toFixed(0)}</span>
+            <span class="np-tf-conf" title="Độ rõ của phân loại xu hướng, không phải xác suất thắng">${Number(r.confidence || 0).toFixed(0)}</span>
         </div>`).join('');
 
     const levels = [

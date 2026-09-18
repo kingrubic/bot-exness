@@ -49,3 +49,50 @@ class TradingPlan(models.Model):
 
     def __str__(self):
         return f"Plan #{self.id} [{self.wallet.name}] {self.symbol} {self.direction} @ {self.entry_price} ({self.status})"
+
+
+class TradeSignalClaim(models.Model):
+    """Idempotency record: tối đa một bot order mỗi wallet/symbol/closed candle.
+
+    Record được tạo trước khi gọi broker. Nếu process mất phản hồi sau khi broker
+    đã fill, claim vẫn tồn tại và ngăn worker khác gửi trùng cùng signal.
+    """
+    STATUS_CHOICES = [
+        ('CLAIMED', 'Đã giữ quyền xử lý'),
+        ('EXECUTED', 'Đã gửi thành công'),
+        ('FAILED', 'Gửi thất bại / kết quả chưa chắc chắn'),
+    ]
+
+    wallet = models.ForeignKey(
+        WalletAccount,
+        on_delete=models.CASCADE,
+        related_name='trade_signal_claims',
+    )
+    symbol = models.CharField(max_length=30)
+    direction = models.CharField(max_length=10, choices=TradingPlan.DIRECTION_CHOICES)
+    candle_time = models.BigIntegerField(
+        help_text='Unix timestamp của nến tín hiệu đã đóng.',
+    )
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default='CLAIMED')
+    order_ticket = models.CharField(max_length=64, blank=True, default='')
+    error = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['wallet', 'symbol', 'candle_time'],
+                name='unique_bot_signal_per_wallet_symbol_candle',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['wallet', 'symbol', '-candle_time']),
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return (
+            f"Signal #{self.id} [{self.wallet.name}] {self.symbol} "
+            f"{self.direction} candle={self.candle_time} ({self.status})"
+        )

@@ -8,7 +8,11 @@ import time
 import pytest
 
 from apps.analysis import config as cfg
-from apps.analysis.analyzer import TechnicalAnalyzer
+from apps.analysis.analyzer import (
+    TechnicalAnalyzer,
+    _entry_level_sets,
+    _retest_confirmed,
+)
 from apps.analysis.market_structure import (
     BEARISH,
     BULLISH,
@@ -26,7 +30,9 @@ ATR = 4.0
 DIGITS = 2
 
 
-def tf_pack(trend, confidence=90.0, sufficient=True, candles=240, structure='HH/HL'):
+def tf_pack(trend, confidence=90.0, sufficient=True, candles=240, structure=None):
+    if structure is None:
+        structure = 'HH/HL' if trend == BULLISH else 'LH/LL' if trend == BEARISH else 'RANGE'
     return {
         'trend': trend, 'confidence': confidence, 'sufficient': sufficient,
         'structure': structure, 'candles': candles, 'scores': {}, 'components': [],
@@ -100,6 +106,35 @@ def test_breakout_needs_candle_close_not_just_wick():
     assert breakout_state(closed, resistance, ATR, 'BUY')['confirmed'] is True
 
 
+def test_breakout_close_with_weak_body_or_rejection_wick_is_not_confirmed():
+    resistance = zone(100.0, 101.0)
+    weak = {'open': 101.45, 'high': 104.0, 'low': 99.0, 'close': 101.5}
+    state = breakout_state(weak, resistance, ATR, 'BUY')
+    assert state['weak_close'] is True
+    assert state['quality_ok'] is False
+    assert state['confirmed'] is False
+    assert 'body_too_small_atr' in state['failure_reasons']
+    assert 'excessive_rejection_wick' in state['failure_reasons']
+
+
+def test_retest_requires_exact_prior_breakout_transition():
+    support = zone(100.0, 101.0)
+    base = {'open': 100.0, 'high': 101.0, 'low': 99.5}
+    valid = [
+        {**base, 'close': 100.0},
+        {'open': 100.0, 'high': 101.5, 'low': 99.9, 'close': 101.3},
+        {'open': 101.3, 'high': 101.7, 'low': 101.2, 'close': 101.5},
+        {'open': 101.4, 'high': 101.6, 'low': 101.0, 'close': 101.4},
+    ]
+    no_transition = [
+        {'open': 101.3, 'high': 101.6, 'low': 101.2, 'close': 101.4},
+        {'open': 101.4, 'high': 101.7, 'low': 101.2, 'close': 101.5},
+        {'open': 101.4, 'high': 101.6, 'low': 101.0, 'close': 101.4},
+    ]
+    assert _retest_confirmed(valid, [support], 101.4, 1.0, 'BUY') is True
+    assert _retest_confirmed(no_transition, [support], 101.4, 1.0, 'BUY') is False
+
+
 def test_classify_trend_skips_ema200_when_candles_are_short():
     closes = [100.0 + i * 0.5 for i in range(80)]
     highs = [c + 0.3 for c in closes]
@@ -116,7 +151,7 @@ def test_balanced_direction_scores_are_confidently_sideways():
         {'bullish': 50.0, 'bearish': 50.0, 'sideways': 0.0}
     )
     assert trend == SIDEWAYS
-    assert confidence == 100.0
+    assert confidence == 50.0
 
 
 # --------------------------------------------------------------------------
@@ -186,7 +221,7 @@ def test_case3_entry_timeframe_sideways_only_watches():
     assert any('đóng cửa' in w or 'phá vùng' in w for w in out['waiting_for'])
 
 
-def test_sideways_h1_can_pass_when_m15_h4_and_total_score_are_strong():
+def test_sideways_h1_with_lh_ll_blocks_buy_even_when_other_scores_are_strong():
     out = decide(
         packs={
             'M15': tf_pack(BULLISH, confidence=100.0),
@@ -200,8 +235,8 @@ def test_sideways_h1_can_pass_when_m15_h4_and_total_score_are_strong():
             'SELL': {'confirmed': False, 'wick_only': False, 'retest': False, 'level': None},
         },
     )
-    assert out['confidence'] >= cfg.MIN_CONFIDENCE
-    assert out['setup_status'] == 'BUY_READY'
+    assert out['setup_status'] != 'BUY_READY'
+    assert any('structure=LH/LL' in reason for reason in out['waiting_for'])
 
 
 def test_d1_is_informational_and_does_not_change_entry_score():
@@ -226,6 +261,19 @@ def test_d1_is_informational_and_does_not_change_entry_score():
     assert with_bearish_d1['confidence'] == without_d1['confidence']
     assert with_bearish_d1['score_breakdown']['macro'] == 0.0
     assert any('chỉ tham khảo' in reason for reason in with_bearish_d1['reasons'])
+
+
+def test_d1_levels_are_excluded_from_entry_support_resistance_inputs():
+    packs = {
+        'M15': {'swing_highs': [110.0], 'swing_lows': [90.0]},
+        'H1': {'swing_highs': [120.0], 'swing_lows': [80.0]},
+        'H4': {'swing_highs': [130.0], 'swing_lows': [70.0]},
+        'D1': {'swing_highs': [101.0], 'swing_lows': [99.0]},
+    }
+    level_sets = _entry_level_sets(packs)
+    assert set(level_sets) == {'M15', 'H1', 'H4'}
+    assert 101.0 not in sum(level_sets.values(), [])
+    assert 99.0 not in sum(level_sets.values(), [])
 
 
 def test_case4_conflicting_timeframes_lose_confidence_and_never_go_ready():
